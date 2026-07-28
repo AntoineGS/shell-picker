@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -222,6 +225,188 @@ func TestWaitIsSingleUseAndWaitDelayBoundsInheritedPipe(t *testing.T) {
 	}
 	assertProcessGoneWithin(t, pid, 3*time.Second)
 }
+
+func TestWaitDelayClosesBlockingPumpedStreams(t *testing.T) {
+	tests := []struct {
+		name string
+		spec func(*blockingStream) Spec
+	}{
+		{"stdin-read", func(stream *blockingStream) Spec { spec := helperSpec("exit", "0"); spec.Stdin = stream; return spec }},
+		{"stdout-write", func(stream *blockingStream) Spec {
+			spec := helperSpec("print-args", "x")
+			spec.Stdout = stream
+			return spec
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			resources, goroutines := platformResourceCount(t), runtime.NumGoroutine()
+			stream := newBlockingStream()
+			spec := test.spec(stream)
+			spec.WaitDelay = 50 * time.Millisecond
+			child, err := (Runner{}).Start(context.Background(), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-stream.blocked
+			if err := child.Wait(); !errors.Is(err, ErrWaitDelay) {
+				t.Fatalf("wait=%v", err)
+			}
+			if stream.closeCalls.Load() != 1 {
+				t.Fatalf("close calls=%d", stream.closeCalls.Load())
+			}
+			select {
+			case <-child.pumpDone:
+			default:
+				t.Fatal("pumps still running")
+			}
+			assertPlatformResourcesReturn(t, resources)
+			deadline := time.Now().Add(time.Second)
+			for runtime.NumGoroutine() > goroutines && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if runtime.NumGoroutine() > goroutines {
+				t.Fatalf("goroutines=%d baseline=%d", runtime.NumGoroutine(), goroutines)
+			}
+		})
+	}
+}
+
+func TestCancellationClosesBlockingPumpedStream(t *testing.T) {
+	stream := newBlockingStream()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	spec := helperSpec("block")
+	spec.Stdin = stream
+	child, err := (Runner{}).Start(ctx, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-stream.blocked
+	cause := errors.New("stop")
+	cancel(cause)
+	if err := child.Wait(); !errors.Is(err, cause) {
+		t.Fatalf("wait=%v", err)
+	}
+	if stream.closeCalls.Load() != 1 {
+		t.Fatalf("close calls=%d", stream.closeCalls.Load())
+	}
+}
+
+func TestExitErrorPrecedesBlockingPumpWaitDelay(t *testing.T) {
+	stream := newBlockingStream()
+	spec := helperSpec("print-args", "x")
+	spec.Stdout, spec.WaitDelay = stream, 50*time.Millisecond
+	// The helper's invalid test flag produces a nonzero process exit after writing.
+	spec.Args = []string{"-test.run=^TestProcessHelper$", "--", "hold-stdout-exit"}
+	child, err := (Runner{}).Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-stream.blocked
+	err = child.Wait()
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 17 {
+		t.Fatalf("wait=%v", err)
+	}
+	if stream.closeCalls.Load() != 1 {
+		t.Fatalf("close calls=%d", stream.closeCalls.Load())
+	}
+}
+
+func TestOrdinaryCompletionDoesNotClosePumpedCloser(t *testing.T) {
+	for _, code := range []string{"0", "7"} {
+		stream := &finiteCloser{Reader: strings.NewReader("input")}
+		spec := helperSpec("exit", code)
+		spec.Stdin = stream
+		err := (Runner{}).Run(context.Background(), spec)
+		if code == "0" && err != nil {
+			t.Fatal(err)
+		}
+		if code != "0" {
+			var exitErr *ExitError
+			if !errors.As(err, &exitErr) {
+				t.Fatalf("exit=%v", err)
+			}
+		}
+		if stream.closeCalls.Load() != 0 {
+			t.Fatalf("code=%s close calls=%d", code, stream.closeCalls.Load())
+		}
+	}
+}
+
+func TestKillTreeAfterWaitAndConcurrentCallsAreSafe(t *testing.T) {
+	child, err := (Runner{}).Start(context.Background(), helperSpec("exit", "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.KillTree(); err != nil {
+		t.Fatalf("post-Wait KillTree=%v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	child, err = (Runner{}).Start(ctx, helperSpec("block"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var group sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		group.Add(1)
+		go func() { defer group.Done(); _ = child.KillTree() }()
+	}
+	cancel()
+	waitErr := child.Wait()
+	group.Wait()
+	if waitErr == nil {
+		t.Fatal("concurrent cancellation returned nil")
+	}
+}
+
+func TestNaturalExitLinearizesBeforeLateCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	child, err := (Runner{}).Start(ctx, helperSpec("exit", "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-child.observedExit
+	cancel()
+	if err := child.Wait(); err != nil {
+		t.Fatalf("late cancellation won: %v", err)
+	}
+}
+
+type blockingStream struct {
+	blocked    chan struct{}
+	closed     chan struct{}
+	blockOnce  sync.Once
+	closeOnce  sync.Once
+	closeCalls atomic.Int32
+}
+
+func newBlockingStream() *blockingStream {
+	return &blockingStream{blocked: make(chan struct{}), closed: make(chan struct{})}
+}
+func (s *blockingStream) wait() error {
+	s.blockOnce.Do(func() { close(s.blocked) })
+	<-s.closed
+	return errors.New("stream closed")
+}
+func (s *blockingStream) Read([]byte) (int, error)  { return 0, s.wait() }
+func (s *blockingStream) Write([]byte) (int, error) { return 0, s.wait() }
+func (s *blockingStream) Close() error {
+	s.closeCalls.Add(1)
+	s.closeOnce.Do(func() { close(s.closed) })
+	return nil
+}
+
+type finiteCloser struct {
+	*strings.Reader
+	closeCalls atomic.Int32
+}
+
+func (s *finiteCloser) Close() error { s.closeCalls.Add(1); return nil }
 
 func TestStartRejectsInvalidSpec(t *testing.T) {
 	for _, spec := range []Spec{{Path: os.Args[0], Containment: 99},

@@ -11,8 +11,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
+	"reflect"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -92,13 +95,15 @@ func TestInheritedTreeCancellationKillsCallbackGroup(t *testing.T) {
 }
 
 type foregroundTTYReport struct {
-	ParentTTYFD           int    `json:"parent_tty_fd"`
-	ChildTTYFD            int    `json:"child_tty_fd"`
-	SameTTY               bool   `json:"same_tty"`
-	Input                 string `json:"input"`
-	RestoredPreviousGroup bool   `json:"restored_previous_group"`
-	DescriptorDelta       int    `json:"descriptor_delta"`
-	Err                   string `json:"err,omitempty"`
+	ParentTTYFD                  int    `json:"parent_tty_fd"`
+	ChildTTYFD                   int    `json:"child_tty_fd"`
+	SameTTY                      bool   `json:"same_tty"`
+	Input                        string `json:"input"`
+	RestoredPreviousGroup        bool   `json:"restored_previous_group"`
+	RestoredThreadMask           bool   `json:"restored_thread_mask"`
+	PreservedSIGTTOUNotification bool   `json:"preserved_sigttou_notification"`
+	DescriptorDelta              int    `json:"descriptor_delta"`
+	Err                          string `json:"err,omitempty"`
 }
 
 type foregroundProbe struct {
@@ -154,7 +159,7 @@ func TestForegroundTreeOwnsTTYAndRestoresPreviousGroup(t *testing.T) {
 	terminal.close()
 	if report.Err != "" || report.ParentTTYFD <= 3 || report.ParentTTYFD == report.ChildTTYFD ||
 		report.ChildTTYFD != 3 || !report.SameTTY || report.Input != "x\n" ||
-		!report.RestoredPreviousGroup || report.DescriptorDelta != 0 {
+		!report.RestoredPreviousGroup || !report.RestoredThreadMask || !report.PreservedSIGTTOUNotification || report.DescriptorDelta != 0 {
 		t.Fatalf("report=%+v", report)
 	}
 	assertDescriptorCountReturns(t, baseline)
@@ -175,6 +180,16 @@ func TestForegroundTTYSessionHelper(t *testing.T) {
 }
 
 func runForegroundTTYSession() (report foregroundTTYReport) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	beforeMask, err := currentThreadMask()
+	if err != nil {
+		report.Err = err.Error()
+		return
+	}
+	notifications := make(chan os.Signal, 1)
+	signal.Notify(notifications, syscall.SIGTTOU)
+	defer signal.Stop(notifications)
 	warmR, warmW, err := os.Pipe()
 	if err != nil {
 		report.Err = err.Error()
@@ -234,7 +249,86 @@ func runForegroundTTYSession() (report foregroundTTYReport) {
 	}
 	current, err := foregroundPGR(int(tty.Fd()))
 	report.RestoredPreviousGroup = err == nil && current == previous
+	afterMask, maskErr := currentThreadMask()
+	report.RestoredThreadMask = maskErr == nil && reflect.DeepEqual(beforeMask, afterMask)
+	_ = syscall.Kill(os.Getpid(), syscall.SIGTTOU)
+	select {
+	case <-notifications:
+		report.PreservedSIGTTOUNotification = true
+	case <-time.After(time.Second):
+	}
 	return
+}
+
+func TestRestoreForegroundPGRRestoresMaskOnIoctlError(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	before, err := currentThreadMask()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreForegroundPGR(-1, 1); err == nil {
+		t.Fatal("invalid tty restore succeeded")
+	}
+	after, err := currentThreadMask()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("mask changed: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestRestoreForegroundPGRRestoresMaskWhenRestoreReportsError(t *testing.T) {
+	realMask, realIoctl := pthreadSigmask, setForegroundPGR
+	defer func() { pthreadSigmask, setForegroundPGR = realMask, realIoctl }()
+	want := errors.New("restore mask")
+	calls := 0
+	pthreadSigmask = func(how int, set, old *threadSigset) error {
+		calls++
+		err := realMask(how, set, old)
+		if calls == 2 {
+			return want
+		}
+		return err
+	}
+	setForegroundPGR = func(int, *int) error { return nil }
+	if err := restoreForegroundPGR(0, 1); !errors.Is(err, want) {
+		t.Fatalf("restore=%v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("mask calls=%d", calls)
+	}
+}
+
+func currentThreadMask() (threadSigset, error) {
+	var mask threadSigset
+	err := pthreadSigmask(threadSigSetmask, nil, &mask)
+	return mask, err
+}
+
+func TestUnixSharedStdoutStderrWriterIsSerialized(t *testing.T) {
+	writer := &unixConcurrencyWriter{}
+	spec := helperSpec("both-streams")
+	spec.Stdout, spec.Stderr = writer, writer
+	if err := (Runner{}).Run(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if writer.concurrent.Load() != 0 {
+		t.Fatalf("concurrent writes=%d", writer.concurrent.Load())
+	}
+}
+
+type unixConcurrencyWriter struct{ active, concurrent atomic.Int32 }
+
+func (w *unixConcurrencyWriter) Write(p []byte) (int, error) {
+	if w.active.Add(1) != 1 {
+		w.concurrent.Add(1)
+	}
+	for i := 0; i < 10000; i++ {
+	}
+	w.active.Add(-1)
+	return len(p), nil
 }
 
 type testPTY struct{ master, slave *os.File }
@@ -322,4 +416,8 @@ func assertDescriptorCountReturns(t *testing.T, want int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("descriptor count=%d want<=%d", descriptorCount(), want)
+}
+func platformResourceCount(t *testing.T) uint64 { return uint64(openDescriptorCount(t)) }
+func assertPlatformResourcesReturn(t *testing.T, want uint64) {
+	assertDescriptorCountReturns(t, int(want))
 }

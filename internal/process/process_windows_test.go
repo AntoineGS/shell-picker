@@ -56,6 +56,11 @@ func processExists(pid int) bool {
 	return err == nil && result == uint32(windows.WAIT_TIMEOUT)
 }
 
+func platformResourceCount(t *testing.T) uint64 { return uint64(processHandleCount(t)) }
+func assertPlatformResourcesReturn(t *testing.T, want uint64) {
+	assertHandleCountReturns(t, uint32(want))
+}
+
 func TestCreateProcessPassesStreamsAndArguments(t *testing.T) {
 	spec := helperSpec("print-args", "a b", `x&y`)
 	var out bytes.Buffer
@@ -137,5 +142,12 @@ func TestSanitizeEnvWindowsCaseInsensitiveAndLastWins(t *testing.T) {
 		map[string]string{"SHELL_PICKER_X": "good"})
 	if len(got) != 2 || got[0] != "PATH=last" || got[1] != "SHELL_PICKER_X=good" {
 		t.Fatalf("env=%q", got)
+	}
+}
+
+func TestSanitizeEnvWindowsDeduplicatesControlledKeys(t *testing.T) {
+	got := SanitizeEnv(nil, map[string]string{"Path": "first", "PATH": "last", "PATO": "middle"})
+	if len(got) != 2 || got[0] != "Path=first" || got[1] != "PATO=middle" {
+		t.Fatalf("controlled env=%q", got)
 	}
 }

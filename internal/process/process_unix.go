@@ -6,11 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"reflect"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -31,13 +30,18 @@ type Child struct {
 	pumpDone    chan struct{}
 	pumpErr     chan error
 
-	waitOnce  sync.Once
-	waitErr   error
-	killOnce  sync.Once
-	killErr   error
-	exited    chan struct{}
-	watchDone chan struct{}
-	cancelWon chan error
+	waitOnce      sync.Once
+	waitErr       error
+	watchDone     chan struct{}
+	observedExit  chan struct{}
+	result        chan error
+	lifeMu        sync.Mutex
+	processExited bool
+	targetValid   bool
+	killIssued    bool
+	killErr       error
+	cancelErr     error
+	pgid          int
 }
 
 func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
@@ -86,14 +90,25 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 		return nil, err
 	}
 	streams.closeChildren()
+	pgid := cmd.Process.Pid
+	if spec.Containment == ContainmentInheritTree {
+		pgid, err = syscall.Getpgid(cmd.Process.Pid)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			streams.closeAll()
+			return nil, err
+		}
+	}
 	child := &Child{cmd: cmd, ctx: ctx, containment: spec.Containment, path: spec.Path, observe: r.Observe,
-		ttyFD: ttyFD, previousPGR: previousPGR, exited: make(chan struct{}), watchDone: make(chan struct{}),
-		cancelWon: make(chan error, 1), streams: streams, pumpDone: make(chan struct{}),
-		pumpErr: make(chan error, len(streams.pumps))}
+		ttyFD: ttyFD, previousPGR: previousPGR, watchDone: make(chan struct{}), observedExit: make(chan struct{}),
+		streams: streams, pumpDone: make(chan struct{}), pumpErr: make(chan error, len(streams.pumps)),
+		targetValid: true, pgid: pgid, result: make(chan error, 1)}
 	child.waitDelay = spec.WaitDelay
 	child.childTTYFD = childTTYFD
 	observe(r.Observe, "start", spec.Path, cmd.Process.Pid)
 	child.startPumps()
+	go child.reap()
 	go child.watchCancellation()
 	return child, nil
 }
@@ -108,19 +123,20 @@ func setParentDeathSignal(attr *syscall.SysProcAttr) {
 func (c *Child) PID() int { return c.cmd.Process.Pid }
 
 func (c *Child) KillTree() error {
-	c.killOnce.Do(func() {
-		group := c.PID()
-		if c.containment == ContainmentInheritTree {
-			group, c.killErr = syscall.Getpgid(c.PID())
-			if c.killErr != nil {
-				return
-			}
-		}
-		c.killErr = syscall.Kill(-group, syscall.SIGKILL)
-		if errors.Is(c.killErr, syscall.ESRCH) {
-			c.killErr = nil
-		}
-	})
+	c.lifeMu.Lock()
+	defer c.lifeMu.Unlock()
+	return c.killTreeLocked()
+}
+
+func (c *Child) killTreeLocked() error {
+	if !c.targetValid || c.killIssued {
+		return c.killErr
+	}
+	c.killIssued = true
+	c.killErr = syscall.Kill(-c.pgid, syscall.SIGKILL)
+	if errors.Is(c.killErr, syscall.ESRCH) {
+		c.killErr = nil
+	}
 	return c.killErr
 }
 
@@ -128,16 +144,18 @@ func (c *Child) Wait() error {
 	didWait := false
 	c.waitOnce.Do(func() {
 		didWait = true
-		waitErr := c.cmd.Wait()
-		close(c.exited)
+		waitErr := <-c.result
 		<-c.watchDone
+		c.lifeMu.Lock()
+		cancelErr := c.cancelErr
+		c.lifeMu.Unlock()
 		timedOut, pumpErr := c.joinPumps()
 		if c.containment == ContainmentForegroundTree {
 			_ = restoreForegroundPGR(c.ttyFD, c.previousPGR)
 		}
-		select {
-		case c.waitErr = <-c.cancelWon:
-		default:
+		if cancelErr != nil {
+			c.waitErr = cancelErr
+		} else {
 			if c.waitErr = unixWaitError(waitErr); c.waitErr == nil {
 				if pumpErr != nil {
 					c.waitErr = pumpErr
@@ -146,6 +164,9 @@ func (c *Child) Wait() error {
 				}
 			}
 		}
+		c.lifeMu.Lock()
+		c.targetValid = false
+		c.lifeMu.Unlock()
 		observe(c.observe, "exit", c.path, c.PID())
 	})
 	if !didWait {
@@ -154,91 +175,31 @@ func (c *Child) Wait() error {
 	return c.waitErr
 }
 
+func (c *Child) reap() {
+	err := c.cmd.Wait()
+	c.lifeMu.Lock()
+	c.processExited = true
+	close(c.observedExit)
+	c.lifeMu.Unlock()
+	c.result <- err
+}
+
 func (c *Child) watchCancellation() {
 	defer close(c.watchDone)
 	select {
-	case <-c.exited:
+	case <-c.observedExit:
 	case <-c.ctx.Done():
-		select {
-		case <-c.exited:
+		c.lifeMu.Lock()
+		if c.processExited {
+			c.lifeMu.Unlock()
 			return
-		default:
 		}
-		c.cancelWon <- context.Cause(c.ctx)
-		_ = c.KillTree()
+		c.cancelErr = context.Cause(c.ctx)
+		_ = c.killTreeLocked()
+		c.lifeMu.Unlock()
+		c.streams.emergencyClose()
 	}
 }
-
-type unixOwnedFile struct {
-	file *os.File
-	once sync.Once
-}
-
-func (f *unixOwnedFile) close() { f.once.Do(func() { _ = f.file.Close() }) }
-
-type unixStreams struct {
-	stdin          io.Reader
-	stdout, stderr io.Writer
-	children       []*os.File
-	parents        []*unixOwnedFile
-	pumps          []func() error
-}
-
-func prepareUnixStreams(spec Spec) (*unixStreams, error) {
-	streams := &unixStreams{stdin: spec.Stdin, stdout: spec.Stdout, stderr: spec.Stderr}
-	if spec.Stdin != nil {
-		if _, ok := spec.Stdin.(*os.File); !ok {
-			read, write, err := os.Pipe()
-			if err != nil {
-				return nil, err
-			}
-			parent := &unixOwnedFile{file: write}
-			streams.stdin = read
-			streams.children, streams.parents = append(streams.children, read), append(streams.parents, parent)
-			streams.pumps = append(streams.pumps, func() error { _, err := io.Copy(write, spec.Stdin); parent.close(); return err })
-		}
-	}
-	var err error
-	if streams.stdout, err = streams.prepareOutput(spec.Stdout); err != nil {
-		streams.closeAll()
-		return nil, err
-	}
-	if streams.stderr, err = streams.prepareOutput(spec.Stderr); err != nil {
-		streams.closeAll()
-		return nil, err
-	}
-	return streams, nil
-}
-
-func (s *unixStreams) prepareOutput(writer io.Writer) (io.Writer, error) {
-	if writer == nil {
-		return nil, nil
-	}
-	if _, ok := writer.(*os.File); ok {
-		return writer, nil
-	}
-	read, write, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
-	parent := &unixOwnedFile{file: read}
-	s.children, s.parents = append(s.children, write), append(s.parents, parent)
-	s.pumps = append(s.pumps, func() error { _, err := io.Copy(writer, read); parent.close(); return err })
-	return write, nil
-}
-
-func (s *unixStreams) closeChildren() {
-	for _, file := range s.children {
-		_ = file.Close()
-	}
-	s.children = nil
-}
-func (s *unixStreams) closeParents() {
-	for _, file := range s.parents {
-		file.close()
-	}
-}
-func (s *unixStreams) closeAll() { s.closeChildren(); s.closeParents() }
 
 func (c *Child) startPumps() {
 	var group sync.WaitGroup
@@ -283,7 +244,7 @@ func (c *Child) joinPumps() (bool, error) {
 		case pumpErr = <-c.pumpErr:
 		default:
 		}
-		c.streams.closeParents()
+		c.streams.emergencyClose()
 		_ = c.KillTree()
 		<-c.pumpDone
 		return true, pumpErr
@@ -311,18 +272,33 @@ func foregroundPGR(fd int) (int, error) {
 	return group, nil
 }
 
-func restoreForegroundPGR(fd, group int) error {
-	signal.Ignore(syscall.SIGTTOU)
-	defer signal.Reset(syscall.SIGTTOU)
+var setForegroundPGR = func(fd int, group *int) error {
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSPGRP, uintptr(unsafe.Pointer(group)))
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+func restoreForegroundPGR(fd, group int) (result error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	blocked := sigttouMask()
+	var previous threadSigset
+	if err := pthreadSigmask(threadSigBlock, &blocked, &previous); err != nil {
+		return err
+	}
+	defer func() {
+		if err := pthreadSigmask(threadSigSetmask, &previous, nil); result == nil {
+			result = err
+		}
+	}()
 	for attempts := 0; attempts < 16; attempts++ {
-		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSPGRP, uintptr(unsafe.Pointer(&group)))
-		if errno == syscall.EINTR {
+		err := setForegroundPGR(fd, &group)
+		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
-		if errno != 0 {
-			return errno
-		}
-		return nil
+		return err
 	}
 	return syscall.EINTR
 }

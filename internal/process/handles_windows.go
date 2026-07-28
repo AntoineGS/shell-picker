@@ -39,12 +39,14 @@ type preparedStreams struct {
 	parents               []*ownedFile
 	pumps                 []func() error
 	waitDelay             time.Duration
+	closers               emergencyClosers
 }
 
 func prepareStreams(spec Spec) (*preparedStreams, error) {
 	p := &preparedStreams{waitDelay: spec.WaitDelay}
 	stdout, stderr := spec.Stdout, spec.Stderr
 	if sameWriter(stdout, stderr) {
+		p.closers.add(stdout)
 		locked := &lockedWriter{writer: stdout}
 		stdout, stderr = locked, locked
 	}
@@ -71,6 +73,7 @@ func (p *preparedStreams) prepareInput(reader io.Reader) (windows.Handle, error)
 	if file, ok := reader.(*os.File); ok {
 		return p.duplicate(windows.Handle(file.Fd()))
 	}
+	p.closers.add(reader)
 	child, parent, err := inheritablePipe(true)
 	if err != nil {
 		return 0, err
@@ -95,6 +98,7 @@ func (p *preparedStreams) prepareOutput(writer io.Writer) (windows.Handle, error
 	if file, ok := writer.(*os.File); ok {
 		return p.duplicate(windows.Handle(file.Fd()))
 	}
+	p.closers.add(writer)
 	child, parent, err := inheritablePipe(false)
 	if err != nil {
 		return 0, err
@@ -178,7 +182,8 @@ func (p *preparedStreams) closeParents() {
 	}
 }
 
-func (p *preparedStreams) closeAll() { p.closeChildren(); p.closeParents() }
+func (p *preparedStreams) closeAll()       { p.closeChildren(); p.closeParents() }
+func (p *preparedStreams) emergencyClose() { p.closeParents(); p.closers.close() }
 
 type lockedWriter struct {
 	mu     sync.Mutex

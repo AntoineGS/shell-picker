@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -132,19 +133,26 @@ func startWithInjectedFailure(stage winStage) (error, int) {
 func TestCleanupFailuresDoNotMaskStartFailure(t *testing.T) {
 	primary, cleanup := errors.New("assign failed"), errors.New("cleanup failed")
 	cleanupPhase := false
+	var terminates, waits, closes atomic.Int32
 	oldAssign, oldTerminate, oldWait, oldClose := winAssignProcessToJobObject, winTerminateProcess, winWaitForSingleObject, winCloseHandle
 	defer func() {
 		winAssignProcessToJobObject, winTerminateProcess, winWaitForSingleObject, winCloseHandle = oldAssign, oldTerminate, oldWait, oldClose
 	}()
 	winAssignProcessToJobObject = func(windows.Handle, windows.Handle) error { cleanupPhase = true; return primary }
-	winTerminateProcess = func(handle windows.Handle, code uint32) error { _ = oldTerminate(handle, code); return cleanup }
+	winTerminateProcess = func(handle windows.Handle, code uint32) error {
+		terminates.Add(1)
+		_ = oldTerminate(handle, code)
+		return cleanup
+	}
 	winWaitForSingleObject = func(handle windows.Handle, timeout uint32) (uint32, error) {
+		waits.Add(1)
 		_, _ = oldWait(handle, timeout)
 		return 0, cleanup
 	}
 	winCloseHandle = func(handle windows.Handle) error {
 		err := oldClose(handle)
 		if cleanupPhase {
+			closes.Add(1)
 			return cleanup
 		}
 		return err
@@ -152,6 +160,9 @@ func TestCleanupFailuresDoNotMaskStartFailure(t *testing.T) {
 	_, err := (Runner{}).Start(context.Background(), helperSpec("block"))
 	if !errors.Is(err, primary) {
 		t.Fatalf("error=%v", err)
+	}
+	if terminates.Load() != 1 || waits.Load() != 1 || closes.Load() < 6 {
+		t.Fatalf("cleanup attempts terminate=%d wait=%d close=%d", terminates.Load(), waits.Load(), closes.Load())
 	}
 }
 

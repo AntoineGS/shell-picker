@@ -45,16 +45,19 @@ type Child struct {
 	observe func(ProcessEvent)
 	streams *preparedStreams
 
-	waitOnce  sync.Once
-	waitErr   error
-	killOnce  sync.Once
-	killErr   error
-	exited    chan struct{}
-	result    chan processResult
-	watchDone chan struct{}
-	cancelWon chan error
-	pumpDone  chan struct{}
-	pumpErr   chan error
+	waitOnce      sync.Once
+	waitErr       error
+	lifeMu        sync.Mutex
+	processExited bool
+	targetValid   bool
+	killIssued    bool
+	killErr       error
+	cancelErr     error
+	observedExit  chan struct{}
+	result        chan processResult
+	watchDone     chan struct{}
+	pumpDone      chan struct{}
+	pumpErr       chan error
 }
 
 func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
@@ -116,8 +119,8 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 	_ = winCloseHandle(info.Thread)
 	streams.closeChildren()
 	child := &Child{process: info.Process, job: job, pid: int(info.ProcessId), ctx: ctx, path: spec.Path,
-		observe: r.Observe, streams: streams, exited: make(chan struct{}), result: make(chan processResult, 1),
-		watchDone: make(chan struct{}), cancelWon: make(chan error, 1), pumpDone: make(chan struct{}),
+		observe: r.Observe, streams: streams, observedExit: make(chan struct{}), result: make(chan processResult, 1),
+		watchDone: make(chan struct{}), pumpDone: make(chan struct{}), targetValid: true,
 		pumpErr: make(chan error, len(streams.pumps))}
 	child.startPumps()
 	go child.reap()
@@ -159,7 +162,17 @@ func (c *Child) PID() int       { return c.pid }
 func (c *Child) pumpCount() int { return len(c.streams.pumps) }
 
 func (c *Child) KillTree() error {
-	c.killOnce.Do(func() { c.killErr = terminateJob(c.job) })
+	c.lifeMu.Lock()
+	defer c.lifeMu.Unlock()
+	return c.killTreeLocked()
+}
+
+func (c *Child) killTreeLocked() error {
+	if !c.targetValid || c.killIssued {
+		return c.killErr
+	}
+	c.killIssued = true
+	c.killErr = terminateJob(c.job)
 	return c.killErr
 }
 
@@ -169,12 +182,18 @@ func (c *Child) Wait() error {
 		didWait = true
 		result := <-c.result
 		<-c.watchDone
+		c.lifeMu.Lock()
+		cancelErr := c.cancelErr
+		c.lifeMu.Unlock()
 		timedOut, pumpErr := c.joinPumps()
+		c.lifeMu.Lock()
+		c.targetValid = false
 		_ = winCloseHandle(c.process)
 		_ = winCloseHandle(c.job)
-		select {
-		case c.waitErr = <-c.cancelWon:
-		default:
+		c.lifeMu.Unlock()
+		if cancelErr != nil {
+			c.waitErr = cancelErr
+		} else {
 			switch {
 			case result.err != nil:
 				c.waitErr = result.err
@@ -220,7 +239,7 @@ func (c *Child) joinPumps() (bool, error) {
 		case pumpErr = <-c.pumpErr:
 		default:
 		}
-		c.streams.closeParents()
+		c.streams.emergencyClose()
 		_ = c.KillTree()
 		<-c.pumpDone
 		return true, pumpErr
@@ -250,22 +269,27 @@ func (c *Child) reap() {
 	if err == nil {
 		err = winGetExitCodeProcess(c.process, &code)
 	}
+	c.lifeMu.Lock()
+	c.processExited = true
+	close(c.observedExit)
+	c.lifeMu.Unlock()
 	c.result <- processResult{code: code, err: err}
-	close(c.exited)
 }
 
 func (c *Child) watchCancellation() {
 	defer close(c.watchDone)
 	select {
-	case <-c.exited:
+	case <-c.observedExit:
 	case <-c.ctx.Done():
-		select {
-		case <-c.exited:
+		c.lifeMu.Lock()
+		if c.processExited {
+			c.lifeMu.Unlock()
 			return
-		default:
 		}
-		c.cancelWon <- context.Cause(c.ctx)
-		_ = c.KillTree()
+		c.cancelErr = context.Cause(c.ctx)
+		_ = c.killTreeLocked()
+		c.lifeMu.Unlock()
+		c.streams.emergencyClose()
 	}
 }
 
