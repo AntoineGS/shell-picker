@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,17 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
+
+type causeCheckedContext struct {
+	context.Context
+	checked chan struct{}
+	once    sync.Once
+}
+
+func (ctx *causeCheckedContext) Err() error {
+	ctx.once.Do(func() { close(ctx.checked) })
+	return ctx.Context.Err()
+}
 
 func testRequest(picker protocol.Picker, initial bool) BuildRequest {
 	return BuildRequest{Picker: picker, Location: pathutil.Filesystem([]byte("/local")), Initial: initial}
@@ -133,36 +145,126 @@ func TestFreshZeroTimeoutIsAuthoritativeUnlimitedPerGeneration(t *testing.T) {
 	}
 }
 
-func TestFreshConcurrentBuildsKeepOneGlobalZoxideProcessLive(t *testing.T) {
+func TestFreshBuilderSerializesSessionQueriesAndCancelledWaiterDoesNotAttempt(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell timing fixture")
+		t.Skip("POSIX executable fixture")
 	}
-	name, environment := zoxideExecutable(t, "sleep 0.05\nprintf '/z/one\\n'\n")
+	name, environment := zoxideExecutable(t, "printf '/z/one\\n'\n")
 	counts := new(processCounts)
-	builder := &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
-		return NewZoxideCache(process.Runner{Observe: counts.observe}, name, environment, 0)
+	started := make(chan struct{}, 3)
+	release := make(chan struct{}, 3)
+	runner := process.Runner{Observe: func(event process.ProcessEvent) {
+		counts.observe(event)
+		if event.Phase == "start" {
+			started <- struct{}{}
+			<-release
+		}
 	}}
-	start := make(chan struct{})
-	errorsFound := make(chan error, 2)
-	var wait sync.WaitGroup
+	var factoryCalls atomic.Int32
+	builder := &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
+		factoryCalls.Add(1)
+		return NewZoxideCache(runner, name, environment, 0)
+	}}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
+		firstDone <- err
+	}()
+	<-started
+
+	cause := errors.New("cancelled behind permit")
+	cancellable, cancelWaiter := context.WithCancelCause(context.Background())
+	waiterCtx := &causeCheckedContext{Context: cancellable, checked: make(chan struct{})}
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := builder.Build(waiterCtx, testRequest(protocol.PickerCD, false))
+		waiterDone <- err
+	}()
+	<-waiterCtx.checked
+	cancelWaiter(cause)
+	select {
+	case err := <-waiterDone:
+		if !errors.Is(err, cause) {
+			t.Fatalf("waiter err=%v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		release <- struct{}{}
+		<-firstDone
+		<-waiterDone
+		t.Fatal("cancelled waiter remained blocked behind fresh generation")
+	}
+	if factoryCalls.Load() != 1 {
+		t.Fatalf("factory calls=%d", factoryCalls.Load())
+	}
+	if attempts, starts, maxLive, _ := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 {
+		t.Fatalf("counts=(%d,%d,%d)", attempts, starts, maxLive)
+	}
+
+	release <- struct{}{}
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	nextDone := make(chan error, 1)
+	go func() {
+		_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false))
+		nextDone <- err
+	}()
+	<-started
+	release <- struct{}{}
+	if err := <-nextDone; err != nil {
+		t.Fatal(err)
+	}
+	if attempts, starts, maxLive, exits := counts.values(); factoryCalls.Load() != 2 || attempts != 2 || starts != 2 || maxLive != 1 || exits != 2 {
+		t.Fatalf("factory=%d counts=(%d,%d,%d,%d)", factoryCalls.Load(), attempts, starts, maxLive, exits)
+	}
+}
+
+func TestIndependentFreshSessionBuildersMayQueryConcurrently(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture")
+	}
+	name, environment := zoxideExecutable(t, "printf '/z/one\\n'\n")
+	counts := new(processCounts)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	runner := process.Runner{Observe: func(event process.ProcessEvent) {
+		counts.observe(event)
+		if event.Phase == "start" {
+			started <- struct{}{}
+			<-release
+		}
+	}}
+	newBuilder := func() *Builder {
+		return &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
+			return NewZoxideCache(runner, name, environment, 0)
+		}}
+	}
+	done := make(chan error, 2)
 	for range 2 {
-		wait.Add(1)
+		builder := newBuilder()
 		go func() {
-			defer wait.Done()
-			<-start
-			_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false))
-			errorsFound <- err
+			_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
+			done <- err
 		}()
 	}
-	close(start)
-	wait.Wait()
-	close(errorsFound)
-	for err := range errorsFound {
-		if err != nil {
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("independent session did not start concurrently")
+		}
+	}
+	if _, starts, maxLive, _ := counts.values(); starts != 2 || maxLive != 2 {
+		t.Fatalf("starts=%d max-live=%d", starts, maxLive)
+	}
+	release <- struct{}{}
+	release <- struct{}{}
+	for range 2 {
+		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
 	}
-	if attempts, starts, maxLive, exits := counts.values(); attempts != 2 || starts != 2 || maxLive != 1 || exits != 2 {
+	if attempts, starts, maxLive, exits := counts.values(); attempts != 2 || starts != 2 || maxLive != 2 || exits != 2 {
 		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
 	}
 }
@@ -232,28 +334,39 @@ func TestLocalHardErrorCancelsAndWaitsForZoxide(t *testing.T) {
 	}
 }
 
-func TestBuilderCallerCancellationIsHard(t *testing.T) {
+func TestCallerCancellationBeforePrivateTimeoutWinsAndReaps(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell timing fixture")
 	}
 	started := make(chan struct{})
 	var once sync.Once
-	cache, _ := newObservedCache(t, "sleep 10\n", time.Second, func(event process.ProcessEvent) {
+	cache, counts := newObservedCache(t, "printf '/z/partial\\n'\nsleep 10\n", 250*time.Millisecond, func(event process.ProcessEvent) {
 		if event.Phase == "start" {
 			once.Do(func() { close(started) })
 		}
 	})
-	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: func(ctx context.Context, _ protocol.Picker, _ pathutil.Location, _ LocalOptions) ([]Record, error) {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { _, err := builder.Build(ctx, testRequest(protocol.PickerCD, true)); done <- err }()
+	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
+	cause := errors.New("caller cancelled first")
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan struct {
+		result BuildResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := builder.Build(ctx, testRequest(protocol.PickerCD, true))
+		done <- struct {
+			result BuildResult
+			err    error
+		}{result, err}
+	}()
 	<-started
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("err=%v", err)
+	cancel(cause)
+	got := <-done
+	if !errors.Is(got.err, cause) || len(got.result.Records) != 0 {
+		t.Fatalf("result=%+v err=%v", got.result, got.err)
+	}
+	if attempts, starts, maxLive, exits := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 {
+		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
 	}
 }
 
@@ -281,66 +394,37 @@ func TestBuilderZoxideTimeoutIsSoftAndDiscardsPartialOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell timing fixture")
 	}
-	cache, _ := newObservedCache(t, "printf '/z/partial\\n'\nsleep 10\n", 20*time.Millisecond, nil)
+	exitObserved := make(chan struct{})
+	releaseExit := make(chan struct{})
+	var exitOnce sync.Once
+	cache, counts := newObservedCache(t, "printf '/z/partial\\n'\nsleep 10\n", 20*time.Millisecond, func(event process.ProcessEvent) {
+		if event.Phase == "exit" {
+			exitOnce.Do(func() { close(exitObserved) })
+			<-releaseExit
+		}
+	})
 	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
-	got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-	if err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	done := make(chan struct {
+		result BuildResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := builder.Build(ctx, testRequest(protocol.PickerCD, true))
+		done <- struct {
+			result BuildResult
+			err    error
+		}{result, err}
+	}()
+	<-exitObserved
+	cancel(errors.New("caller cancelled after private timeout"))
+	close(releaseExit)
+	completed := <-done
+	got, err := completed.result, completed.err
+	if err != nil || len(got.Records) != 2 || !got.ZoxideDiscarded || got.Metrics.ZoxideOutcome != "timeout" {
+		t.Fatalf("got=%+v err=%v", got, err)
 	}
-	if len(got.Records) != 2 || !got.ZoxideDiscarded || got.Metrics.ZoxideOutcome != "timeout" {
-		t.Fatalf("got=%+v", got)
-	}
-}
-
-func BenchmarkInitialZoxideOverlap(b *testing.B) {
-	for range b.N {
-		cache, _ := newObservedCache(b, "printf '/z/one\\n'\n", 0, nil)
-		builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
-		if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true)); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkZoxideTimeoutDiscard(b *testing.B) {
-	if runtime.GOOS == "windows" {
-		b.Skip("POSIX shell timing fixture")
-	}
-	for range b.N {
-		cache, _ := newObservedCache(b, "printf '/z/partial\\n'\nsleep 10\n", time.Millisecond, nil)
-		builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
-		got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-		if err != nil || !got.ZoxideDiscarded || got.Metrics.ZoxideOutcome != "timeout" {
-			b.Fatalf("got=%+v err=%v", got, err)
-		}
-	}
-}
-
-func BenchmarkCachedZoxideNavigation(b *testing.B) {
-	cache, _ := newObservedCache(b, "printf '/z/one\\n'\n", 0, nil)
-	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
-	if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true)); err != nil {
-		b.Fatal(err)
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false)); err != nil {
-			b.Fatal(err)
-		}
-	}
-}
-
-func BenchmarkFreshZoxideNavigation(b *testing.B) {
-	name, environment := zoxideExecutable(b, "printf '/z/one\\n'\n")
-	builder := &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
-		return NewZoxideCache(process.Runner{}, name, environment, 0)
-	}}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false)); err != nil {
-			b.Fatal(err)
-		}
+	if attempts, starts, maxLive, exits := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 {
+		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
 	}
 }

@@ -18,7 +18,10 @@ import (
 
 const zoxideWaitDelay = 250 * time.Millisecond
 
-var errZoxideNotReady = errors.New("zoxide cache is not ready")
+var (
+	errZoxideNotReady = errors.New("zoxide cache is not ready")
+	errZoxideTimeout  = fmt.Errorf("zoxide private timeout: %w", context.DeadlineExceeded)
+)
 
 type ZoxidePolicy uint8
 
@@ -120,7 +123,7 @@ func (cache *ZoxideCache) load(ctx context.Context) {
 	runCtx := ctx
 	cancel := func() {}
 	if cache.timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, cache.timeout)
+		runCtx, cancel = context.WithTimeoutCause(ctx, cache.timeout, errZoxideTimeout)
 	}
 	defer cancel()
 
@@ -140,12 +143,12 @@ func (cache *ZoxideCache) load(ctx context.Context) {
 	cache.metrics.ZoxideAttempts, cache.metrics.ZoxideStarts, cache.metrics.ZoxideMaxLive = tracker.metrics()
 
 	switch {
+	case errors.Is(runErr, errZoxideTimeout):
+		cache.metrics.ZoxideOutcome = "timeout"
+		cache.err = runErr
 	case ctx.Err() != nil:
 		cache.metrics.ZoxideOutcome = "cancelled"
 		cache.err = context.Cause(ctx)
-	case errors.Is(runErr, context.DeadlineExceeded) && runCtx.Err() != nil:
-		cache.metrics.ZoxideOutcome = "timeout"
-		cache.err = runErr
 	case errors.Is(runErr, exec.ErrNotFound):
 		cache.metrics.ZoxideOutcome = "missing"
 		cache.err = runErr

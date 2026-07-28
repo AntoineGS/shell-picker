@@ -29,8 +29,9 @@ type Builder struct {
 	Policy   ZoxidePolicy
 	NewCache func() (*ZoxideCache, error)
 
-	enumerate func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error)
-	freshMu   sync.Mutex
+	enumerate       func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error)
+	freshPermitOnce sync.Once
+	freshPermit     chan struct{}
 }
 
 func (builder *Builder) Build(ctx context.Context, request BuildRequest) (BuildResult, error) {
@@ -61,11 +62,10 @@ func (builder *Builder) Build(ctx context.Context, request BuildRequest) (BuildR
 	}
 
 	if builder.Policy == ZoxideFresh {
-		builder.freshMu.Lock()
-		defer builder.freshMu.Unlock()
-		if cause := context.Cause(ctx); cause != nil {
-			return BuildResult{}, cause
+		if err := builder.acquireFreshPermit(ctx); err != nil {
+			return BuildResult{}, err
 		}
+		defer builder.releaseFreshPermit()
 		cache, err := builder.NewCache()
 		if err != nil {
 			return BuildResult{}, fmt.Errorf("create fresh zoxide cache: %w", err)
@@ -79,6 +79,27 @@ func (builder *Builder) Build(ctx context.Context, request BuildRequest) (BuildR
 		return buildWithZoxide(ctx, request, enumerate, builder.Cache, true)
 	}
 	return builder.buildCachedNavigation(ctx, request, enumerate)
+}
+
+func (builder *Builder) acquireFreshPermit(ctx context.Context) error {
+	builder.freshPermitOnce.Do(func() {
+		builder.freshPermit = make(chan struct{}, 1)
+		builder.freshPermit <- struct{}{}
+	})
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-builder.freshPermit:
+		if cause := context.Cause(ctx); cause != nil {
+			builder.releaseFreshPermit()
+			return cause
+		}
+		return nil
+	}
+}
+
+func (builder *Builder) releaseFreshPermit() {
+	builder.freshPermit <- struct{}{}
 }
 
 func (builder *Builder) validate() error {
@@ -131,9 +152,6 @@ func buildWithZoxide(
 		return BuildResult{}, local.err
 	}
 	zoxideErr := <-zoxideDone
-	if cause := context.Cause(ctx); cause != nil {
-		return BuildResult{}, cause
-	}
 	records, metrics, recordsErr := cache.Records()
 	metrics.LocalDuration = local.duration
 	if !reportAttempt {
@@ -146,6 +164,11 @@ func buildWithZoxide(
 			return BuildResult{}, zoxideErr
 		}
 		return BuildResult{}, recordsErr
+	}
+	if metrics.ZoxideOutcome != "timeout" {
+		if cause := context.Cause(ctx); cause != nil {
+			return BuildResult{}, cause
+		}
 	}
 	return BuildResult{
 		Records:         mergeRecords(local.records, records),

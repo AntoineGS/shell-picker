@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +46,12 @@ func (c *processCounts) values() (int, int, int, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.attempts, c.starts, c.maxLive, c.exits
+}
+
+func (c *processCounts) liveCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.live
 }
 
 func zoxideExecutable(t testing.TB, body string) (string, []string) {
@@ -237,8 +245,8 @@ func TestZoxideTimeoutAndCallerCancellationDiscardPartialOutput(t *testing.T) {
 	}
 	t.Run("timeout", func(t *testing.T) {
 		cache, counts := newObservedCache(t, "printf '/z/partial\\n'\nsleep 10\n", 20*time.Millisecond, nil)
-		if err := cache.Load(context.Background()); err == nil {
-			t.Fatal("Load succeeded")
+		if err := cache.Load(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Load err=%v", err)
 		}
 		records, metrics, _ := cache.Records()
 		if len(records) != 0 || metrics.ZoxideOutcome != "timeout" {
@@ -298,5 +306,120 @@ func TestZoxideConcurrentLoadAttemptsOnceAndPreservesObserver(t *testing.T) {
 	defer observed.Unlock()
 	if callerEvents != 3 {
 		t.Fatalf("caller observer events=%d", callerEvents)
+	}
+}
+
+func zoxideRowsScript(count int) string {
+	var script strings.Builder
+	script.WriteString("printf '")
+	for index := range count {
+		fmt.Fprintf(&script, "/z/%d\\n", index)
+	}
+	script.WriteString("'\n")
+	return script.String()
+}
+
+func benchmarkCache(b *testing.B, runner process.Runner, path string, environment []string, timeout time.Duration) *ZoxideCache {
+	b.Helper()
+	cache, err := NewZoxideCache(runner, path, environment, timeout)
+	if err != nil {
+		b.Fatal(err)
+	}
+	return cache
+}
+
+func assertProcessCounts(b *testing.B, counts *processCounts, attempts, starts, maxLive, exits int) {
+	b.Helper()
+	gotAttempts, gotStarts, gotMaxLive, gotExits := counts.values()
+	if gotAttempts != attempts || gotStarts != starts || gotMaxLive != maxLive || gotExits != exits || counts.liveCount() != 0 {
+		b.Fatalf("counts=(attempts=%d starts=%d max-live=%d exits=%d live=%d), want (%d,%d,%d,%d,0)",
+			gotAttempts, gotStarts, gotMaxLive, gotExits, counts.liveCount(), attempts, starts, maxLive, exits)
+	}
+}
+
+func BenchmarkInitialZoxideOverlap(b *testing.B) {
+	path, environment := zoxideExecutable(b, zoxideRowsScript(10_000))
+	counts := new(processCounts)
+	runner := process.Runner{Observe: counts.observe}
+	for range b.N {
+		builder := &Builder{Cache: benchmarkCache(b, runner, path, environment, 0), Policy: ZoxideCached, enumerate: testLocal}
+		if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	assertProcessCounts(b, counts, b.N, b.N, 1, b.N)
+}
+
+func BenchmarkZoxideTimeoutDiscard(b *testing.B) {
+	if runtime.GOOS == "windows" {
+		b.Skip("POSIX shell timing fixture")
+	}
+	path, environment := zoxideExecutable(b, "printf '/z/partial\\n'\nsleep 10\n")
+	for range b.N {
+		counts := new(processCounts)
+		cache := benchmarkCache(b, process.Runner{Observe: counts.observe}, path, environment, time.Millisecond)
+		got, err := (&Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}).Build(context.Background(), testRequest(protocol.PickerCD, true))
+		if err != nil || !got.ZoxideDiscarded || got.Metrics.ZoxideOutcome != "timeout" {
+			b.Fatalf("got=%+v err=%v", got, err)
+		}
+		assertProcessCounts(b, counts, 1, 1, 1, 1)
+	}
+}
+
+func BenchmarkCachedZoxideNavigation(b *testing.B) {
+	path, environment := zoxideExecutable(b, zoxideRowsScript(10_000))
+	counts := new(processCounts)
+	runner := process.Runner{Observe: counts.observe}
+	builder := &Builder{Cache: benchmarkCache(b, runner, path, environment, 0), Policy: ZoxideCached, enumerate: testLocal}
+	if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true)); err != nil {
+		b.Fatal(err)
+	}
+	attemptsBefore, _, _, _ := counts.values()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	assertProcessCounts(b, counts, attemptsBefore, 1, 1, 1)
+}
+
+func BenchmarkFreshZoxideNavigation(b *testing.B) {
+	path, environment := zoxideExecutable(b, zoxideRowsScript(10_000))
+	counts := new(processCounts)
+	runner := process.Runner{Observe: counts.observe}
+	builder := &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
+		return NewZoxideCache(runner, path, environment, 0)
+	}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	assertProcessCounts(b, counts, b.N, b.N, 1, b.N)
+}
+
+func BenchmarkCPZoxideProcessCountsStayZero(b *testing.B) {
+	path, environment := zoxideExecutable(b, "printf '/z/one\\n'\n")
+	for _, policy := range []ZoxidePolicy{ZoxideCached, ZoxideFresh} {
+		b.Run(policy.String(), func(b *testing.B) {
+			counts := new(processCounts)
+			runner := process.Runner{Observe: counts.observe}
+			builder := &Builder{Policy: policy, enumerate: testLocal}
+			if policy == ZoxideCached {
+				builder.Cache = benchmarkCache(b, runner, path, environment, 0)
+			} else {
+				builder.NewCache = func() (*ZoxideCache, error) { return NewZoxideCache(runner, path, environment, 0) }
+			}
+			for range b.N {
+				if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCP, false)); err != nil {
+					b.Fatal(err)
+				}
+			}
+			assertProcessCounts(b, counts, 0, 0, 0, 0)
+		})
 	}
 }
