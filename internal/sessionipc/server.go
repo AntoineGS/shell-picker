@@ -48,10 +48,11 @@ func Listen(ctx context.Context, token Token, backend Backend) (*Server, error) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	baseListener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return nil, errors.New("listen IPC")
 	}
+	listener := strictListener{Listener: baseListener}
 	port := listener.Addr().(*net.TCPAddr).Port
 	baseCtx, baseCancel := context.WithCancel(ctx)
 	server := &Server{
@@ -74,7 +75,9 @@ func Listen(ctx context.Context, token Token, backend Backend) (*Server, error) 
 		BaseContext: func(net.Listener) context.Context {
 			return baseCtx
 		},
+		ConnContext: withRawAuthorization,
 	}
+	server.httpServer.SetKeepAlivesEnabled(false)
 	go func() {
 		defer close(server.serveDone)
 		_ = server.httpServer.Serve(listener)
@@ -87,7 +90,8 @@ func (server *Server) Address() string {
 }
 
 func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	if !knownRoute(request.URL.Path) {
+	route, ok := canonicalRoute(request)
+	if !ok {
 		writeError(response, http.StatusNotFound)
 		return
 	}
@@ -96,7 +100,7 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		writeError(response, http.StatusMethodNotAllowed)
 		return
 	}
-	if !server.token.authorized(request.Header.Get("Authorization")) {
+	if !rawAuthorizationValid(request.Context()) || !server.token.authorized(request.Header["Authorization"]) {
 		writeError(response, http.StatusUnauthorized)
 		return
 	}
@@ -124,7 +128,7 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		}
 		return
 	}
-	switch request.URL.Path {
+	switch route {
 	case "/v1/event":
 		server.handleEvent(response, request, body)
 	case "/v1/load":
@@ -272,8 +276,16 @@ func (server *Server) close(ctx context.Context) error {
 	return nil
 }
 
-func knownRoute(path string) bool {
-	return path == "/v1/event" || path == "/v1/load" || path == "/v1/preview"
+func canonicalRoute(request *http.Request) (string, bool) {
+	if request.URL.RawQuery != "" || request.URL.RawPath != "" {
+		return "", false
+	}
+	switch request.RequestURI {
+	case "/v1/event", "/v1/load", "/v1/preview":
+		return request.RequestURI, true
+	default:
+		return "", false
+	}
 }
 
 func readRequestBody(response http.ResponseWriter, request *http.Request) ([]byte, error) {

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"strings"
 )
 
 const (
@@ -36,7 +37,14 @@ func parseToken(raw string) (Token, error) {
 	return token, nil
 }
 
-func (token Token) authorized(header string) bool {
+func (token Token) authorized(headers []string) bool {
+	if len(headers) != 1 {
+		return false
+	}
 	want := []byte("Bearer " + token.String())
+	header := headers[0]
+	if len(header) != len(want) || !strings.HasPrefix(header, "Bearer ") {
+		return false
+	}
 	return subtle.ConstantTimeCompare([]byte(header), want) == 1
 }

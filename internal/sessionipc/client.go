@@ -15,6 +15,12 @@ import (
 	"time"
 )
 
+const (
+	maxJSONResponseBytes      = 64 << 10
+	maxLoadResponseBytes      = 64 << 20
+	maxTelemetryResponseBytes = 1 << 10
+)
+
 var (
 	ErrUnauthorized    = errors.New("IPC request unauthorized")
 	ErrNotFound        = errors.New("IPC resource not found")
@@ -24,9 +30,10 @@ var (
 )
 
 type Client struct {
-	address string
-	token   Token
-	client  *http.Client
+	address   string
+	token     Token
+	client    *http.Client
+	transport *http.Transport
 }
 
 func NewClientFromEnv(getenv func(string) string) (*Client, error) {
@@ -52,8 +59,9 @@ func newClient(address string, token Token) *Client {
 		}).DialContext,
 	}
 	return &Client{
-		address: address,
-		token:   token,
+		address:   address,
+		token:     token,
+		transport: transport,
 		client: &http.Client{
 			Transport: transport,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -76,18 +84,20 @@ func (client *Client) Load(ctx context.Context, request LoadRequest) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
-	if err := statusError(response.StatusCode); err != nil {
-		return nil, err
+	if response.StatusCode != http.StatusOK {
+		if _, err := client.readResponse(response, maxJSONResponseBytes); err != nil {
+			return nil, err
+		}
+		if response.Header.Get("Content-Type") != "application/json" {
+			return nil, ErrInternal
+		}
+		return nil, statusError(response.StatusCode)
 	}
 	if response.Header.Get("Content-Type") != "application/octet-stream" {
+		response.Body.Close()
 		return nil, ErrInternal
 	}
-	data, err := io.ReadAll(response.Body)
-	if err != nil {
-		return nil, ErrInternal
-	}
-	return data, nil
+	return client.readResponse(response, maxLoadResponseBytes)
 }
 
 func (client *Client) ResolvePreview(ctx context.Context, request PreviewRequest) (PreviewResponse, error) {
@@ -108,8 +118,7 @@ func (client *Client) RecordPreview(ctx context.Context, request PreviewRequest)
 	if err != nil {
 		return nil
 	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, response.Body)
+	_, _ = client.readResponse(response, maxTelemetryResponseBytes)
 	return nil
 }
 
@@ -118,14 +127,17 @@ func (client *Client) doJSON(ctx context.Context, path string, input, output any
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	body, err := client.readResponse(response, maxJSONResponseBytes)
+	if err != nil {
+		return err
+	}
 	if err := statusError(response.StatusCode); err != nil {
 		return err
 	}
 	if response.Header.Get("Content-Type") != "application/json" {
 		return ErrInternal
 	}
-	decoder := json.NewDecoder(response.Body)
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(output); err != nil {
 		return ErrInternal
 	}
@@ -134,6 +146,30 @@ func (client *Client) doJSON(ctx context.Context, path string, input, output any
 		return ErrInternal
 	}
 	return nil
+}
+
+func (client *Client) readResponse(response *http.Response, limit int64) ([]byte, error) {
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		client.closeIdleConnections()
+		return nil, ErrInternal
+	}
+	if int64(len(body)) > limit {
+		client.closeIdleConnections()
+		return nil, ErrInternal
+	}
+	return body, nil
+}
+
+func (client *Client) closeIdleConnections() {
+	if client.transport != nil {
+		client.transport.CloseIdleConnections()
+		return
+	}
+	if client.client != nil {
+		client.client.CloseIdleConnections()
+	}
 }
 
 func (client *Client) do(ctx context.Context, path string, input any) (*http.Response, error) {
