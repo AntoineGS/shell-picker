@@ -168,18 +168,18 @@ func writeHexEscape(dst *strings.Builder, b byte) {
 }
 
 func writeAll(w io.Writer, data []byte) error {
-	for len(data) > 0 {
-		n, err := w.Write(data)
-		if n < 0 || n > len(data) {
-			return fmt.Errorf("invalid write count %d", n)
-		}
-		data = data[n:]
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
+	if len(data) == 0 {
+		return nil
+	}
+	n, err := w.Write(data)
+	if n < 0 || n > len(data) {
+		return fmt.Errorf("invalid write count %d", n)
+	}
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
 	}
 	return nil
 }

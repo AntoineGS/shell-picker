@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"runtime"
 	"testing"
 )
 
@@ -100,6 +101,9 @@ func TestWriteFramedRecordsPropagatesWriterFailure(t *testing.T) {
 	if err := WriteFramedRecords(shortWriter{}, records); !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("WriteFramedRecords() short-write error = %v; want %v", err, io.ErrShortWrite)
 	}
+	if err := WriteFramedRecords(&partialOnceWriter{}, records); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteFramedRecords() recovered partial-write error = %v; want %v", err, io.ErrShortWrite)
+	}
 }
 
 type failingWriter struct{ err error }
@@ -109,6 +113,31 @@ func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
 type shortWriter struct{}
 
 func (shortWriter) Write(p []byte) (int, error) { return len(p) - 1, nil }
+
+type partialOnceWriter struct{ wrotePartial bool }
+
+func (w *partialOnceWriter) Write(p []byte) (int, error) {
+	if !w.wrotePartial {
+		w.wrotePartial = true
+		return len(p) - 1, nil
+	}
+	return len(p), nil
+}
+
+func TestFrameRecordsAllocationCeiling(t *testing.T) {
+	records := make([]WireRecord, 128)
+	for i := range records {
+		records[i] = WireRecord{Kind: KindFile, Display: "candidate", Payload: "Y2FuZGlkYXRl"}
+	}
+	var framed []byte
+	allocations := testing.AllocsPerRun(100, func() {
+		framed = FrameRecords(records)
+	})
+	runtime.KeepAlive(framed)
+	if allocations > 2 {
+		t.Fatalf("FrameRecords() allocations = %.0f; want at most 2", allocations)
+	}
+}
 
 func BenchmarkFrameRecords(b *testing.B) {
 	records := make([]WireRecord, 128)
