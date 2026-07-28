@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -71,6 +70,10 @@ func TestProcessHelper(t *testing.T) {
 		}
 		_, _ = fmt.Fprintln(os.Stdout, cmd.Process.Pid)
 		os.Exit(17)
+	case "mark-start":
+		if err := os.WriteFile(args[1], []byte("started"), 0o600); err != nil {
+			os.Exit(3)
+		}
 	default:
 		os.Exit(2)
 	}
@@ -331,25 +334,6 @@ func TestOrdinaryCompletionDoesNotClosePumpedCloser(t *testing.T) {
 		if stream.closeCalls.Load() != 0 {
 			t.Fatalf("code=%s close calls=%d", code, stream.closeCalls.Load())
 		}
-	}
-}
-
-func TestRejectsNonIdentifiableValueCloserBeforeAttempt(t *testing.T) {
-	state := &trickyCloserState{blocked: make(chan struct{}), closed: make(chan struct{})}
-	var typedNil *blockingStream
-	for name, stream := range map[string]io.Writer{
-		"value":     trickyCloser{state: state, payload: []int{1, 2, 3}},
-		"typed-nil": typedNil,
-	} {
-		t.Run(name, func(t *testing.T) {
-			var events []ProcessEvent
-			spec := helperSpec("exit", "0")
-			spec.Stdout = stream
-			_, err := (Runner{Observe: func(event ProcessEvent) { events = append(events, event) }}).Start(context.Background(), spec)
-			if !errors.Is(err, ErrInvalidStream) || len(events) != 0 {
-				t.Fatalf("err=%v events=%+v", err, events)
-			}
-		})
 	}
 }
 

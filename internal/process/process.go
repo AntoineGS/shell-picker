@@ -88,14 +88,17 @@ func validateStream(stream any) error {
 	if stream == nil {
 		return nil
 	}
+	value := reflect.ValueOf(stream)
+	if value.Kind() == reflect.Pointer && value.IsNil() {
+		return ErrInvalidStream
+	}
 	if _, direct := stream.(*os.File); direct {
 		return nil
 	}
 	if _, closable := stream.(io.Closer); !closable {
 		return nil
 	}
-	value := reflect.ValueOf(stream)
-	if value.Kind() != reflect.Pointer || value.IsNil() {
+	if value.Kind() != reflect.Pointer {
 		return ErrInvalidStream
 	}
 	return nil
@@ -195,6 +198,13 @@ func validateKqueueObserverResults(pid int, registration, wait exitObserverResul
 		return err
 	}
 	return validateObserverResult(pid, wait, false)
+}
+
+func observeKqueueExit(pid int, registrationCall, waitCall func() exitObserverResult) error {
+	if err := validateObserverResult(pid, registrationCall(), true); err != nil {
+		return err
+	}
+	return validateObserverResult(pid, waitCall(), false)
 }
 
 func validateObserverResult(pid int, result exitObserverResult, registration bool) error {
