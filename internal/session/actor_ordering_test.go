@@ -129,7 +129,13 @@ func (ordering *createdTreeOrdering) next(t *testing.T, want string) orderingEve
 	}
 }
 
-func directApply(t *testing.T, actor *Actor, ctx context.Context, proposal ProposedTransition) *applyCommand {
+func directApply(
+	t *testing.T,
+	actor *Actor,
+	ctx context.Context,
+	proposal ProposedTransition,
+	joins *[]cleanupJoin,
+) *applyCommand {
 	t.Helper()
 	command := &applyCommand{
 		ctx: ctx, proposal: cloneProposal(proposal), submitted: time.Now(), reply: make(chan applyReply, 1),
@@ -145,13 +151,7 @@ func directApply(t *testing.T, actor *Actor, ctx context.Context, proposal Propo
 			submitted <- false
 		}
 	}()
-	t.Cleanup(func() {
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Errorf("cleanup: private Apply submitter did not join")
-		}
-	})
+	*joins = append(*joins, cleanupJoin{name: "private Apply submitter", done: done})
 	select {
 	case accepted := <-submitted:
 		if !accepted {
@@ -170,6 +170,7 @@ func registerOrderingRecovery(
 	stopCaller context.CancelFunc,
 	stopSession context.CancelFunc,
 	privateReplies *[]<-chan applyReply,
+	joins *[]cleanupJoin,
 ) {
 	t.Helper()
 	t.Cleanup(func() {
@@ -177,10 +178,15 @@ func registerOrderingRecovery(
 		stopSession()
 		ordering.release.Open()
 		ordering.allowRollback.Open()
-		drained := make([]<-chan struct{}, 0, len(*privateReplies))
+		drainerJoins := make([]cleanupJoin, 0, len(*privateReplies))
 		for _, replies := range *privateReplies {
 			done := make(chan struct{})
-			drained = append(drained, done)
+			stop := newOnceGate()
+			drainerJoins = append(drainerJoins, cleanupJoin{
+				name:   "private reply drainer",
+				done:   done,
+				before: stop.Open,
+			})
 			go func() {
 				defer close(done)
 				for {
@@ -188,28 +194,17 @@ func registerOrderingRecovery(
 					case <-replies:
 					case <-actor.done:
 						return
+					case <-stop.channel:
+						return
 					}
 				}
 			}()
 		}
-		shutdown := make(chan struct{})
-		go func() {
-			_ = actor.Close()
-			close(shutdown)
-		}()
-		select {
-		case <-shutdown:
-		case <-time.After(2 * time.Second):
-			t.Errorf("cleanup: actor did not shut down")
-			return
-		}
-		for _, done := range drained {
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				t.Errorf("cleanup: private reply drainer did not join")
-			}
-		}
+		_, closeDone := startTrackedClose(actor)
+		allJoins := []cleanupJoin{{name: "actor shutdown", done: actor.done}, {name: "cleanup Close wrapper", done: closeDone}}
+		allJoins = append(allJoins, (*joins)...)
+		allJoins = append(allJoins, drainerJoins...)
+		reportCleanupDiagnostics(t, runActorCleanup(nil, allJoins, 2*time.Second))
 	})
 }
 
@@ -261,28 +256,30 @@ func TestActorCreatedTreeInternalDiscardOrdering(t *testing.T) {
 			actor := newActor(sessionCtx, ordering.generate, ordering.cleanup)
 			callerCtx, stopCaller := context.WithCancel(context.Background())
 			var privateReplies []<-chan applyReply
-			registerOrderingRecovery(t, actor, ordering, stopCaller, stopSession, &privateReplies)
-			first := directApply(t, actor, callerCtx, createdProposal(ordering))
+			var joins []cleanupJoin
+			registerOrderingRecovery(t, actor, ordering, stopCaller, stopSession, &privateReplies, &joins)
+			first := directApply(t, actor, callerCtx, createdProposal(ordering), &joins)
 			privateReplies = append(privateReplies, first.reply)
 			ordering.firstReply = first.reply
 			ordering.next(t, "reading-created-data")
 			assertUnpublished(t, actor)
 
 			var replacement *applyCommand
-			var closeDone chan error
+			var closeDone <-chan error
 			switch test.kind {
 			case "supersede":
 				replacement = directApply(t, actor, context.Background(), testProposal(
 					0, testState("/replacement", protocol.ModeNormal, "replacement"), true, protocol.Effect{},
-				))
+				), &joins)
 				privateReplies = append(privateReplies, replacement.reply)
 			case "caller":
 				stopCaller()
 			case "session":
 				stopSession()
 			case "close":
-				closeDone = make(chan error, 1)
-				go func() { closeDone <- actor.Close() }()
+				var done <-chan struct{}
+				closeDone, done = startTrackedClose(actor)
+				joins = append(joins, cleanupJoin{name: "ordering Close wrapper", done: done})
 			}
 
 			ordering.next(t, "cancel-observed")
@@ -371,43 +368,49 @@ func TestActorCreatedTreeDiscardOrdering(t *testing.T) {
 			actor := newActor(sessionCtx, ordering.generate, ordering.cleanup)
 			callerCtx, stopCaller := context.WithCancel(context.Background())
 			var privateReplies []<-chan applyReply
-			registerOrderingRecovery(t, actor, ordering, stopCaller, stopSession, &privateReplies)
-			pending := asyncApply(actor, callerCtx, createdProposal(ordering))
+			var joins []cleanupJoin
+			registerOrderingRecovery(t, actor, ordering, stopCaller, stopSession, &privateReplies, &joins)
+			pending := startTrackedApply(actor, callerCtx, createdProposal(ordering))
+			joins = append(joins, cleanupJoin{name: "original public Apply wrapper", done: pending.done})
 			ordering.next(t, "reading-created-data")
 			assertUnpublished(t, actor)
 
-			var replacement <-chan applyOutcome
-			var closeDone chan error
+			var replacement trackedApply
+			var hasReplacement bool
+			var closeDone <-chan error
 			switch test.kind {
 			case "supersede":
-				replacement = asyncApply(actor, context.Background(), testProposal(
+				replacement = startTrackedApply(actor, context.Background(), testProposal(
 					0, testState("/replacement", protocol.ModeNormal, "replacement"), true, protocol.Effect{},
 				))
+				hasReplacement = true
+				joins = append(joins, cleanupJoin{name: "replacement public Apply wrapper", done: replacement.done})
 			case "caller":
 				stopCaller()
 			case "session":
 				stopSession()
 			case "close":
-				closeDone = make(chan error, 1)
-				go func() { closeDone <- actor.Close() }()
+				var done <-chan struct{}
+				closeDone, done = startTrackedClose(actor)
+				joins = append(joins, cleanupJoin{name: "ordering Close wrapper", done: done})
 			}
 
 			ordering.next(t, "cancel-observed")
-			assertNoPublicApplyResult(t, "Apply before generator release", pending)
-			if replacement != nil {
-				assertNoPublicApplyResult(t, "replacement before generator release", replacement)
+			assertNoPublicApplyResult(t, "Apply before generator release", pending.result)
+			if hasReplacement {
+				assertNoPublicApplyResult(t, "replacement before generator release", replacement.result)
 			}
 			ordering.release.Open()
 			ordering.next(t, "generation-complete")
 			ordering.next(t, "rollback-started")
-			assertNoPublicApplyResult(t, "Apply during rollback", pending)
-			if replacement != nil {
-				assertNoPublicApplyResult(t, "replacement during rollback", replacement)
+			assertNoPublicApplyResult(t, "Apply during rollback", pending.result)
+			if hasReplacement {
+				assertNoPublicApplyResult(t, "replacement during rollback", replacement.result)
 			}
 			ordering.allowRollback.Open()
 			ordering.next(t, "rollback-complete")
 
-			outcome := awaitApply(t, pending)
+			outcome := awaitApply(t, pending.result)
 			if !errors.Is(outcome.err, test.want) || outcome.result.Snapshot.Generation() != 0 ||
 				outcome.result.Effect != (protocol.Effect{}) {
 				t.Fatalf("Apply() = %+v", outcome)
@@ -415,7 +418,7 @@ func TestActorCreatedTreeDiscardOrdering(t *testing.T) {
 			switch test.kind {
 			case "supersede":
 				ordering.next(t, "replacement-start")
-				assertDiscardReply(t, applyReply(awaitApply(t, replacement)), fs.ErrPermission)
+				assertDiscardReply(t, applyReply(awaitApply(t, replacement.result)), fs.ErrPermission)
 				assertUnpublished(t, actor)
 				if err := actor.Close(); err != nil {
 					t.Fatal(err)

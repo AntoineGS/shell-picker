@@ -27,55 +27,46 @@ func exactlyOneCollectedReply[T any](t *testing.T, name string, collector *reply
 }
 
 func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testing.T) {
-	actor, generator := initializeActor(t)
+	actor, generator := initializeTrackedActor(t)
 	blockedProposal := testProposal(
 		1, testState("/blocked", protocol.ModeNormal, "blocked"), true,
 		protocol.Effect{Accept: true, ClearQuery: true},
 	)
-	blocked := asyncApply(actor, context.Background(), blockedProposal)
+	blocked := startTrackedApply(actor, context.Background(), blockedProposal)
 	blockedCall := generator.Next(t)
 	startGate := newOnceGate()
 	var completion sync.Once
 	var callers sync.WaitGroup
-	var spawned sync.WaitGroup
 	var cancels []context.CancelFunc
+	var joins []cleanupJoin
+	joins = append(joins, cleanupJoin{name: "original public Apply wrapper", done: blocked.done})
 	finishGeneration := func() {
 		completion.Do(func() { blockedCall.Complete(nil, context.Canceled) })
 	}
 	t.Cleanup(func() {
-		for _, cancel := range cancels {
-			cancel()
+		actions := []func(){
+			func() {
+				for _, cancel := range cancels {
+					cancel()
+				}
+			},
+			startGate.Open,
+			finishGeneration,
 		}
-		startGate.Open()
-		finishGeneration()
-		shutdown := make(chan struct{})
-		go func() {
-			_ = actor.Close()
-			close(shutdown)
-		}()
-		select {
-		case <-shutdown:
-		case <-time.After(2 * time.Second):
-			t.Errorf("cleanup: public contention actor did not shut down")
-			return
+		for _, action := range actions {
+			action()
 		}
-		joined := make(chan struct{})
-		go func() {
-			callers.Wait()
-			spawned.Wait()
-			close(joined)
-		}()
-		select {
-		case <-joined:
-		case <-time.After(2 * time.Second):
-			t.Errorf("cleanup: public contention goroutines did not join")
-		}
+		_, cleanupCloseDone := startTrackedClose(actor)
+		cleanupJoins := []cleanupJoin{{name: "actor shutdown", done: actor.done}, {name: "cleanup Close wrapper", done: cleanupCloseDone}}
+		cleanupJoins = append(cleanupJoins, joins...)
+		reportCleanupDiagnostics(t, runActorCleanup(nil, cleanupJoins, 2*time.Second))
 	})
 
-	replacement := asyncApply(actor, context.Background(), testProposal(
+	replacement := startTrackedApply(actor, context.Background(), testProposal(
 		1, testState("/replacement", protocol.ModeNormal, "replacement"), true,
 		protocol.Effect{ClearMulti: true},
 	))
+	joins = append(joins, cleanupJoin{name: "replacement public Apply wrapper", done: replacement.done})
 	select {
 	case <-blockedCall.ctx.Done():
 	case <-time.After(2 * time.Second):
@@ -102,16 +93,23 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 			replies <- contentionReply{id: id, outcome: applyOutcome{result: result, err: err}}
 		}()
 	}
+	callersDone := make(chan struct{})
+	go func() {
+		callers.Wait()
+		close(callersDone)
+	}()
+	joins = append(joins, cleanupJoin{name: "excess public Apply wrappers", done: callersDone})
 	startGate.Open()
 	for id := 0; id < excess; id += 2 {
 		cancels[id]()
 	}
 	closed := make(chan error, 1)
-	spawned.Add(1)
+	closeWrapperDone := make(chan struct{})
 	go func() {
-		defer spawned.Done()
+		defer close(closeWrapperDone)
 		closed <- actor.Close()
 	}()
+	joins = append(joins, cleanupJoin{name: "contention Close wrapper", done: closeWrapperDone})
 
 	seen := make([]bool, excess)
 	for range excess {
@@ -133,15 +131,8 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 			t.Fatal("excess Apply did not receive a bounded reply")
 		}
 	}
-	joined := make(chan struct{})
-	spawned.Add(1)
-	go func() {
-		defer spawned.Done()
-		callers.Wait()
-		close(joined)
-	}()
 	select {
-	case <-joined:
+	case <-callersDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Apply caller goroutines did not exit")
 	}
@@ -152,9 +143,9 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 	}
 
 	closeAccepted := make(chan error, 1)
-	spawned.Add(1)
+	closeObserverDone := make(chan struct{})
 	go func() {
-		defer spawned.Done()
+		defer close(closeObserverDone)
 		for {
 			_, currentErr := actor.Current(context.Background())
 			if errors.Is(currentErr, ErrClosed) {
@@ -168,6 +159,7 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 			runtime.Gosched()
 		}
 	}()
+	joins = append(joins, cleanupJoin{name: "Close acceptance observer", done: closeObserverDone})
 	select {
 	case err := <-closeAccepted:
 		if err != nil {
@@ -178,12 +170,12 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 	}
 
 	completion.Do(func() { blockedCall.Complete([]candidate.Record{testRecord("stale", "/stale")}, nil) })
-	blockedOutcome := awaitApply(t, blocked)
+	blockedOutcome := awaitApply(t, blocked.result)
 	if !errors.Is(blockedOutcome.err, ErrSuperseded) || blockedOutcome.result.Snapshot.Generation() != 0 ||
 		blockedOutcome.result.Effect != (protocol.Effect{}) {
 		t.Fatalf("blocked Apply = %+v", blockedOutcome)
 	}
-	replacementOutcome := awaitApply(t, replacement)
+	replacementOutcome := awaitApply(t, replacement.result)
 	if !errors.Is(replacementOutcome.err, ErrClosed) || replacementOutcome.result.Snapshot.Generation() != 0 ||
 		replacementOutcome.result.Effect != (protocol.Effect{}) {
 		t.Fatalf("replacement Apply = %+v", replacementOutcome)
@@ -222,73 +214,49 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 	var closeCollector *replyCollector[error]
 	submissionGate := newOnceGate()
 	t.Cleanup(func() {
-		submissionGate.Open()
-		for _, cancel := range commandCancels {
-			cancel()
+		actions := []func(){
+			submissionGate.Open,
+			func() {
+				for _, cancel := range commandCancels {
+					cancel()
+				}
+			},
+			func() {
+				if blockedCall != nil {
+					completion.Do(func() { blockedCall.Complete(nil, context.Canceled) })
+				}
+			},
 		}
-		if blockedCall != nil {
-			completion.Do(func() { blockedCall.Complete(nil, context.Canceled) })
+		for _, action := range actions {
+			action()
 		}
-		shutdown := make(chan struct{})
-		go func() {
-			_ = actor.Close()
-			close(shutdown)
-		}()
-		select {
-		case <-shutdown:
-		case <-time.After(2 * time.Second):
-			t.Errorf("cleanup: actor did not shut down")
-			return
-		}
-		joined := make(chan struct{})
+		_, closeDone := startTrackedClose(actor)
+		submittersDone := make(chan struct{})
 		go func() {
 			submitters.Wait()
-			close(joined)
+			close(submittersDone)
 		}()
-		select {
-		case <-joined:
-		case <-time.After(2 * time.Second):
-			t.Errorf("cleanup: command submitters did not join")
+		joins := []cleanupJoin{
+			{name: "actor shutdown", done: actor.done},
+			{name: "cleanup Close wrapper", done: closeDone},
+			{name: "command submitters", done: submittersDone},
 		}
 		for _, collector := range applyCollectors {
-			collector.stop.Open()
-			select {
-			case <-collector.done:
-			case <-time.After(2 * time.Second):
-				t.Errorf("cleanup: Apply reply collector did not join")
-			}
-		}
-		collectorStops := []struct {
-			name string
-			done <-chan struct{}
-		}{
-			{name: "Current"},
-			{name: "Snapshot"},
-			{name: "ResolveCurrent"},
-			{name: "Close"},
+			joins = append(joins, cleanupJoin{name: "Apply reply collector", done: collector.done, before: collector.stop.Open})
 		}
 		if currentCollector != nil {
-			collectorStops[0].done = currentCollector.Stop()
+			joins = append(joins, cleanupJoin{name: "Current reply collector", done: currentCollector.done, before: currentCollector.stop.Open})
 		}
 		if snapshotCollector != nil {
-			collectorStops[1].done = snapshotCollector.Stop()
+			joins = append(joins, cleanupJoin{name: "Snapshot reply collector", done: snapshotCollector.done, before: snapshotCollector.stop.Open})
 		}
 		if resolveCollector != nil {
-			collectorStops[2].done = resolveCollector.Stop()
+			joins = append(joins, cleanupJoin{name: "ResolveCurrent reply collector", done: resolveCollector.done, before: resolveCollector.stop.Open})
 		}
 		if closeCollector != nil {
-			collectorStops[3].done = closeCollector.Stop()
+			joins = append(joins, cleanupJoin{name: "Close reply collector", done: closeCollector.done, before: closeCollector.stop.Open})
 		}
-		for _, collector := range collectorStops {
-			if collector.done == nil {
-				continue
-			}
-			select {
-			case <-collector.done:
-			case <-time.After(2 * time.Second):
-				t.Errorf("cleanup: %s reply collector did not join", collector.name)
-			}
-		}
+		reportCleanupDiagnostics(t, runActorCleanup(nil, joins, 2*time.Second))
 	})
 	submit := func(command any) {
 		t.Helper()
