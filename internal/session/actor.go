@@ -3,14 +3,11 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"sync"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
-	"github.com/AntoineGS/shell-picker/internal/pathutil"
-	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
 
 var (
@@ -31,9 +28,14 @@ type Actor struct {
 	closeWait chan struct{}
 	closeErr  error
 	finalErr  error
+	cleanup   cleanupFunc
 }
 
 func New(ctx context.Context, generate GenerateFunc) *Actor {
+	return newActor(ctx, generate, rollback)
+}
+
+func newActor(ctx context.Context, generate GenerateFunc, cleanup cleanupFunc) *Actor {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -41,6 +43,7 @@ func New(ctx context.Context, generate GenerateFunc) *Actor {
 		commands:  make(chan any),
 		done:      make(chan struct{}),
 		closeWait: make(chan struct{}),
+		cleanup:   cleanup,
 	}
 	go actor.run(ctx, generate)
 	return actor
@@ -146,7 +149,7 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 	var nextID uint64
 	sessionDone := sessionCtx.Done()
 	replyApplyError := func(command *applyCommand, err error) {
-		err = errors.Join(err, rollback(command.proposal.Created))
+		err = errors.Join(err, actor.cleanup(command.proposal.Created))
 		command.reply <- applyReply{err: err}
 	}
 
@@ -321,30 +324,4 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 			}
 		}
 	}
-}
-
-func transitionResult(snapshot Snapshot, command *applyCommand, accepted time.Time, effect protocol.Effect, sources candidate.SourceMetrics) TransitionResult {
-	return TransitionResult{
-		Snapshot: cloneSnapshot(snapshot), Effect: effect,
-		Metrics: TransitionMetrics{QueueWait: accepted.Sub(command.submitted), TransformDuration: time.Since(command.submitted), Sources: sources},
-	}
-}
-
-func buildIndex(records []candidate.Record) map[string][]int {
-	index := make(map[string][]int, len(records))
-	for position, record := range records {
-		key := record.FullKey()
-		index[key] = append(index[key], position)
-	}
-	return index
-}
-
-func rollback(created *pathutil.CreatedTree) error {
-	if created == nil {
-		return nil
-	}
-	if err := created.Rollback(); err != nil {
-		return fmt.Errorf("rollback proposed transition: %w", err)
-	}
-	return nil
 }

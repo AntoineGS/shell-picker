@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
@@ -20,6 +21,8 @@ type State struct {
 }
 
 type GenerateFunc func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error)
+
+type cleanupFunc func(*pathutil.CreatedTree) error
 
 type Snapshot struct {
 	generation   uint64
@@ -183,4 +186,30 @@ func cloneIndex(index map[string][]int) map[string][]int {
 		cloned[key] = append([]int(nil), positions...)
 	}
 	return cloned
+}
+
+func transitionResult(snapshot Snapshot, command *applyCommand, accepted time.Time, effect protocol.Effect, sources candidate.SourceMetrics) TransitionResult {
+	return TransitionResult{
+		Snapshot: cloneSnapshot(snapshot), Effect: effect,
+		Metrics: TransitionMetrics{QueueWait: accepted.Sub(command.submitted), TransformDuration: time.Since(command.submitted), Sources: sources},
+	}
+}
+
+func buildIndex(records []candidate.Record) map[string][]int {
+	index := make(map[string][]int, len(records))
+	for position, record := range records {
+		key := record.FullKey()
+		index[key] = append(index[key], position)
+	}
+	return index
+}
+
+func rollback(created *pathutil.CreatedTree) error {
+	if created == nil {
+		return nil
+	}
+	if err := created.Rollback(); err != nil {
+		return fmt.Errorf("rollback proposed transition: %w", err)
+	}
+	return nil
 }
