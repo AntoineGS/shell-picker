@@ -17,6 +17,30 @@ type contentionReply struct {
 	outcome applyOutcome
 }
 
+func cardinalityApply(actor *Actor, ctx context.Context, proposal ProposedTransition) *applyCommand {
+	command := &applyCommand{
+		ctx: ctx, proposal: cloneProposal(proposal), submitted: time.Now(), reply: make(chan applyReply, 2),
+	}
+	actor.commands <- command
+	return command
+}
+
+func exactlyOneReply[T any](t *testing.T, name string, replies <-chan T) T {
+	t.Helper()
+	var reply T
+	select {
+	case reply = <-replies:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("%s received no reply", name)
+	}
+	select {
+	case duplicate := <-replies:
+		t.Fatalf("%s received duplicate reply: %+v", name, duplicate)
+	default:
+	}
+	return reply
+}
+
 func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testing.T) {
 	actor, generator := initializeActor(t)
 	blockedProposal := testProposal(
@@ -153,5 +177,118 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 	case <-actor.done:
 	default:
 		t.Fatal("actor goroutine leaked after Close")
+	}
+}
+
+func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.T) {
+	generator := newControlledGenerator()
+	actor := New(context.Background(), generator.Generate)
+	blocked := cardinalityApply(actor, context.Background(), testProposal(
+		0, testState("/blocked", protocol.ModeNormal, "blocked"), true, protocol.Effect{Accept: true},
+	))
+	blockedCall := generator.Next(t)
+	replacement := cardinalityApply(actor, context.Background(), testProposal(
+		0, testState("/replacement", protocol.ModeNormal, "replacement"), true, protocol.Effect{ClearMulti: true},
+	))
+	select {
+	case <-blockedCall.ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement did not retire blocked generation")
+	}
+
+	const excess = 64
+	commands := make([]*applyCommand, excess)
+	accepted := make(chan int, excess)
+	start := make(chan struct{})
+	for id := range excess {
+		ctx, cancel := context.WithCancel(context.Background())
+		if id%2 == 0 {
+			cancel()
+		} else {
+			defer cancel()
+		}
+		commands[id] = &applyCommand{
+			ctx: ctx,
+			proposal: cloneProposal(testProposal(
+				0, testState("/excess", protocol.ModeNormal, "excess"), true, protocol.Effect{Accept: true},
+			)),
+			submitted: time.Now(),
+			reply:     make(chan applyReply, 2),
+		}
+		go func() {
+			<-start
+			actor.commands <- commands[id]
+			accepted <- id
+		}()
+	}
+	close(start)
+	seenAccepted := make([]bool, excess)
+	for range excess {
+		select {
+		case id := <-accepted:
+			if seenAccepted[id] {
+				t.Fatalf("command %d accepted twice", id)
+			}
+			seenAccepted[id] = true
+		case <-time.After(2 * time.Second):
+			t.Fatal("private Apply command was not accepted")
+		}
+	}
+
+	current := currentCommand{ctx: context.Background(), reply: make(chan snapshotReply, 2)}
+	actor.commands <- current
+	snapshot := snapshotCommand{ctx: context.Background(), generation: 0, reply: make(chan snapshotReply, 2)}
+	actor.commands <- snapshot
+	resolve := resolveCommand{ctx: context.Background(), key: "forged", reply: make(chan resolveReply, 2)}
+	actor.commands <- resolve
+	closeRequest := closeCommand{reply: make(chan error, 2)}
+	actor.commands <- closeRequest
+	blockedCall.Complete([]candidate.Record{testRecord("stale", "/stale")}, nil)
+	select {
+	case <-actor.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("actor did not exit after completion and Close")
+	}
+
+	blockedReply := exactlyOneReply(t, "blocked Apply", blocked.reply)
+	if !errors.Is(blockedReply.err, ErrSuperseded) {
+		t.Fatalf("blocked Apply = %v", blockedReply.err)
+	}
+	replacementReply := exactlyOneReply(t, "replacement Apply", replacement.reply)
+	if !errors.Is(replacementReply.err, ErrClosed) {
+		t.Fatalf("replacement Apply = %v", replacementReply.err)
+	}
+	for id, command := range commands {
+		reply := exactlyOneReply(t, "excess Apply", command.reply)
+		if id%2 == 0 {
+			if !errors.Is(reply.err, context.Canceled) {
+				t.Fatalf("canceled Apply %d = %v", id, reply.err)
+			}
+		} else if !errors.Is(reply.err, ErrTransitionPending) {
+			t.Fatalf("excess Apply %d = %v", id, reply.err)
+		}
+	}
+	currentReply := exactlyOneReply(t, "Current", current.reply)
+	if currentReply.err != nil || currentReply.snapshot.Generation() != 0 {
+		t.Fatalf("Current = %+v", currentReply)
+	}
+	snapshotReply := exactlyOneReply(t, "Snapshot", snapshot.reply)
+	if snapshotReply.err != nil || snapshotReply.snapshot.Generation() != 0 {
+		t.Fatalf("Snapshot = %+v", snapshotReply)
+	}
+	resolveReply := exactlyOneReply(t, "ResolveCurrent", resolve.reply)
+	if !errors.Is(resolveReply.err, ErrUnknownRecord) {
+		t.Fatalf("ResolveCurrent = %+v", resolveReply)
+	}
+	if err := exactlyOneReply(t, "Close", closeRequest.reply); err != nil {
+		t.Fatalf("Close = %v", err)
+	}
+	select {
+	case call := <-generator.started:
+		t.Fatalf("queued replacement started: %q", call.request.Location.Path)
+	default:
+	}
+	if err := actor.Close(); err != nil {
+		t.Fatalf("idempotent Close = %v", err)
 	}
 }
