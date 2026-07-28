@@ -54,6 +54,57 @@ func TestWindowsRelativeAndValidation(t *testing.T) {
 	}
 }
 
+func TestWindowsUNCNavigationPure(t *testing.T) {
+	t.Run("parent child", func(t *testing.T) {
+		got := parentWindows(Filesystem([]byte(`\\server\share\team\project`)))
+		if got.Kind != KindFilesystem || string(got.Path) != `\\server\share\team` {
+			t.Fatalf("parent=%+v", got)
+		}
+	})
+
+	t.Run("relative within share", func(t *testing.T) {
+		got := relativeWindows([]byte(`\\server\share\team`), []byte(`\\SERVER\SHARE\team\project\child`))
+		if string(got) != `project\child` {
+			t.Fatalf("relative=%q", got)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		base   []byte
+		target []byte
+	}{
+		{"cross share", []byte(`\\server\share-a\team`), []byte(`\\server\share-b\project`)},
+		{"cross server", []byte(`\\server-a\share\team`), []byte(`\\server-b\share\project`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := relativeWindows(tc.base, tc.target)
+			if !reflect.DeepEqual(got, tc.target) {
+				t.Fatalf("relative=%q want unchanged %q", got, tc.target)
+			}
+			got[0] = 'X'
+			if tc.target[0] != '\\' {
+				t.Fatal("cross-volume result aliases target bytes")
+			}
+		})
+	}
+}
+
+func TestWindowsUNCMixedAndRepeatedSeparatorsPure(t *testing.T) {
+	parent := parentWindows(Filesystem([]byte(`\\server/share\\team//project\\`)))
+	if parent.Kind != KindFilesystem || string(parent.Path) != `\\server\share\team` {
+		t.Fatalf("parent=%+v", parent)
+	}
+
+	relative := relativeWindows(
+		[]byte(`\\server/share\\team\`),
+		[]byte(`\\SERVER\SHARE/team\\project//child`),
+	)
+	if string(relative) != `project\child` {
+		t.Fatalf("relative=%q", relative)
+	}
+}
+
 func TestListDrivesAscending(t *testing.T) {
 	drives, err := ListDrives()
 	if err != nil {
@@ -104,6 +155,34 @@ func TestCreateDirectoryTreeRejectsJunctionInBaseAncestry(t *testing.T) {
 	hidden := filepath.Dir(base) + `\..\target\base`
 	if _, err := CreateDirectoryTree(Filesystem([]byte(hidden)), []byte(`child`)); !errors.Is(err, ErrUnsafeTraversal) {
 		t.Fatalf("dot-dot-hidden junction err=%v", err)
+	}
+}
+
+func TestCreateDirectoryTreeRejectsJunctionInQueryComponent(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "base")
+	target := filepath.Join(root, "target")
+	junction := filepath.Join(base, "link")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(target, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(junction, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := createJunction(junction, target); err != nil {
+		t.Fatalf("create junction: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(junction); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove junction: %v", err)
+		}
+	})
+
+	if _, err := CreateDirectoryTree(Filesystem([]byte(base)), []byte(`link\child`)); !errors.Is(err, ErrUnsafeTraversal) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
