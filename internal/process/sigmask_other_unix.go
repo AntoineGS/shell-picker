@@ -13,4 +13,5 @@ const (
 
 var pthreadSigmask = func(int, *threadSigset, *threadSigset) error { return syscall.ENOTSUP }
 
-func sigttouMask() threadSigset { return 1 << (uint(syscall.SIGTTOU) - 1) }
+func sigttouMask() threadSigset                { return 1 << (uint(syscall.SIGTTOU) - 1) }
+func platformForegroundRestoreSupported() bool { return false }

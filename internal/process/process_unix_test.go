@@ -94,6 +94,65 @@ func TestInheritedTreeCancellationKillsCallbackGroup(t *testing.T) {
 	assertProcessGoneWithin(t, pid, 3*time.Second)
 }
 
+func TestProcessGroupLeaderRemainsUnreapedThroughCleanup(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux zombie-state lifecycle assertion")
+	}
+	stream := newBlockingStream()
+	spec := helperSpec("print-args", "x")
+	spec.Stdout, spec.WaitDelay = stream, 50*time.Millisecond
+	child, err := (Runner{}).Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-stream.blocked
+	<-child.observedExit
+	if !processZombie(child.PID()) {
+		t.Fatalf("pid %d was reaped before pump cleanup", child.PID())
+	}
+	if err := child.KillTree(); err != nil {
+		t.Fatalf("KillTree in exit-cleanup window: %v", err)
+	}
+	if err := child.Wait(); !errors.Is(err, ErrWaitDelay) {
+		t.Fatalf("Wait=%v", err)
+	}
+	assertProcessGoneWithin(t, child.PID(), time.Second)
+}
+
+func TestForegroundRejectedBeforeLaunchWhenMaskUnsupported(t *testing.T) {
+	original := foregroundRestoreSupported
+	foregroundRestoreSupported = func() bool { return false }
+	defer func() { foregroundRestoreSupported = original }()
+	file, err := os.Open("/dev/null")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var events []ProcessEvent
+	_, err = (Runner{Observe: func(event ProcessEvent) { events = append(events, event) }}).Start(context.Background(),
+		Spec{Path: os.Args[0], Containment: ContainmentForegroundTree, ForegroundTTY: file})
+	if err == nil || len(events) != 0 {
+		t.Fatalf("err=%v events=%+v", err, events)
+	}
+}
+
+func TestSIGTTOUMaskSetsNumericSignalBit(t *testing.T) {
+	mask := sigttouMask()
+	root := reflect.ValueOf(mask)
+	if root.Kind() != reflect.Struct {
+		t.Skip("platform sigset has no word struct")
+	}
+	value := root.FieldByName("Val")
+	if !value.IsValid() {
+		t.Skip("platform sigset has no Val words")
+	}
+	index := int(syscall.SIGTTOU) - 1
+	wordBits := int(value.Index(0).Type().Bits())
+	if value.Index(index/wordBits).Uint()&(uint64(1)<<uint(index%wordBits)) == 0 {
+		t.Fatalf("SIGTTOU bit absent from %+v", mask)
+	}
+}
+
 type foregroundTTYReport struct {
 	ParentTTYFD                  int    `json:"parent_tty_fd"`
 	ChildTTYFD                   int    `json:"child_tty_fd"`

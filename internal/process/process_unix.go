@@ -44,12 +44,20 @@ type Child struct {
 	pgid          int
 }
 
+var foregroundRestoreSupported = platformForegroundRestoreSupported
+
 func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 	if err := validateSpec(ctx, spec); err != nil {
 		return nil, err
 	}
 	if spec.Containment == ContainmentForegroundTree && spec.ForegroundTTY == nil {
 		return nil, errors.New("process: foreground containment requires a terminal")
+	}
+	if spec.Containment == ContainmentForegroundTree && !foregroundRestoreSupported() {
+		return nil, fmt.Errorf("process: foreground containment unsupported on %s", runtime.GOOS)
+	}
+	if !nonReapingExitSupported() {
+		return nil, fmt.Errorf("process: lifecycle containment unsupported on %s", runtime.GOOS)
 	}
 	observe(r.Observe, "attempt", spec.Path, 0)
 	path, err := exec.LookPath(spec.Path)
@@ -144,7 +152,7 @@ func (c *Child) Wait() error {
 	didWait := false
 	c.waitOnce.Do(func() {
 		didWait = true
-		waitErr := <-c.result
+		observeErr := <-c.result
 		<-c.watchDone
 		c.lifeMu.Lock()
 		cancelErr := c.cancelErr
@@ -152,6 +160,13 @@ func (c *Child) Wait() error {
 		timedOut, pumpErr := c.joinPumps()
 		if c.containment == ContainmentForegroundTree {
 			_ = restoreForegroundPGR(c.ttyFD, c.previousPGR)
+		}
+		c.lifeMu.Lock()
+		c.targetValid = false
+		c.lifeMu.Unlock()
+		waitErr := c.cmd.Wait()
+		if waitErr == nil && observeErr != nil {
+			waitErr = observeErr
 		}
 		if cancelErr != nil {
 			c.waitErr = cancelErr
@@ -164,9 +179,6 @@ func (c *Child) Wait() error {
 				}
 			}
 		}
-		c.lifeMu.Lock()
-		c.targetValid = false
-		c.lifeMu.Unlock()
 		observe(c.observe, "exit", c.path, c.PID())
 	})
 	if !didWait {
@@ -176,11 +188,18 @@ func (c *Child) Wait() error {
 }
 
 func (c *Child) reap() {
-	err := c.cmd.Wait()
+	err := observeProcessExit(c.PID())
 	c.lifeMu.Lock()
+	if err != nil {
+		_ = c.killTreeLocked()
+		c.targetValid = false
+	}
 	c.processExited = true
 	close(c.observedExit)
 	c.lifeMu.Unlock()
+	if err != nil {
+		c.streams.emergencyClose()
+	}
 	c.result <- err
 }
 

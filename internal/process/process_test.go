@@ -334,6 +334,24 @@ func TestOrdinaryCompletionDoesNotClosePumpedCloser(t *testing.T) {
 	}
 }
 
+func TestEmergencyCloserDedupHandlesNonComparableInterfaceField(t *testing.T) {
+	state := &trickyCloserState{blocked: make(chan struct{}), closed: make(chan struct{})}
+	stream := trickyCloser{state: state, payload: []int{1, 2, 3}}
+	spec := helperSpec("both-streams")
+	spec.Stdout, spec.Stderr, spec.WaitDelay = stream, stream, 50*time.Millisecond
+	child, err := (Runner{}).Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-state.blocked
+	if err := child.Wait(); !errors.Is(err, ErrWaitDelay) {
+		t.Fatalf("wait=%v", err)
+	}
+	if state.closeCalls.Load() != 1 {
+		t.Fatalf("close calls=%d", state.closeCalls.Load())
+	}
+}
+
 func TestKillTreeAfterWaitAndConcurrentCallsAreSafe(t *testing.T) {
 	child, err := (Runner{}).Start(context.Background(), helperSpec("exit", "0"))
 	if err != nil {
@@ -407,6 +425,29 @@ type finiteCloser struct {
 }
 
 func (s *finiteCloser) Close() error { s.closeCalls.Add(1); return nil }
+
+type trickyCloserState struct {
+	blocked    chan struct{}
+	closed     chan struct{}
+	blockOnce  sync.Once
+	closeOnce  sync.Once
+	closeCalls atomic.Int32
+}
+type trickyCloser struct {
+	state   *trickyCloserState
+	payload any
+}
+
+func (s trickyCloser) Write([]byte) (int, error) {
+	s.state.blockOnce.Do(func() { close(s.state.blocked) })
+	<-s.state.closed
+	return 0, errors.New("closed")
+}
+func (s trickyCloser) Close() error {
+	s.state.closeCalls.Add(1)
+	s.state.closeOnce.Do(func() { close(s.state.closed) })
+	return nil
+}
 
 func TestStartRejectsInvalidSpec(t *testing.T) {
 	for _, spec := range []Spec{{Path: os.Args[0], Containment: 99},

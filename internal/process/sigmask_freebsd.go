@@ -30,3 +30,4 @@ func sigttouMask() (mask threadSigset) {
 	mask[index/32] = 1 << (index % 32)
 	return mask
 }
+func platformForegroundRestoreSupported() bool { return true }

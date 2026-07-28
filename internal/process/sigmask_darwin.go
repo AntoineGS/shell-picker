@@ -25,4 +25,5 @@ func darwinPthreadSigmask(how int, set, old *threadSigset) error {
 	return nil
 }
 
-func sigttouMask() threadSigset { return 1 << (uint(syscall.SIGTTOU) - 1) }
+func sigttouMask() threadSigset                { return 1 << (uint(syscall.SIGTTOU) - 1) }
+func platformForegroundRestoreSupported() bool { return true }

@@ -115,10 +115,10 @@ func sameObject(a, b any) bool {
 	if !av.IsValid() || !bv.IsValid() || av.Type() != bv.Type() {
 		return false
 	}
-	if av.Type().Comparable() {
+	if av.Comparable() && bv.Comparable() {
 		return av.Interface() == bv.Interface()
 	}
-	return av.Kind() == reflect.Pointer && av.Pointer() == bv.Pointer()
+	return reflect.DeepEqual(a, b)
 }
 
 type serializedWriter struct {
