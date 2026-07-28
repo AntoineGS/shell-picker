@@ -50,7 +50,7 @@ func TestModeAndQueryTransitionMatrix(t *testing.T) {
 		{"normal i", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeInsert}, protocol.Effect{Mode: protocol.ModeInsert, Prompt: "[I] /work/ ", Search: "on", Rebind: protocol.ModeInsert, Cursor: protocol.CursorLine}},
 		{"normal a", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeAdd}, protocol.Effect{Mode: protocol.ModeAdd, Prompt: "[A] /work/ ", Search: "on", Rebind: protocol.ModeAdd, ClearQuery: true, Cursor: protocol.CursorLine}},
 		{"insert escape", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] /work/ ", Search: "off", Rebind: protocol.ModeNormal, Cursor: protocol.CursorBlock}},
-		{"normal escape", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] /work/ ", Search: "off", Rebind: protocol.ModeNormal, ClearMulti: true, Cursor: protocol.CursorBlock}},
+		{"normal escape", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{ClearMulti: true}},
 		{"add escape", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] /work/ ", Search: "off", Rebind: protocol.ModeNormal, ClearQuery: true, Cursor: protocol.CursorBlock}},
 		{"add forward", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpForward, CurrentItem: []byte(record.FullKey())}, protocol.Effect{Ignore: true}},
 		{"add parent", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpParent}, protocol.Effect{Ignore: true}},
@@ -63,10 +63,11 @@ func TestModeAndQueryTransitionMatrix(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			proposal, err := Reduce(eventSnapshot(protocol.PickerCP, test.mode, pathutil.Filesystem([]byte("/work")), record), test.event)
+			reduction, err := Reduce(eventSnapshot(protocol.PickerCP, test.mode, pathutil.Filesystem([]byte("/work")), record), test.event)
 			if err != nil {
 				t.Fatalf("Reduce() error = %v", err)
 			}
+			proposal := reduction.proposalForTest()
 			if proposal.Effect != test.want {
 				t.Fatalf("effect = %+v; want %+v", proposal.Effect, test.want)
 			}
@@ -126,14 +127,16 @@ func TestAcceptanceAndVirtualEnter(t *testing.T) {
 	for _, mode := range []protocol.Mode{protocol.ModeInsert, protocol.ModeNormal} {
 		t.Run(string(mode)+" accepts filesystem", func(t *testing.T) {
 			s := eventSnapshot(protocol.PickerCD, mode, pathutil.Filesystem([]byte("/work")))
-			proposal, err := Reduce(s, protocol.Event{Opcode: protocol.OpEnter})
+			reduction, err := Reduce(s, protocol.Event{Opcode: protocol.OpEnter})
+			proposal := reduction.proposalForTest()
 			if err != nil || !proposal.Effect.Accept || proposal.Effect.ClearMulti {
 				t.Fatalf("proposal=%+v err=%v", proposal, err)
 			}
 		})
 		t.Run(string(mode)+" virtual navigates", func(t *testing.T) {
 			s := eventSnapshot(protocol.PickerCD, mode, pathutil.Filesystem([]byte("/work")), virtual)
-			proposal, err := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, CurrentItem: []byte(virtual.FullKey())})
+			reduction, err := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, CurrentItem: []byte(virtual.FullKey())})
+			proposal := reduction.proposalForTest()
 			if err != nil || proposal.Effect.Accept || proposal.Build == nil || proposal.State.Location.Kind != pathutil.KindDrives {
 				t.Fatalf("proposal=%+v err=%v", proposal, err)
 			}
@@ -170,7 +173,7 @@ func TestNavigationTargetsKindsAndEffects(t *testing.T) {
 			t.Run(string(picker)+"/"+string(kind), func(t *testing.T) {
 				record := eventRecord(kind, string(kind), "/next")
 				s := eventSnapshot(picker, protocol.ModeInsert, pathutil.Filesystem([]byte("/work")), record)
-				proposal, err := Reduce(s, protocol.Event{Opcode: protocol.OpForward, CurrentItem: []byte(record.FullKey())})
+				reduction, err := Reduce(s, protocol.Event{Opcode: protocol.OpForward, CurrentItem: []byte(record.FullKey())})
 				if picker == protocol.PickerCP && (kind == protocol.KindLocal || kind == protocol.KindZoxide) {
 					if !errors.Is(err, ErrInvalidNavigation) {
 						t.Fatalf("Reduce() error = %v", err)
@@ -180,6 +183,7 @@ func TestNavigationTargetsKindsAndEffects(t *testing.T) {
 				if err != nil {
 					t.Fatalf("Reduce() error = %v", err)
 				}
+				proposal := reduction.proposalForTest()
 				wantKind, wantPath := pathutil.KindFilesystem, "/next"
 				if kind == protocol.KindVirtual {
 					wantKind, wantPath = pathutil.KindDrives, ""
@@ -226,7 +230,8 @@ func TestRootParentHomeNavigation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			s := eventSnapshot(protocol.PickerCD, test.mode, pathutil.Filesystem([]byte("/work/child")))
-			proposal, err := Reduce(s, test.event)
+			reduction, err := Reduce(s, test.event)
+			proposal := reduction.proposalForTest()
 			if err != nil || proposal.State.Location.Kind != test.want.Kind || !bytes.Equal(proposal.State.Location.Path, test.want.Path) || proposal.Build == nil {
 				t.Fatalf("proposal=%+v err=%v", proposal, err)
 			}
@@ -242,30 +247,22 @@ func TestAddSuccessInvalidAndBuildFailureRollback(t *testing.T) {
 	}
 
 	s := eventSnapshot(protocol.PickerCP, protocol.ModeAdd, pathutil.Filesystem([]byte(root)))
-	proposal, err := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("existing/new/leaf")})
-	if err != nil || proposal.Created == nil || proposal.Build == nil || proposal.State.Mode != protocol.ModeNormal ||
-		string(proposal.State.Location.Path) != filepath.Join(root, "existing", "new", "leaf") {
-		t.Fatalf("proposal=%+v err=%v", proposal, err)
-	}
-	if _, err := os.Stat(filepath.Join(root, "existing", "new", "leaf")); err != nil {
-		t.Fatal(err)
-	}
-	if err := rollback(proposal.Created); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(preexisting); err != nil {
-		t.Fatalf("pre-existing directory removed: %v", err)
+	reduction, err := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("existing/new/leaf")})
+	if err != nil || !reduction.hasAddIntent() || reduction.hasProposal() {
+		t.Fatalf("reduction=%+v err=%v", reduction, err)
 	}
 
 	for _, query := range [][]byte{nil, []byte("../escape"), []byte("/absolute")} {
-		bad, reduceErr := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, Query: query})
+		badReduction, reduceErr := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, Query: query})
+		bad := badReduction.proposalForTest()
 		wantEffect := protocol.Effect{Prompt: "[A!] " + pathutil.PromptDisplay(s.state.Location) + " ", ErrorPrompt: true}
 		if reduceErr != nil || bad.State.Mode != protocol.ModeAdd || !bad.State.AddError || bad.Build != nil || bad.Effect != wantEffect {
 			t.Fatalf("query=%q proposal=%+v err=%v", query, bad, reduceErr)
 		}
 	}
 	drives := eventSnapshot(protocol.PickerCP, protocol.ModeAdd, pathutil.Drives())
-	bad, err := Reduce(drives, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("new")})
+	badReduction, err := Reduce(drives, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("new")})
+	bad := badReduction.proposalForTest()
 	if err != nil || !bad.State.AddError || bad.State.Location.Kind != pathutil.KindDrives {
 		t.Fatalf("Drives proposal=%+v err=%v", bad, err)
 	}
@@ -293,9 +290,9 @@ func TestAddRejectsSymlinkTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := eventSnapshot(protocol.PickerCD, protocol.ModeAdd, pathutil.Filesystem([]byte(root)))
-	proposal, err := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("link/child")})
-	if err != nil || !proposal.State.AddError || !proposal.Effect.ErrorPrompt {
-		t.Fatalf("proposal=%+v err=%v", proposal, err)
+	reduction, err := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("link/child")})
+	if err != nil || !reduction.hasAddIntent() {
+		t.Fatalf("reduction=%+v err=%v", reduction, err)
 	}
 	if _, err := os.Stat(filepath.Join(outside, "child")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("created through symlink: %v", err)

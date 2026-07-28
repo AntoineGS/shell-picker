@@ -39,6 +39,17 @@ type ProposedTransition struct {
 	Created        *pathutil.CreatedTree
 }
 
+type AddIntent struct {
+	baseGeneration uint64
+	base           pathutil.Location
+	query          []byte
+}
+
+type Reduction struct {
+	proposal *ProposedTransition
+	add      *AddIntent
+}
+
 type TransitionMetrics struct {
 	QueueWait         time.Duration
 	TransformDuration time.Duration
@@ -166,6 +177,59 @@ func cloneProposal(proposal ProposedTransition) ProposedTransition {
 		proposal.Created = &created
 	}
 	return proposal
+}
+
+func proposalReduction(proposal ProposedTransition) Reduction {
+	cloned := cloneProposal(proposal)
+	return Reduction{proposal: &cloned}
+}
+
+func addReduction(baseGeneration uint64, base pathutil.Location, query []byte) Reduction {
+	return Reduction{add: &AddIntent{
+		baseGeneration: baseGeneration,
+		base:           cloneLocation(base),
+		query:          bytes.Clone(query),
+	}}
+}
+
+func (reduction Reduction) proposalValue() (ProposedTransition, bool) {
+	if reduction.proposal == nil || reduction.add != nil {
+		return ProposedTransition{}, false
+	}
+	return cloneProposal(*reduction.proposal), true
+}
+
+func (reduction Reduction) addIntentValue() (AddIntent, bool) {
+	if reduction.add == nil || reduction.proposal != nil {
+		return AddIntent{}, false
+	}
+	return cloneAddIntent(*reduction.add), true
+}
+
+func (reduction Reduction) hasProposal() bool {
+	_, ok := reduction.proposalValue()
+	return ok
+}
+
+func (reduction Reduction) hasAddIntent() bool {
+	_, ok := reduction.addIntentValue()
+	return ok
+}
+
+func (reduction Reduction) proposalForTest() ProposedTransition {
+	proposal, _ := reduction.proposalValue()
+	return proposal
+}
+
+func (reduction Reduction) addIntentForTest() AddIntent {
+	intent, _ := reduction.addIntentValue()
+	return intent
+}
+
+func cloneAddIntent(intent AddIntent) AddIntent {
+	intent.base = cloneLocation(intent.base)
+	intent.query = bytes.Clone(intent.query)
+	return intent
 }
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {

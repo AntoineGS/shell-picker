@@ -10,6 +10,7 @@ import (
 var (
 	ErrInvalidSelection = errors.New("invalid selection")
 	ErrUnknownSelection = errors.New("selection is not in the current snapshot")
+	ErrInvalidBase      = errors.New("invalid original base")
 )
 
 func ValidateCD(snapshot Snapshot, accepted [][]byte) (protocol.Outcome, error) {
@@ -31,6 +32,9 @@ func ValidateCD(snapshot Snapshot, accepted [][]byte) (protocol.Outcome, error) 
 }
 
 func ValidateCP(snapshot Snapshot, accepted [][]byte, base []byte) (protocol.Outcome, error) {
+	if len(base) == 0 {
+		return protocol.Outcome{}, ErrInvalidBase
+	}
 	if len(accepted) == 0 {
 		return protocol.Outcome{}, ErrInvalidSelection
 	}

@@ -94,3 +94,16 @@ func TestValidateCPRejectsRecordWithoutAuthoritativeFilesystemTarget(t *testing.
 		t.Fatalf("error=%v", err)
 	}
 }
+
+func TestValidateCPRejectsNilAndEmptyBaseBeforeSelection(t *testing.T) {
+	record := eventRecord(protocol.KindFile, "one", "/work/one")
+	snapshot := eventSnapshot(protocol.PickerCP, protocol.ModeNormal, pathutil.Filesystem([]byte("/work")), record)
+	for _, base := range [][]byte{nil, {}} {
+		if _, err := ValidateCP(snapshot, [][]byte{[]byte(record.FullKey())}, base); !errors.Is(err, ErrInvalidBase) {
+			t.Fatalf("base=%v error=%v", base, err)
+		}
+	}
+	if _, err := ValidateCP(snapshot, nil, nil); !errors.Is(err, ErrInvalidBase) {
+		t.Fatalf("nil base precedence error=%v", err)
+	}
+}

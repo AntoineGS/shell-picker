@@ -27,14 +27,30 @@ func Handle(ctx context.Context, actor *Actor, event protocol.Event) (Transition
 	if err != nil {
 		return TransitionResult{}, err
 	}
-	proposal, err := Reduce(snapshot, event)
+	reduction, err := Reduce(snapshot, event)
 	if err != nil {
 		return TransitionResult{}, err
+	}
+	if proposal, ok := reduction.proposalValue(); ok {
+		return actor.Apply(ctx, proposal)
+	}
+	intent, ok := reduction.addIntentValue()
+	if !ok {
+		return TransitionResult{}, errors.New("session handle: invalid reduction")
+	}
+	created, createErr := pathutil.CreateDirectoryTree(intent.base, intent.query)
+	if createErr != nil {
+		return actor.Apply(ctx, addErrorProposal(snapshot))
+	}
+	proposal := ProposedTransition{BaseGeneration: intent.baseGeneration, State: cloneState(snapshot.state), Created: &created}
+	setNavigationUnchecked(&proposal, created.Target)
+	if cause := context.Cause(ctx); cause != nil {
+		return TransitionResult{}, errors.Join(cause, rollback(proposal.Created))
 	}
 	return actor.Apply(ctx, proposal)
 }
 
-func Reduce(snapshot Snapshot, event protocol.Event) (ProposedTransition, error) {
+func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 	proposal := ProposedTransition{
 		BaseGeneration: snapshot.generation,
 		State:          cloneState(snapshot.state),
@@ -43,12 +59,12 @@ func Reduce(snapshot Snapshot, event protocol.Event) (ProposedTransition, error)
 	switch event.Opcode {
 	case protocol.OpModeInsert:
 		if state.Mode != protocol.ModeNormal {
-			return ProposedTransition{}, fmt.Errorf("%w: insert mode is unbound in %s", ErrInvalidEvent, state.Mode)
+			return Reduction{}, fmt.Errorf("%w: insert mode is unbound in %s", ErrInvalidEvent, state.Mode)
 		}
 		setMode(&proposal, protocol.ModeInsert, false)
 	case protocol.OpModeAdd:
 		if state.Mode != protocol.ModeNormal {
-			return ProposedTransition{}, fmt.Errorf("%w: add mode is unbound in %s", ErrInvalidEvent, state.Mode)
+			return Reduction{}, fmt.Errorf("%w: add mode is unbound in %s", ErrInvalidEvent, state.Mode)
 		}
 		setMode(&proposal, protocol.ModeAdd, true)
 	case protocol.OpEscape:
@@ -60,14 +76,14 @@ func Reduce(snapshot Snapshot, event protocol.Event) (ProposedTransition, error)
 		}
 		record, err := resolveNavigationRecord(snapshot, event.CurrentItem)
 		if err != nil {
-			return ProposedTransition{}, err
+			return Reduction{}, err
 		}
 		if !canNavigate(state.Picker, record.Kind) {
-			return ProposedTransition{}, fmt.Errorf("%w: %s cannot navigate %s", ErrInvalidNavigation, state.Picker, record.Kind)
+			return Reduction{}, fmt.Errorf("%w: %s cannot navigate %s", ErrInvalidNavigation, state.Picker, record.Kind)
 		}
 		target, err := navigationTarget(record)
 		if err != nil {
-			return ProposedTransition{}, err
+			return Reduction{}, err
 		}
 		setNavigationUnchecked(&proposal, target)
 	case protocol.OpParent:
@@ -101,9 +117,9 @@ func Reduce(snapshot Snapshot, event protocol.Event) (ProposedTransition, error)
 	case protocol.OpEnter:
 		return reduceEnter(snapshot, proposal, event)
 	default:
-		return ProposedTransition{}, fmt.Errorf("%w: unknown opcode %q", ErrInvalidEvent, event.Opcode)
+		return Reduction{}, fmt.Errorf("%w: unknown opcode %q", ErrInvalidEvent, event.Opcode)
 	}
-	return proposal, nil
+	return proposalReduction(proposal), nil
 }
 
 func reduceEscape(proposal *ProposedTransition) {
@@ -111,42 +127,46 @@ func reduceEscape(proposal *ProposedTransition) {
 	case protocol.ModeInsert:
 		setMode(proposal, protocol.ModeNormal, false)
 	case protocol.ModeNormal:
-		setMode(proposal, protocol.ModeNormal, false)
-		proposal.Effect.ClearMulti = true
+		proposal.Effect = protocol.Effect{ClearMulti: true}
 	case protocol.ModeAdd:
 		setMode(proposal, protocol.ModeNormal, true)
 	}
 }
 
-func reduceEnter(snapshot Snapshot, proposal ProposedTransition, event protocol.Event) (ProposedTransition, error) {
+func reduceEnter(snapshot Snapshot, proposal ProposedTransition, event protocol.Event) (Reduction, error) {
 	if snapshot.state.Mode == protocol.ModeAdd {
-		created, err := pathutil.CreateDirectoryTree(snapshot.state.Location, event.Query)
-		if err != nil {
-			proposal.State.AddError = true
-			proposal.State.Prompt = modePrompt(protocol.ModeAdd, snapshot.state.Location, true)
-			proposal.Effect = protocol.Effect{Prompt: proposal.State.Prompt, ErrorPrompt: true}
-			return proposal, nil
+		if err := pathutil.ValidateAddQuery(snapshot.state.Location, event.Query); err != nil {
+			return proposalReduction(addErrorProposal(snapshot)), nil
 		}
-		proposal.Created = &created
-		setNavigationUnchecked(&proposal, created.Target)
-		return proposal, nil
+		return addReduction(snapshot.generation, snapshot.state.Location, event.Query), nil
 	}
 	if len(event.CurrentItem) != 0 {
 		record, err := resolveRecord(snapshot, event.CurrentItem)
 		if err != nil {
-			return ProposedTransition{}, err
+			return Reduction{}, err
 		}
 		if record.Kind == protocol.KindVirtual {
 			target, err := navigationTarget(record)
 			if err != nil {
-				return ProposedTransition{}, err
+				return Reduction{}, err
 			}
 			setNavigationUnchecked(&proposal, target)
-			return proposal, nil
+			return proposalReduction(proposal), nil
 		}
 	}
 	proposal.Effect.Accept = true
-	return proposal, nil
+	return proposalReduction(proposal), nil
+}
+
+func addErrorProposal(snapshot Snapshot) ProposedTransition {
+	state := cloneState(snapshot.state)
+	state.AddError = true
+	state.Prompt = modePrompt(protocol.ModeAdd, state.Location, true)
+	return ProposedTransition{
+		BaseGeneration: snapshot.generation,
+		State:          state,
+		Effect:         protocol.Effect{Prompt: state.Prompt, ErrorPrompt: true},
+	}
 }
 
 func setMode(proposal *ProposedTransition, mode protocol.Mode, clearQuery bool) {
