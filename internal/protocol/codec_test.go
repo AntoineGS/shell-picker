@@ -72,6 +72,29 @@ func TestParseRecordStrictValidation(t *testing.T) {
 	}
 }
 
+func TestParseRecordVirtualKindRequiresCanonicalDrivesTarget(t *testing.T) {
+	want := WireRecord{Kind: KindVirtual, Display: "..", Payload: "ZHJpdmVz"}
+	got, err := ParseRecord(want.Bytes())
+	if err != nil || got != want {
+		t.Fatalf("ParseRecord() = %#v, %v; want %#v", got, err, want)
+	}
+	decoded, err := DecodePath(got.Payload)
+	if err != nil || !bytes.Equal(decoded, []byte("drives")) {
+		t.Fatalf("DecodePath(%q) = %q, %v; want drives", got.Payload, decoded, err)
+	}
+
+	for _, bad := range [][]byte{
+		[]byte("virtual\t..\tb3RoZXI="),
+		[]byte("virtual\t..\t"),
+		[]byte("virtual\t..\tZHJpdmVz="),
+		[]byte("unknown\t..\tZHJpdmVz"),
+	} {
+		if _, err := ParseRecord(bad); err == nil {
+			t.Errorf("ParseRecord(%q) unexpectedly succeeded", bad)
+		}
+	}
+}
+
 func TestFrameRecordsUsesNULWithoutNewlines(t *testing.T) {
 	records := []WireRecord{
 		{Kind: KindLocal, Display: "one", Payload: EncodePath([]byte("one"))},

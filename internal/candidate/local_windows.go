@@ -14,6 +14,16 @@ import (
 
 var listLocalDrives = pathutil.ListDrives
 
+func rootRecords(picker protocol.Picker, location pathutil.Location) []Record {
+	if pathutil.Parent(location).Kind == pathutil.KindDrives {
+		return []Record{
+			newRecord(localDirectoryKind(picker), ".", location.Path),
+			newVirtualDrivesRecord(".."),
+		}
+	}
+	return ordinaryRootRecords(picker, location)
+}
+
 func enumerateDrives(ctx context.Context) ([]Record, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

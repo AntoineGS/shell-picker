@@ -113,6 +113,9 @@ func ParseRecord(record []byte) (WireRecord, error) {
 	if EncodePath(path) != wire.Payload {
 		return WireRecord{}, errors.New("non-canonical path payload")
 	}
+	if wire.Kind == KindVirtual && !bytes.Equal(path, []byte(VirtualDrivesTarget)) {
+		return WireRecord{}, errors.New("invalid virtual target")
+	}
 	return wire, nil
 }
 
@@ -153,7 +156,7 @@ func appendRecord(dst []byte, record WireRecord) []byte {
 
 func validKind(kind Kind) bool {
 	switch kind {
-	case KindLocal, KindDirectory, KindFile, KindZoxide, KindDrive:
+	case KindLocal, KindDirectory, KindFile, KindZoxide, KindDrive, KindVirtual:
 		return true
 	default:
 		return false

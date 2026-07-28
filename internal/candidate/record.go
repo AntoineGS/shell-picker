@@ -3,6 +3,7 @@ package candidate
 import (
 	"bytes"
 
+	"github.com/AntoineGS/shell-picker/internal/pathutil"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
 
@@ -11,6 +12,7 @@ type Record struct {
 	Display string
 	Path    []byte
 	Payload string
+	Target  pathutil.Location
 }
 
 func (record Record) Wire() protocol.WireRecord {
@@ -32,5 +34,16 @@ func newRecord(kind protocol.Kind, display string, path []byte) Record {
 		Display: display,
 		Path:    clonedPath,
 		Payload: protocol.EncodePath(clonedPath),
+		Target:  pathutil.Filesystem(clonedPath),
+	}
+}
+
+func newVirtualDrivesRecord(display string) Record {
+	token := []byte(protocol.VirtualDrivesTarget)
+	return Record{
+		Kind:    protocol.KindVirtual,
+		Display: display,
+		Payload: protocol.EncodePath(token),
+		Target:  pathutil.Drives(),
 	}
 }

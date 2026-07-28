@@ -23,7 +23,10 @@ const (
 	KindFile      Kind = "file"
 	KindZoxide    Kind = "zoxide"
 	KindDrive     Kind = "drive"
+	KindVirtual   Kind = "virtual"
 )
+
+const VirtualDrivesTarget = "drives"
 
 type CursorShape string
 

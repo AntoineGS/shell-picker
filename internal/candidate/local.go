@@ -207,15 +207,13 @@ func buildLocalRecords(picker protocol.Picker, location pathutil.Location, entri
 	sortLocalEntries(directories)
 	sortLocalEntries(files)
 
-	directoryKind := protocol.KindLocal
-	if picker == protocol.PickerCP {
-		directoryKind = protocol.KindDirectory
+	directoryKind := localDirectoryKind(picker)
+	records := rootRecords(picker, location)
+	if needed := len(records) + len(directories) + len(files); cap(records) < needed {
+		grown := make([]Record, len(records), needed)
+		copy(grown, records)
+		records = grown
 	}
-	records := make([]Record, 0, 2+len(directories)+len(files))
-	records = append(records,
-		newRecord(directoryKind, ".", location.Path),
-		newRecord(directoryKind, "..", pathutil.Parent(location).Path),
-	)
 	for _, entry := range directories {
 		display := protocol.EscapeDisplay(entry.name)
 		if picker == protocol.PickerCP {
@@ -227,6 +225,21 @@ func buildLocalRecords(picker protocol.Picker, location pathutil.Location, entri
 		records = append(records, newRecord(protocol.KindFile, protocol.EscapeDisplay(entry.name), entry.path))
 	}
 	return records
+}
+
+func ordinaryRootRecords(picker protocol.Picker, location pathutil.Location) []Record {
+	kind := localDirectoryKind(picker)
+	return []Record{
+		newRecord(kind, ".", location.Path),
+		newRecord(kind, "..", pathutil.Parent(location).Path),
+	}
+}
+
+func localDirectoryKind(picker protocol.Picker) protocol.Kind {
+	if picker == protocol.PickerCP {
+		return protocol.KindDirectory
+	}
+	return protocol.KindLocal
 }
 
 func sortLocalEntries(entries []localEntry) {
