@@ -57,7 +57,7 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 		return nil, fmt.Errorf("process: foreground containment unsupported on %s", runtime.GOOS)
 	}
 	if !nonReapingExitSupported() {
-		return nil, fmt.Errorf("process: lifecycle containment unsupported on %s", runtime.GOOS)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedPlatform, runtime.GOOS)
 	}
 	observe(r.Observe, "attempt", spec.Path, 0)
 	path, err := exec.LookPath(spec.Path)
@@ -165,18 +165,15 @@ func (c *Child) Wait() error {
 		c.targetValid = false
 		c.lifeMu.Unlock()
 		waitErr := c.cmd.Wait()
-		if waitErr == nil && observeErr != nil {
-			waitErr = observeErr
-		}
 		if cancelErr != nil {
 			c.waitErr = cancelErr
-		} else {
-			if c.waitErr = unixWaitError(waitErr); c.waitErr == nil {
-				if pumpErr != nil {
-					c.waitErr = pumpErr
-				} else if timedOut {
-					c.waitErr = ErrWaitDelay
-				}
+		} else if c.waitErr = unixWaitError(waitErr); c.waitErr == nil {
+			if pumpErr != nil {
+				c.waitErr = pumpErr
+			} else if observeErr != nil {
+				c.waitErr = observeErr
+			} else if timedOut {
+				c.waitErr = ErrWaitDelay
 			}
 		}
 		observe(c.observe, "exit", c.path, c.PID())
@@ -189,6 +186,9 @@ func (c *Child) Wait() error {
 
 func (c *Child) reap() {
 	err := observeProcessExit(c.PID())
+	if err != nil && !errors.Is(err, ErrExitObserver) {
+		err = fmt.Errorf("%w: %v", ErrExitObserver, err)
+	}
 	c.lifeMu.Lock()
 	if err != nil {
 		_ = c.killTreeLocked()

@@ -8,6 +8,7 @@ import (
 	"os"
 	"reflect"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -50,6 +51,9 @@ func (e *ExitError) ExitCode() int { return int(e.Code) }
 
 var ErrAlreadyWaited = errors.New("process: Wait called more than once")
 var ErrWaitDelay = errors.New("process: I/O pumps did not finish before WaitDelay")
+var ErrInvalidStream = errors.New("process: pumped io.Closer requires stable pointer identity")
+var ErrExitObserver = errors.New("process: exit observer failed")
+var ErrUnsupportedPlatform = errors.New("process: unsupported Unix process backend")
 
 func (r Runner) Run(ctx context.Context, spec Spec) error {
 	child, err := r.Start(ctx, spec)
@@ -72,6 +76,28 @@ func validateSpec(ctx context.Context, spec Spec) error {
 	if spec.Containment < ContainmentOwnTree || spec.Containment > ContainmentInheritTree {
 		return errors.New("process: invalid containment")
 	}
+	for _, stream := range []any{spec.Stdin, spec.Stdout, spec.Stderr} {
+		if err := validateStream(stream); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateStream(stream any) error {
+	if stream == nil {
+		return nil
+	}
+	if _, direct := stream.(*os.File); direct {
+		return nil
+	}
+	if _, closable := stream.(io.Closer); !closable {
+		return nil
+	}
+	value := reflect.ValueOf(stream)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		return ErrInvalidStream
+	}
 	return nil
 }
 
@@ -84,6 +110,12 @@ func observe(fn func(ProcessEvent), phase, path string, pid int) {
 type emergencyClosers struct {
 	once  sync.Once
 	items []io.Closer
+	seen  map[closerIdentity]struct{}
+}
+
+type closerIdentity struct {
+	typ     reflect.Type
+	pointer uintptr
 }
 
 func (c *emergencyClosers) add(stream any) {
@@ -94,11 +126,17 @@ func (c *emergencyClosers) add(stream any) {
 	if _, direct := stream.(*os.File); direct {
 		return
 	}
-	for _, existing := range c.items {
-		if sameObject(existing, closer) {
-			return
-		}
+	identity, ok := pointerIdentity(stream)
+	if !ok {
+		return
 	}
+	if c.seen == nil {
+		c.seen = make(map[closerIdentity]struct{})
+	}
+	if _, exists := c.seen[identity]; exists {
+		return
+	}
+	c.seen[identity] = struct{}{}
 	c.items = append(c.items, closer)
 }
 
@@ -110,15 +148,12 @@ func (c *emergencyClosers) close() {
 	})
 }
 
-func sameObject(a, b any) bool {
-	av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
-	if !av.IsValid() || !bv.IsValid() || av.Type() != bv.Type() {
-		return false
+func pointerIdentity(value any) (closerIdentity, bool) {
+	ref := reflect.ValueOf(value)
+	if !ref.IsValid() || ref.Kind() != reflect.Pointer || ref.IsNil() {
+		return closerIdentity{}, false
 	}
-	if av.Comparable() && bv.Comparable() {
-		return av.Interface() == bv.Interface()
-	}
-	return reflect.DeepEqual(a, b)
+	return closerIdentity{typ: ref.Type(), pointer: ref.Pointer()}, true
 }
 
 type serializedWriter struct {
@@ -132,7 +167,62 @@ func (w *serializedWriter) Write(data []byte) (int, error) {
 	return w.writer.Write(data)
 }
 
-func sharedWriter(a, b io.Writer) bool { return a != nil && b != nil && sameObject(a, b) }
+func sharedWriter(a, b io.Writer) bool {
+	left, ok := pointerIdentity(a)
+	if !ok {
+		return false
+	}
+	right, ok := pointerIdentity(b)
+	return ok && left == right
+}
+
+type exitObserverEvent struct {
+	PID     int
+	Process bool
+	Error   bool
+	Exit    bool
+	Data    int64
+}
+
+type exitObserverResult struct {
+	N      int
+	Events []exitObserverEvent
+	Err    error
+}
+
+func validateKqueueObserverResults(pid int, registration, wait exitObserverResult) error {
+	if err := validateObserverResult(pid, registration, true); err != nil {
+		return err
+	}
+	return validateObserverResult(pid, wait, false)
+}
+
+func validateObserverResult(pid int, result exitObserverResult, registration bool) error {
+	if result.Err != nil {
+		return fmt.Errorf("%w: %v", ErrExitObserver, result.Err)
+	}
+	if result.N <= 0 || result.N > len(result.Events) {
+		return fmt.Errorf("%w: invalid event count %d", ErrExitObserver, result.N)
+	}
+	if registration && result.N != 1 {
+		return fmt.Errorf("%w: invalid registration count %d", ErrExitObserver, result.N)
+	}
+	for _, event := range result.Events[:result.N] {
+		if event.Error {
+			if event.Data != 0 {
+				return fmt.Errorf("%w: %v", ErrExitObserver, syscall.Errno(event.Data))
+			}
+			if registration && event.PID == pid && event.Process {
+				return nil
+			}
+			continue
+		}
+		if !registration && event.PID == pid && event.Process && event.Exit {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: missing expected process event", ErrExitObserver)
+}
 
 type unixOwnedFile struct {
 	file *os.File

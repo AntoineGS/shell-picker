@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -296,7 +297,6 @@ func TestExitErrorPrecedesBlockingPumpWaitDelay(t *testing.T) {
 	stream := newBlockingStream()
 	spec := helperSpec("print-args", "x")
 	spec.Stdout, spec.WaitDelay = stream, 50*time.Millisecond
-	// The helper's invalid test flag produces a nonzero process exit after writing.
 	spec.Args = []string{"-test.run=^TestProcessHelper$", "--", "hold-stdout-exit"}
 	child, err := (Runner{}).Start(context.Background(), spec)
 	if err != nil {
@@ -334,21 +334,44 @@ func TestOrdinaryCompletionDoesNotClosePumpedCloser(t *testing.T) {
 	}
 }
 
-func TestEmergencyCloserDedupHandlesNonComparableInterfaceField(t *testing.T) {
+func TestRejectsNonIdentifiableValueCloserBeforeAttempt(t *testing.T) {
 	state := &trickyCloserState{blocked: make(chan struct{}), closed: make(chan struct{})}
-	stream := trickyCloser{state: state, payload: []int{1, 2, 3}}
+	var typedNil *blockingStream
+	for name, stream := range map[string]io.Writer{
+		"value":     trickyCloser{state: state, payload: []int{1, 2, 3}},
+		"typed-nil": typedNil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var events []ProcessEvent
+			spec := helperSpec("exit", "0")
+			spec.Stdout = stream
+			_, err := (Runner{Observe: func(event ProcessEvent) { events = append(events, event) }}).Start(context.Background(), spec)
+			if !errors.Is(err, ErrInvalidStream) || len(events) != 0 {
+				t.Fatalf("err=%v events=%+v", err, events)
+			}
+		})
+	}
+}
+
+func TestWaitDelayClosesSharedPointerOnce(t *testing.T) {
+	stream := newBlockingStream()
 	spec := helperSpec("both-streams")
-	spec.Stdout, spec.Stderr, spec.WaitDelay = stream, stream, 50*time.Millisecond
+	spec.Stdin, spec.Stdout, spec.Stderr, spec.WaitDelay = stream, stream, stream, 50*time.Millisecond
 	child, err := (Runner{}).Start(context.Background(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-state.blocked
+	<-stream.blocked
 	if err := child.Wait(); !errors.Is(err, ErrWaitDelay) {
 		t.Fatalf("wait=%v", err)
 	}
-	if state.closeCalls.Load() != 1 {
-		t.Fatalf("close calls=%d", state.closeCalls.Load())
+	if stream.closeCalls.Load() != 1 {
+		t.Fatalf("close calls=%d", stream.closeCalls.Load())
+	}
+	select {
+	case <-child.pumpDone:
+	default:
+		t.Fatal("pumps still running")
 	}
 }
 
