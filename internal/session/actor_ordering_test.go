@@ -25,8 +25,8 @@ type createdTreeOrdering struct {
 	created       *pathutil.CreatedTree
 	createdPath   string
 	events        chan orderingEvent
-	release       chan struct{}
-	allowRollback chan struct{}
+	release       *onceGate
+	allowRollback *onceGate
 	firstReply    chan applyReply
 	rollbackCalls atomic.Int32
 }
@@ -44,8 +44,8 @@ func newCreatedTreeOrdering(t *testing.T) *createdTreeOrdering {
 		},
 		createdPath:   createdPath,
 		events:        make(chan orderingEvent, 16),
-		release:       make(chan struct{}),
-		allowRollback: make(chan struct{}),
+		release:       newOnceGate(),
+		allowRollback: newOnceGate(),
 	}
 }
 
@@ -73,7 +73,7 @@ func (ordering *createdTreeOrdering) generate(ctx context.Context, request candi
 	ordering.events <- orderingEvent{name: "reading-created-data"}
 	<-ctx.Done()
 	ordering.events <- orderingEvent{name: "cancel-observed"}
-	<-ordering.release
+	<-ordering.release.channel
 	if _, err := os.Stat(string(ordering.created.Target.Path)); err != nil {
 		return candidate.BuildResult{}, err
 	}
@@ -88,7 +88,7 @@ func (ordering *createdTreeOrdering) cleanup(created *pathutil.CreatedTree) erro
 	}
 	ordering.rollbackCalls.Add(1)
 	ordering.events <- orderingEvent{name: "rollback-started"}
-	<-ordering.allowRollback
+	<-ordering.allowRollback.channel
 	err := rollback(created)
 	if _, statErr := os.Stat(ordering.createdPath); !errors.Is(statErr, fs.ErrNotExist) {
 		err = errors.Join(err, errors.New("created tree remains after rollback"))
@@ -129,12 +129,88 @@ func (ordering *createdTreeOrdering) next(t *testing.T, want string) orderingEve
 	}
 }
 
-func directApply(actor *Actor, ctx context.Context, proposal ProposedTransition) *applyCommand {
+func directApply(t *testing.T, actor *Actor, ctx context.Context, proposal ProposedTransition) *applyCommand {
+	t.Helper()
 	command := &applyCommand{
 		ctx: ctx, proposal: cloneProposal(proposal), submitted: time.Now(), reply: make(chan applyReply, 1),
 	}
-	actor.commands <- command
+	submitted := make(chan bool, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case actor.commands <- command:
+			submitted <- true
+		case <-actor.done:
+			submitted <- false
+		}
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Errorf("cleanup: private Apply submitter did not join")
+		}
+	})
+	select {
+	case accepted := <-submitted:
+		if !accepted {
+			t.Fatal("actor closed before private Apply submission")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("private Apply submission blocked")
+	}
 	return command
+}
+
+func registerOrderingRecovery(
+	t *testing.T,
+	actor *Actor,
+	ordering *createdTreeOrdering,
+	stopCaller context.CancelFunc,
+	stopSession context.CancelFunc,
+	privateReplies *[]<-chan applyReply,
+) {
+	t.Helper()
+	t.Cleanup(func() {
+		stopCaller()
+		stopSession()
+		ordering.release.Open()
+		ordering.allowRollback.Open()
+		drained := make([]<-chan struct{}, 0, len(*privateReplies))
+		for _, replies := range *privateReplies {
+			done := make(chan struct{})
+			drained = append(drained, done)
+			go func() {
+				defer close(done)
+				for {
+					select {
+					case <-replies:
+					case <-actor.done:
+						return
+					}
+				}
+			}()
+		}
+		shutdown := make(chan struct{})
+		go func() {
+			_ = actor.Close()
+			close(shutdown)
+		}()
+		select {
+		case <-shutdown:
+		case <-time.After(2 * time.Second):
+			t.Errorf("cleanup: actor did not shut down")
+			return
+		}
+		for _, done := range drained {
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Errorf("cleanup: private reply drainer did not join")
+			}
+		}
+	})
 }
 
 func createdProposal(ordering *createdTreeOrdering) ProposedTransition {
@@ -181,12 +257,13 @@ func TestActorCreatedTreeInternalDiscardOrdering(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			sessionCtx, stopSession := context.WithCancel(context.Background())
-			defer stopSession()
 			ordering := newCreatedTreeOrdering(t)
 			actor := newActor(sessionCtx, ordering.generate, ordering.cleanup)
 			callerCtx, stopCaller := context.WithCancel(context.Background())
-			defer stopCaller()
-			first := directApply(actor, callerCtx, createdProposal(ordering))
+			var privateReplies []<-chan applyReply
+			registerOrderingRecovery(t, actor, ordering, stopCaller, stopSession, &privateReplies)
+			first := directApply(t, actor, callerCtx, createdProposal(ordering))
+			privateReplies = append(privateReplies, first.reply)
 			ordering.firstReply = first.reply
 			ordering.next(t, "reading-created-data")
 			assertUnpublished(t, actor)
@@ -195,9 +272,10 @@ func TestActorCreatedTreeInternalDiscardOrdering(t *testing.T) {
 			var closeDone chan error
 			switch test.kind {
 			case "supersede":
-				replacement = directApply(actor, context.Background(), testProposal(
+				replacement = directApply(t, actor, context.Background(), testProposal(
 					0, testState("/replacement", protocol.ModeNormal, "replacement"), true, protocol.Effect{},
 				))
+				privateReplies = append(privateReplies, replacement.reply)
 			case "caller":
 				stopCaller()
 			case "session":
@@ -218,7 +296,7 @@ func TestActorCreatedTreeInternalDiscardOrdering(t *testing.T) {
 			if test.kind != "close" && test.kind != "session" {
 				assertUnpublished(t, actor)
 			}
-			close(ordering.release)
+			ordering.release.Open()
 			ordering.next(t, "generation-complete")
 			ordering.next(t, "rollback-started")
 			assertNoApplyReply(t, "original Apply during rollback", first.reply)
@@ -232,7 +310,7 @@ func TestActorCreatedTreeInternalDiscardOrdering(t *testing.T) {
 				default:
 				}
 			}
-			close(ordering.allowRollback)
+			ordering.allowRollback.Open()
 			ordering.next(t, "rollback-complete")
 
 			if test.kind == "supersede" {
@@ -289,11 +367,11 @@ func TestActorCreatedTreeDiscardOrdering(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			sessionCtx, stopSession := context.WithCancel(context.Background())
-			defer stopSession()
 			ordering := newCreatedTreeOrdering(t)
 			actor := newActor(sessionCtx, ordering.generate, ordering.cleanup)
 			callerCtx, stopCaller := context.WithCancel(context.Background())
-			defer stopCaller()
+			var privateReplies []<-chan applyReply
+			registerOrderingRecovery(t, actor, ordering, stopCaller, stopSession, &privateReplies)
 			pending := asyncApply(actor, callerCtx, createdProposal(ordering))
 			ordering.next(t, "reading-created-data")
 			assertUnpublished(t, actor)
@@ -319,14 +397,14 @@ func TestActorCreatedTreeDiscardOrdering(t *testing.T) {
 			if replacement != nil {
 				assertNoPublicApplyResult(t, "replacement before generator release", replacement)
 			}
-			close(ordering.release)
+			ordering.release.Open()
 			ordering.next(t, "generation-complete")
 			ordering.next(t, "rollback-started")
 			assertNoPublicApplyResult(t, "Apply during rollback", pending)
 			if replacement != nil {
 				assertNoPublicApplyResult(t, "replacement during rollback", replacement)
 			}
-			close(ordering.allowRollback)
+			ordering.allowRollback.Open()
 			ordering.next(t, "rollback-complete")
 
 			outcome := awaitApply(t, pending)

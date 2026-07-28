@@ -17,28 +17,13 @@ type contentionReply struct {
 	outcome applyOutcome
 }
 
-func cardinalityApply(actor *Actor, ctx context.Context, proposal ProposedTransition) *applyCommand {
-	command := &applyCommand{
-		ctx: ctx, proposal: cloneProposal(proposal), submitted: time.Now(), reply: make(chan applyReply, 2),
-	}
-	actor.commands <- command
-	return command
-}
-
-func exactlyOneReply[T any](t *testing.T, name string, replies <-chan T) T {
+func exactlyOneCollectedReply[T any](t *testing.T, name string, collector *replyCollector[T]) T {
 	t.Helper()
-	var reply T
-	select {
-	case reply = <-replies:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("%s received no reply", name)
+	replies := collector.StopAndReplies(t)
+	if len(replies) != 1 {
+		t.Fatalf("%s reply count = %d; want 1; replies=%+v", name, len(replies), replies)
 	}
-	select {
-	case duplicate := <-replies:
-		t.Fatalf("%s received duplicate reply: %+v", name, duplicate)
-	default:
-	}
-	return reply
+	return replies[0]
 }
 
 func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testing.T) {
@@ -49,6 +34,43 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 	)
 	blocked := asyncApply(actor, context.Background(), blockedProposal)
 	blockedCall := generator.Next(t)
+	startGate := newOnceGate()
+	var completion sync.Once
+	var callers sync.WaitGroup
+	var spawned sync.WaitGroup
+	var cancels []context.CancelFunc
+	finishGeneration := func() {
+		completion.Do(func() { blockedCall.Complete(nil, context.Canceled) })
+	}
+	t.Cleanup(func() {
+		for _, cancel := range cancels {
+			cancel()
+		}
+		startGate.Open()
+		finishGeneration()
+		shutdown := make(chan struct{})
+		go func() {
+			_ = actor.Close()
+			close(shutdown)
+		}()
+		select {
+		case <-shutdown:
+		case <-time.After(2 * time.Second):
+			t.Errorf("cleanup: public contention actor did not shut down")
+			return
+		}
+		joined := make(chan struct{})
+		go func() {
+			callers.Wait()
+			spawned.Wait()
+			close(joined)
+		}()
+		select {
+		case <-joined:
+		case <-time.After(2 * time.Second):
+			t.Errorf("cleanup: public contention goroutines did not join")
+		}
+	})
 
 	replacement := asyncApply(actor, context.Background(), testProposal(
 		1, testState("/replacement", protocol.ModeNormal, "replacement"), true,
@@ -65,29 +87,31 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 	}
 
 	const excess = 64
-	start := make(chan struct{})
 	replies := make(chan contentionReply, excess)
-	cancels := make([]context.CancelFunc, excess)
-	var callers sync.WaitGroup
+	cancels = make([]context.CancelFunc, excess)
 	callers.Add(excess)
 	for id := range excess {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancels[id] = cancel
 		go func() {
 			defer callers.Done()
-			<-start
+			<-startGate.channel
 			result, err := actor.Apply(ctx, testProposal(
 				1, testState("/excess", protocol.ModeNormal, "excess"), true, protocol.Effect{Accept: true},
 			))
 			replies <- contentionReply{id: id, outcome: applyOutcome{result: result, err: err}}
 		}()
 	}
-	close(start)
+	startGate.Open()
 	for id := 0; id < excess; id += 2 {
 		cancels[id]()
 	}
 	closed := make(chan error, 1)
-	go func() { closed <- actor.Close() }()
+	spawned.Add(1)
+	go func() {
+		defer spawned.Done()
+		closed <- actor.Close()
+	}()
 
 	seen := make([]bool, excess)
 	for range excess {
@@ -110,7 +134,9 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 		}
 	}
 	joined := make(chan struct{})
+	spawned.Add(1)
 	go func() {
+		defer spawned.Done()
 		callers.Wait()
 		close(joined)
 	}()
@@ -126,7 +152,9 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 	}
 
 	closeAccepted := make(chan error, 1)
+	spawned.Add(1)
 	go func() {
+		defer spawned.Done()
 		for {
 			_, currentErr := actor.Current(context.Background())
 			if errors.Is(currentErr, ErrClosed) {
@@ -149,7 +177,7 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 		t.Fatal("Close was not accepted while generation retired")
 	}
 
-	blockedCall.Complete([]candidate.Record{testRecord("stale", "/stale")}, nil)
+	completion.Do(func() { blockedCall.Complete([]candidate.Record{testRecord("stale", "/stale")}, nil) })
 	blockedOutcome := awaitApply(t, blocked)
 	if !errors.Is(blockedOutcome.err, ErrSuperseded) || blockedOutcome.result.Snapshot.Generation() != 0 ||
 		blockedOutcome.result.Effect != (protocol.Effect{}) {
@@ -175,21 +203,131 @@ func TestActorHighContentionRepliesOnceAndClosesWithoutStalePublication(t *testi
 	}
 	select {
 	case <-actor.done:
-	default:
-		t.Fatal("actor goroutine leaked after Close")
+	case <-time.After(2 * time.Second):
+		t.Fatal("actor goroutine did not exit after Close")
 	}
 }
 
 func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.T) {
 	generator := newControlledGenerator()
 	actor := New(context.Background(), generator.Generate)
-	blocked := cardinalityApply(actor, context.Background(), testProposal(
+	var submitters sync.WaitGroup
+	var completion sync.Once
+	var blockedCall *generatorCall
+	var commandCancels []context.CancelFunc
+	var applyCollectors []*replyCollector[applyReply]
+	var currentCollector *replyCollector[snapshotReply]
+	var snapshotCollector *replyCollector[snapshotReply]
+	var resolveCollector *replyCollector[resolveReply]
+	var closeCollector *replyCollector[error]
+	submissionGate := newOnceGate()
+	t.Cleanup(func() {
+		submissionGate.Open()
+		for _, cancel := range commandCancels {
+			cancel()
+		}
+		if blockedCall != nil {
+			completion.Do(func() { blockedCall.Complete(nil, context.Canceled) })
+		}
+		shutdown := make(chan struct{})
+		go func() {
+			_ = actor.Close()
+			close(shutdown)
+		}()
+		select {
+		case <-shutdown:
+		case <-time.After(2 * time.Second):
+			t.Errorf("cleanup: actor did not shut down")
+			return
+		}
+		joined := make(chan struct{})
+		go func() {
+			submitters.Wait()
+			close(joined)
+		}()
+		select {
+		case <-joined:
+		case <-time.After(2 * time.Second):
+			t.Errorf("cleanup: command submitters did not join")
+		}
+		for _, collector := range applyCollectors {
+			collector.stop.Open()
+			select {
+			case <-collector.done:
+			case <-time.After(2 * time.Second):
+				t.Errorf("cleanup: Apply reply collector did not join")
+			}
+		}
+		collectorStops := []struct {
+			name string
+			done <-chan struct{}
+		}{
+			{name: "Current"},
+			{name: "Snapshot"},
+			{name: "ResolveCurrent"},
+			{name: "Close"},
+		}
+		if currentCollector != nil {
+			collectorStops[0].done = currentCollector.Stop()
+		}
+		if snapshotCollector != nil {
+			collectorStops[1].done = snapshotCollector.Stop()
+		}
+		if resolveCollector != nil {
+			collectorStops[2].done = resolveCollector.Stop()
+		}
+		if closeCollector != nil {
+			collectorStops[3].done = closeCollector.Stop()
+		}
+		for _, collector := range collectorStops {
+			if collector.done == nil {
+				continue
+			}
+			select {
+			case <-collector.done:
+			case <-time.After(2 * time.Second):
+				t.Errorf("cleanup: %s reply collector did not join", collector.name)
+			}
+		}
+	})
+	submit := func(command any) {
+		t.Helper()
+		accepted := make(chan bool, 1)
+		submitters.Add(1)
+		go func() {
+			defer submitters.Done()
+			select {
+			case actor.commands <- command:
+				accepted <- true
+			case <-actor.done:
+				accepted <- false
+			}
+		}()
+		select {
+		case ok := <-accepted:
+			if !ok {
+				t.Fatal("actor closed before private command submission")
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("private command submission blocked")
+		}
+	}
+	newApply := func(ctx context.Context, proposal ProposedTransition) *applyCommand {
+		collector := newReplyCollector[applyReply]()
+		applyCollectors = append(applyCollectors, collector)
+		return &applyCommand{
+			ctx: ctx, proposal: cloneProposal(proposal), submitted: time.Now(), reply: collector.input,
+		}
+	}
+	blocked := newApply(context.Background(), testProposal(
 		0, testState("/blocked", protocol.ModeNormal, "blocked"), true, protocol.Effect{Accept: true},
 	))
-	blockedCall := generator.Next(t)
-	replacement := cardinalityApply(actor, context.Background(), testProposal(
+	submit(blocked)
+	blockedCall = generator.Next(t)
+	replacement := newApply(context.Background(), testProposal(
 		0, testState("/replacement", protocol.ModeNormal, "replacement"), true, protocol.Effect{ClearMulti: true},
 	))
+	submit(replacement)
 	select {
 	case <-blockedCall.ctx.Done():
 	case <-time.After(2 * time.Second):
@@ -199,29 +337,27 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 	const excess = 64
 	commands := make([]*applyCommand, excess)
 	accepted := make(chan int, excess)
-	start := make(chan struct{})
 	for id := range excess {
 		ctx, cancel := context.WithCancel(context.Background())
+		commandCancels = append(commandCancels, cancel)
 		if id%2 == 0 {
 			cancel()
-		} else {
-			defer cancel()
 		}
-		commands[id] = &applyCommand{
-			ctx: ctx,
-			proposal: cloneProposal(testProposal(
-				0, testState("/excess", protocol.ModeNormal, "excess"), true, protocol.Effect{Accept: true},
-			)),
-			submitted: time.Now(),
-			reply:     make(chan applyReply, 2),
-		}
+		commands[id] = newApply(ctx, testProposal(
+			0, testState("/excess", protocol.ModeNormal, "excess"), true, protocol.Effect{Accept: true},
+		))
+		submitters.Add(1)
 		go func() {
-			<-start
-			actor.commands <- commands[id]
-			accepted <- id
+			defer submitters.Done()
+			<-submissionGate.channel
+			select {
+			case actor.commands <- commands[id]:
+				accepted <- id
+			case <-actor.done:
+			}
 		}()
 	}
-	close(start)
+	submissionGate.Open()
 	seenAccepted := make([]bool, excess)
 	for range excess {
 		select {
@@ -235,31 +371,35 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 		}
 	}
 
-	current := currentCommand{ctx: context.Background(), reply: make(chan snapshotReply, 2)}
-	actor.commands <- current
-	snapshot := snapshotCommand{ctx: context.Background(), generation: 0, reply: make(chan snapshotReply, 2)}
-	actor.commands <- snapshot
-	resolve := resolveCommand{ctx: context.Background(), key: "forged", reply: make(chan resolveReply, 2)}
-	actor.commands <- resolve
-	closeRequest := closeCommand{reply: make(chan error, 2)}
-	actor.commands <- closeRequest
-	blockedCall.Complete([]candidate.Record{testRecord("stale", "/stale")}, nil)
+	currentCollector = newReplyCollector[snapshotReply]()
+	current := currentCommand{ctx: context.Background(), reply: currentCollector.input}
+	submit(current)
+	snapshotCollector = newReplyCollector[snapshotReply]()
+	snapshot := snapshotCommand{ctx: context.Background(), generation: 0, reply: snapshotCollector.input}
+	submit(snapshot)
+	resolveCollector = newReplyCollector[resolveReply]()
+	resolve := resolveCommand{ctx: context.Background(), key: "forged", reply: resolveCollector.input}
+	submit(resolve)
+	closeCollector = newReplyCollector[error]()
+	closeRequest := closeCommand{reply: closeCollector.input}
+	submit(closeRequest)
+	completion.Do(func() { blockedCall.Complete([]candidate.Record{testRecord("stale", "/stale")}, nil) })
 	select {
 	case <-actor.done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("actor did not exit after completion and Close")
 	}
 
-	blockedReply := exactlyOneReply(t, "blocked Apply", blocked.reply)
+	blockedReply := exactlyOneCollectedReply(t, "blocked Apply", applyCollectors[0])
 	if !errors.Is(blockedReply.err, ErrSuperseded) {
 		t.Fatalf("blocked Apply = %v", blockedReply.err)
 	}
-	replacementReply := exactlyOneReply(t, "replacement Apply", replacement.reply)
+	replacementReply := exactlyOneCollectedReply(t, "replacement Apply", applyCollectors[1])
 	if !errors.Is(replacementReply.err, ErrClosed) {
 		t.Fatalf("replacement Apply = %v", replacementReply.err)
 	}
-	for id, command := range commands {
-		reply := exactlyOneReply(t, "excess Apply", command.reply)
+	for id := range commands {
+		reply := exactlyOneCollectedReply(t, "excess Apply", applyCollectors[id+2])
 		if id%2 == 0 {
 			if !errors.Is(reply.err, context.Canceled) {
 				t.Fatalf("canceled Apply %d = %v", id, reply.err)
@@ -268,19 +408,19 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 			t.Fatalf("excess Apply %d = %v", id, reply.err)
 		}
 	}
-	currentReply := exactlyOneReply(t, "Current", current.reply)
+	currentReply := exactlyOneCollectedReply(t, "Current", currentCollector)
 	if currentReply.err != nil || currentReply.snapshot.Generation() != 0 {
 		t.Fatalf("Current = %+v", currentReply)
 	}
-	snapshotReply := exactlyOneReply(t, "Snapshot", snapshot.reply)
+	snapshotReply := exactlyOneCollectedReply(t, "Snapshot", snapshotCollector)
 	if snapshotReply.err != nil || snapshotReply.snapshot.Generation() != 0 {
 		t.Fatalf("Snapshot = %+v", snapshotReply)
 	}
-	resolveReply := exactlyOneReply(t, "ResolveCurrent", resolve.reply)
+	resolveReply := exactlyOneCollectedReply(t, "ResolveCurrent", resolveCollector)
 	if !errors.Is(resolveReply.err, ErrUnknownRecord) {
 		t.Fatalf("ResolveCurrent = %+v", resolveReply)
 	}
-	if err := exactlyOneReply(t, "Close", closeRequest.reply); err != nil {
+	if err := exactlyOneCollectedReply(t, "Close", closeCollector); err != nil {
 		t.Fatalf("Close = %v", err)
 	}
 	select {
