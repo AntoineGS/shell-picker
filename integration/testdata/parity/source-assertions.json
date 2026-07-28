@@ -1,0 +1,3395 @@
+{
+  "sources": {
+    "fzf-picker-candidates.zsh": "5300b66b7815e8b1c2f75f230033a069a1c305600faea164c9214cd52e07cb97",
+    "fzf-preview.sh": "232eb46eef32bff642985e42edbf0cd3a49098e7485eb6f5b0db0bdf48024159",
+    "fzf-batch-encode.pl": "055d9a74cce513bbf02475fae97154b159de98d51cc565cf4859ced0226878fd",
+    "fzf-picker.test.zsh": "f920b8f6194c76d5f8a1737c6e4860ab04f641da291dc3e984cbb63443552776",
+    ".zshrc": "92cc80ec53564642fe8e2f51375ed3108cc8bc0d6f1c52f01e572ee8f716dc94"
+  },
+  "assertions": [
+    {
+      "id": "SRC-001",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "tab-name",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-002",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "line-newline-name",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-003",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "trailing-space",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-004",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "backslash-name",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-005",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "nbsp-name",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-006",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "leading-dash",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-007",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "control-byte-name",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-008",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "ending-newline",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-009",
+      "suite": "codec",
+      "source_line": 87,
+      "runner": "codec-roundtrip",
+      "case": "apostrophe-path",
+      "check": "decoded-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-010",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "current-directory",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-011",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "parent-directory",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-012",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "leading-dash",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-013",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "apostrophe-path",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-014",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "backslash-name",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-015",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "control-byte-name",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-016",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "ending-newline",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-017",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "line-newline-name",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-018",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "nbsp-name",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-019",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "tab-name",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-020",
+      "suite": "codec",
+      "source_line": 93,
+      "runner": "codec-records",
+      "case": "trailing-space",
+      "check": "record-tab-count",
+      "expected_text": "2",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-021",
+      "suite": "codec",
+      "source_line": 97,
+      "runner": "codec-records",
+      "case": "candidate-count",
+      "check": "record-count",
+      "expected_text": "11",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-022",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "tab-name",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-023",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "line-newline-name",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-024",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "trailing-space",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-025",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "backslash-name",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-026",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "nbsp-name",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-027",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "leading-dash",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-028",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "control-byte-name",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-029",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "ending-newline",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-030",
+      "suite": "codec",
+      "source_line": 105,
+      "runner": "codec-records",
+      "case": "apostrophe-path",
+      "check": "kind",
+      "expected_text": "file",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-031",
+      "suite": "codec",
+      "source_line": 107,
+      "runner": "codec-records",
+      "case": "control-byte-name",
+      "check": "display-excludes-octal-escape",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-032",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "tab-name",
+      "check": "escaped-display",
+      "expected_text": "tab\\tname",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-033",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "line-newline-name",
+      "check": "escaped-display",
+      "expected_text": "line\\nname",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-034",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "trailing-space",
+      "check": "escaped-display",
+      "expected_text": "trailing ",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-035",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "backslash-name",
+      "check": "escaped-display",
+      "expected_text": "back\\\\slash",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-036",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "nbsp-name",
+      "check": "escaped-display",
+      "expected_text": "nbsp name",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-037",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "leading-dash",
+      "check": "escaped-display",
+      "expected_text": "-leading",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-038",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "control-byte-name",
+      "check": "escaped-display",
+      "expected_text": "control\\x01name",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-039",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "ending-newline",
+      "check": "escaped-display",
+      "expected_text": "ending-newline\\n",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-040",
+      "suite": "codec",
+      "source_line": 110,
+      "runner": "codec-records",
+      "case": "apostrophe-path",
+      "check": "escaped-display",
+      "expected_text": "apostrophe\\'path",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-041",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "tab-name",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-042",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "line-newline-name",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-043",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "trailing-space",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-044",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "backslash-name",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-045",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "nbsp-name",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-046",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "leading-dash",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-047",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "control-byte-name",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-048",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "ending-newline",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-049",
+      "suite": "codec",
+      "source_line": 116,
+      "runner": "codec-records",
+      "case": "apostrophe-path",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true",
+      "golden": "golden/codec-records.bin"
+    },
+    {
+      "id": "SRC-050",
+      "suite": "codec",
+      "source_line": 119,
+      "runner": "codec-roundtrip",
+      "case": "malformed-base64",
+      "check": "decode-rejected",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-051",
+      "suite": "batch-encoder",
+      "source_line": 140,
+      "runner": "batch-encoder",
+      "case": "mixed-byte-lines",
+      "check": "nul-output-equals-golden",
+      "expected_text": "true",
+      "golden": "golden/batch-encoder.bin"
+    },
+    {
+      "id": "SRC-052",
+      "suite": "batch-encoder",
+      "source_line": 142,
+      "runner": "batch-encoder",
+      "case": "dependency-load-failure",
+      "check": "exit-failure-propagated",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-053",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-current-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-054",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-parent-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-055",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-leading-dash-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-056",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-backslash-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-057",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-control-byte-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-058",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-line-newline-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-059",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-nbsp-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-060",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-space-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-061",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-tab-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-062",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cd-local-trailing-space-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-063",
+      "suite": "directory-enumeration",
+      "source_line": 191,
+      "runner": "directory-enumeration",
+      "case": "cd-local",
+      "check": "record-count",
+      "expected_text": "10"
+    },
+    {
+      "id": "SRC-064",
+      "suite": "directory-enumeration",
+      "source_line": 200,
+      "runner": "directory-enumeration",
+      "case": "cd-local-tab-directory",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-065",
+      "suite": "directory-enumeration",
+      "source_line": 201,
+      "runner": "directory-enumeration",
+      "case": "cd-local-tab-directory",
+      "check": "escaped-display",
+      "expected_text": "tab\\tdirectory"
+    },
+    {
+      "id": "SRC-066",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cd-local-tab-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-067",
+      "suite": "directory-enumeration",
+      "source_line": 200,
+      "runner": "directory-enumeration",
+      "case": "cd-local-line-newline-directory",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-068",
+      "suite": "directory-enumeration",
+      "source_line": 201,
+      "runner": "directory-enumeration",
+      "case": "cd-local-line-newline-directory",
+      "check": "escaped-display",
+      "expected_text": "line\\ndirectory"
+    },
+    {
+      "id": "SRC-069",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cd-local-line-newline-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-070",
+      "suite": "directory-enumeration",
+      "source_line": 200,
+      "runner": "directory-enumeration",
+      "case": "cd-local-trailing-space-directory",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-071",
+      "suite": "directory-enumeration",
+      "source_line": 201,
+      "runner": "directory-enumeration",
+      "case": "cd-local-trailing-space-directory",
+      "check": "escaped-display",
+      "expected_text": "trailing-directory "
+    },
+    {
+      "id": "SRC-072",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cd-local-trailing-space-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-073",
+      "suite": "directory-enumeration",
+      "source_line": 200,
+      "runner": "directory-enumeration",
+      "case": "cd-local-backslash-directory",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-074",
+      "suite": "directory-enumeration",
+      "source_line": 201,
+      "runner": "directory-enumeration",
+      "case": "cd-local-backslash-directory",
+      "check": "escaped-display",
+      "expected_text": "back\\\\slash-directory"
+    },
+    {
+      "id": "SRC-075",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cd-local-backslash-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-076",
+      "suite": "directory-enumeration",
+      "source_line": 200,
+      "runner": "directory-enumeration",
+      "case": "cd-local-nbsp-directory",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-077",
+      "suite": "directory-enumeration",
+      "source_line": 201,
+      "runner": "directory-enumeration",
+      "case": "cd-local-nbsp-directory",
+      "check": "escaped-display",
+      "expected_text": "nbsp directory"
+    },
+    {
+      "id": "SRC-078",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cd-local-nbsp-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-079",
+      "suite": "directory-enumeration",
+      "source_line": 200,
+      "runner": "directory-enumeration",
+      "case": "cd-local-leading-dash-directory",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-080",
+      "suite": "directory-enumeration",
+      "source_line": 201,
+      "runner": "directory-enumeration",
+      "case": "cd-local-leading-dash-directory",
+      "check": "escaped-display",
+      "expected_text": "-leading-directory"
+    },
+    {
+      "id": "SRC-081",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cd-local-leading-dash-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-082",
+      "suite": "directory-enumeration",
+      "source_line": 200,
+      "runner": "directory-enumeration",
+      "case": "cd-local-control-byte-directory",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-083",
+      "suite": "directory-enumeration",
+      "source_line": 201,
+      "runner": "directory-enumeration",
+      "case": "cd-local-control-byte-directory",
+      "check": "escaped-display",
+      "expected_text": "control\\x01directory"
+    },
+    {
+      "id": "SRC-084",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cd-local-control-byte-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-085",
+      "suite": "directory-enumeration",
+      "source_line": 200,
+      "runner": "directory-enumeration",
+      "case": "cd-local-space-directory",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-086",
+      "suite": "directory-enumeration",
+      "source_line": 201,
+      "runner": "directory-enumeration",
+      "case": "cd-local-space-directory",
+      "check": "escaped-display",
+      "expected_text": "space directory"
+    },
+    {
+      "id": "SRC-087",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cd-local-space-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-088",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-current-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-089",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-parent-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-090",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-leading-dash-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-091",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-backslash-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-092",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-control-byte-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-093",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-line-newline-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-094",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-nbsp-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-095",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-space-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-096",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-tab-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-097",
+      "suite": "directory-enumeration",
+      "source_line": 186,
+      "runner": "directory-enumeration",
+      "case": "cp-trailing-space-directory",
+      "check": "record-tab-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-098",
+      "suite": "directory-enumeration",
+      "source_line": 191,
+      "runner": "directory-enumeration",
+      "case": "cp",
+      "check": "record-count",
+      "expected_text": "10"
+    },
+    {
+      "id": "SRC-099",
+      "suite": "directory-enumeration",
+      "source_line": 203,
+      "runner": "directory-enumeration",
+      "case": "cp-tab-directory",
+      "check": "kind",
+      "expected_text": "directory"
+    },
+    {
+      "id": "SRC-100",
+      "suite": "directory-enumeration",
+      "source_line": 204,
+      "runner": "directory-enumeration",
+      "case": "cp-tab-directory",
+      "check": "escaped-display",
+      "expected_text": "tab\\tdirectory/"
+    },
+    {
+      "id": "SRC-101",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cp-tab-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-102",
+      "suite": "directory-enumeration",
+      "source_line": 203,
+      "runner": "directory-enumeration",
+      "case": "cp-line-newline-directory",
+      "check": "kind",
+      "expected_text": "directory"
+    },
+    {
+      "id": "SRC-103",
+      "suite": "directory-enumeration",
+      "source_line": 204,
+      "runner": "directory-enumeration",
+      "case": "cp-line-newline-directory",
+      "check": "escaped-display",
+      "expected_text": "line\\ndirectory/"
+    },
+    {
+      "id": "SRC-104",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cp-line-newline-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-105",
+      "suite": "directory-enumeration",
+      "source_line": 203,
+      "runner": "directory-enumeration",
+      "case": "cp-trailing-space-directory",
+      "check": "kind",
+      "expected_text": "directory"
+    },
+    {
+      "id": "SRC-106",
+      "suite": "directory-enumeration",
+      "source_line": 204,
+      "runner": "directory-enumeration",
+      "case": "cp-trailing-space-directory",
+      "check": "escaped-display",
+      "expected_text": "trailing-directory /"
+    },
+    {
+      "id": "SRC-107",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cp-trailing-space-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-108",
+      "suite": "directory-enumeration",
+      "source_line": 203,
+      "runner": "directory-enumeration",
+      "case": "cp-backslash-directory",
+      "check": "kind",
+      "expected_text": "directory"
+    },
+    {
+      "id": "SRC-109",
+      "suite": "directory-enumeration",
+      "source_line": 204,
+      "runner": "directory-enumeration",
+      "case": "cp-backslash-directory",
+      "check": "escaped-display",
+      "expected_text": "back\\\\slash-directory/"
+    },
+    {
+      "id": "SRC-110",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cp-backslash-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-111",
+      "suite": "directory-enumeration",
+      "source_line": 203,
+      "runner": "directory-enumeration",
+      "case": "cp-nbsp-directory",
+      "check": "kind",
+      "expected_text": "directory"
+    },
+    {
+      "id": "SRC-112",
+      "suite": "directory-enumeration",
+      "source_line": 204,
+      "runner": "directory-enumeration",
+      "case": "cp-nbsp-directory",
+      "check": "escaped-display",
+      "expected_text": "nbsp directory/"
+    },
+    {
+      "id": "SRC-113",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cp-nbsp-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-114",
+      "suite": "directory-enumeration",
+      "source_line": 203,
+      "runner": "directory-enumeration",
+      "case": "cp-leading-dash-directory",
+      "check": "kind",
+      "expected_text": "directory"
+    },
+    {
+      "id": "SRC-115",
+      "suite": "directory-enumeration",
+      "source_line": 204,
+      "runner": "directory-enumeration",
+      "case": "cp-leading-dash-directory",
+      "check": "escaped-display",
+      "expected_text": "-leading-directory/"
+    },
+    {
+      "id": "SRC-116",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cp-leading-dash-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-117",
+      "suite": "directory-enumeration",
+      "source_line": 203,
+      "runner": "directory-enumeration",
+      "case": "cp-control-byte-directory",
+      "check": "kind",
+      "expected_text": "directory"
+    },
+    {
+      "id": "SRC-118",
+      "suite": "directory-enumeration",
+      "source_line": 204,
+      "runner": "directory-enumeration",
+      "case": "cp-control-byte-directory",
+      "check": "escaped-display",
+      "expected_text": "control\\x01directory/"
+    },
+    {
+      "id": "SRC-119",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cp-control-byte-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-120",
+      "suite": "directory-enumeration",
+      "source_line": 203,
+      "runner": "directory-enumeration",
+      "case": "cp-space-directory",
+      "check": "kind",
+      "expected_text": "directory"
+    },
+    {
+      "id": "SRC-121",
+      "suite": "directory-enumeration",
+      "source_line": 204,
+      "runner": "directory-enumeration",
+      "case": "cp-space-directory",
+      "check": "escaped-display",
+      "expected_text": "space directory/"
+    },
+    {
+      "id": "SRC-122",
+      "suite": "directory-enumeration",
+      "source_line": 211,
+      "runner": "directory-enumeration",
+      "case": "cp-space-directory",
+      "check": "payload-bytes-equal-input",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-123",
+      "suite": "directory-enumeration",
+      "source_line": 227,
+      "runner": "directory-enumeration",
+      "case": "cd-local-ignored-worktrees",
+      "check": "kind",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-124",
+      "suite": "directory-enumeration",
+      "source_line": 228,
+      "runner": "directory-enumeration",
+      "case": "cd-local-ignored-worktrees",
+      "check": "display",
+      "expected_text": ".worktrees"
+    },
+    {
+      "id": "SRC-125",
+      "suite": "cd-merged",
+      "source_line": 265,
+      "runner": "cd-merged",
+      "case": "local-first-deduplicated",
+      "check": "decoded-path-order",
+      "expected_text": "true",
+      "golden": "golden/cd-order.bin"
+    },
+    {
+      "id": "SRC-126",
+      "suite": "cd-merged",
+      "source_line": 267,
+      "runner": "cd-merged",
+      "case": "local-first-deduplicated",
+      "check": "kind-order",
+      "expected_text": "local,local,local,local,zoxide,zoxide",
+      "golden": "golden/cd-order.bin"
+    },
+    {
+      "id": "SRC-127",
+      "suite": "cd-merged",
+      "source_line": 269,
+      "runner": "cd-merged",
+      "case": "local-first-deduplicated",
+      "check": "display-order",
+      "expected_text": ".,..,.hidden,visible,zoxide-one,zoxide-two",
+      "golden": "golden/cd-order.bin"
+    },
+    {
+      "id": "SRC-128",
+      "suite": "cd-merged",
+      "source_line": 278,
+      "runner": "cd-merged",
+      "case": "zoxide-exit-failure",
+      "check": "external-candidates-discarded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-129",
+      "suite": "cd-merged",
+      "source_line": 287,
+      "runner": "cd-merged",
+      "case": "zoxide-partial-failure",
+      "check": "external-candidates-discarded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-130",
+      "suite": "cd-merged",
+      "source_line": 300,
+      "runner": "cd-merged",
+      "case": "encoder-exit-failure",
+      "check": "external-candidates-discarded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-131",
+      "suite": "cd-merged",
+      "source_line": 315,
+      "runner": "cd-merged",
+      "case": "encoder-partial-failure",
+      "check": "external-candidates-discarded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-132",
+      "suite": "cd-merged",
+      "source_line": 320,
+      "runner": "cd-merged",
+      "case": "encoder-missing",
+      "check": "external-candidates-discarded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-133",
+      "suite": "operations",
+      "source_line": 342,
+      "runner": "operations",
+      "case": "parent",
+      "check": "decoded-parent-bytes",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-134",
+      "suite": "operations",
+      "source_line": 351,
+      "runner": "operations",
+      "case": "navigate-normal",
+      "check": "directory-state",
+      "expected_text": "encoded-target"
+    },
+    {
+      "id": "SRC-135",
+      "suite": "operations",
+      "source_line": 352,
+      "runner": "operations",
+      "case": "navigate-normal",
+      "check": "source-mode",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-136",
+      "suite": "operations",
+      "source_line": 353,
+      "runner": "operations",
+      "case": "navigate-normal",
+      "check": "prompt",
+      "expected_text": "[N] escaped-directory/ "
+    },
+    {
+      "id": "SRC-137",
+      "suite": "operations",
+      "source_line": 358,
+      "runner": "operations",
+      "case": "navigate-add",
+      "check": "prompt",
+      "expected_text": "[A] escaped-directory/ "
+    },
+    {
+      "id": "SRC-138",
+      "suite": "operations",
+      "source_line": 362,
+      "runner": "operations",
+      "case": "navigate-insert",
+      "check": "prompt",
+      "expected_text": "[I] escaped-directory/ "
+    },
+    {
+      "id": "SRC-139",
+      "suite": "operations",
+      "source_line": 373,
+      "runner": "operations",
+      "case": "navigate-cp",
+      "check": "decoded-candidate-order",
+      "expected_text": "current,parent,child,leading-dash"
+    },
+    {
+      "id": "SRC-140",
+      "suite": "operations",
+      "source_line": 386,
+      "runner": "operations",
+      "case": "navigate-cd-merged",
+      "check": "actions-contain-reload-sync",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-141",
+      "suite": "operations",
+      "source_line": 387,
+      "runner": "operations",
+      "case": "navigate-cd-merged",
+      "check": "actions-exclude-toggle-sort",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-142",
+      "suite": "operations",
+      "source_line": 389,
+      "runner": "operations",
+      "case": "navigate-cd-merged",
+      "check": "includes-zoxide-candidate",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-143",
+      "suite": "operations",
+      "source_line": 399,
+      "runner": "operations",
+      "case": "relative0",
+      "check": "three-relative-output-bytes",
+      "expected_text": "child-newline,./-leading,absolute-missing-newline"
+    },
+    {
+      "id": "SRC-144",
+      "suite": "operations",
+      "source_line": 407,
+      "runner": "operations",
+      "case": "malformed-navigation",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-145",
+      "suite": "operations",
+      "source_line": 408,
+      "runner": "operations",
+      "case": "malformed-navigation",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-146",
+      "suite": "operations",
+      "source_line": 409,
+      "runner": "operations",
+      "case": "malformed-navigation",
+      "check": "prompt-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-147",
+      "suite": "operations",
+      "source_line": 410,
+      "runner": "operations",
+      "case": "malformed-navigation",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-148",
+      "suite": "operations",
+      "source_line": 416,
+      "runner": "operations",
+      "case": "cd-local-enumeration-failure",
+      "check": "exit-failure-propagated",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-149",
+      "suite": "operations",
+      "source_line": 420,
+      "runner": "operations",
+      "case": "cp-enumeration-failure",
+      "check": "exit-failure-propagated",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-150",
+      "suite": "operations",
+      "source_line": 429,
+      "runner": "operations",
+      "case": "navigation-enumeration-failure",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-151",
+      "suite": "operations",
+      "source_line": 430,
+      "runner": "operations",
+      "case": "navigation-enumeration-failure",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-152",
+      "suite": "operations",
+      "source_line": 431,
+      "runner": "operations",
+      "case": "navigation-enumeration-failure",
+      "check": "prompt-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-153",
+      "suite": "operations",
+      "source_line": 432,
+      "runner": "operations",
+      "case": "navigation-enumeration-failure",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-154",
+      "suite": "operations",
+      "source_line": 433,
+      "runner": "operations",
+      "case": "navigation-enumeration-failure",
+      "check": "actions",
+      "expected_text": ""
+    },
+    {
+      "id": "SRC-155",
+      "suite": "operations",
+      "source_line": 445,
+      "runner": "operations",
+      "case": "candidate-replacement-failure",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-156",
+      "suite": "operations",
+      "source_line": 446,
+      "runner": "operations",
+      "case": "candidate-replacement-failure",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-157",
+      "suite": "operations",
+      "source_line": 447,
+      "runner": "operations",
+      "case": "candidate-replacement-failure",
+      "check": "prompt-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-158",
+      "suite": "operations",
+      "source_line": 448,
+      "runner": "operations",
+      "case": "candidate-replacement-failure",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-159",
+      "suite": "operations",
+      "source_line": 449,
+      "runner": "operations",
+      "case": "candidate-replacement-failure",
+      "check": "actions",
+      "expected_text": ""
+    },
+    {
+      "id": "SRC-160",
+      "suite": "operations",
+      "source_line": 456,
+      "runner": "operations",
+      "case": "state-preparation-failure",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-161",
+      "suite": "operations",
+      "source_line": 457,
+      "runner": "operations",
+      "case": "state-preparation-failure",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-162",
+      "suite": "operations",
+      "source_line": 458,
+      "runner": "operations",
+      "case": "state-preparation-failure",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-163",
+      "suite": "operations",
+      "source_line": 459,
+      "runner": "operations",
+      "case": "state-preparation-failure",
+      "check": "actions",
+      "expected_text": ""
+    },
+    {
+      "id": "SRC-164",
+      "suite": "operations",
+      "source_line": 467,
+      "runner": "operations",
+      "case": "preview-path",
+      "check": "received-path-bytes",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-165",
+      "suite": "operations",
+      "source_line": 469,
+      "runner": "operations",
+      "case": "preview-invalid-picker",
+      "check": "request-rejected",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-166",
+      "suite": "operations",
+      "source_line": 474,
+      "runner": "operations",
+      "case": "preview-invalid-picker",
+      "check": "command-not-invoked",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-167",
+      "suite": "slash",
+      "source_line": 504,
+      "runner": "slash",
+      "case": "cd-exact-parent",
+      "check": "directory-state",
+      "expected_text": "parent"
+    },
+    {
+      "id": "SRC-168",
+      "suite": "slash",
+      "source_line": 505,
+      "runner": "slash",
+      "case": "cd-exact-parent",
+      "check": "actions-contain-reload-sync",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-169",
+      "suite": "slash",
+      "source_line": 506,
+      "runner": "slash",
+      "case": "cd-exact-parent",
+      "check": "actions-contain-clear-query",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-170",
+      "suite": "slash",
+      "source_line": 511,
+      "runner": "slash",
+      "case": "cd-parent-at-root",
+      "check": "directory-state",
+      "expected_text": "root"
+    },
+    {
+      "id": "SRC-171",
+      "suite": "slash",
+      "source_line": 512,
+      "runner": "slash",
+      "case": "cd-parent-at-root",
+      "check": "actions-contain-clear-query",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-172",
+      "suite": "slash",
+      "source_line": 520,
+      "runner": "slash",
+      "case": "cd-ordinary-query",
+      "check": "action",
+      "expected_text": "put(/)"
+    },
+    {
+      "id": "SRC-173",
+      "suite": "slash",
+      "source_line": 521,
+      "runner": "slash",
+      "case": "cd-ordinary-query",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-174",
+      "suite": "slash",
+      "source_line": 522,
+      "runner": "slash",
+      "case": "cd-ordinary-query",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-175",
+      "suite": "slash",
+      "source_line": 527,
+      "runner": "slash",
+      "case": "cd-add-mode",
+      "check": "action",
+      "expected_text": "put(/)"
+    },
+    {
+      "id": "SRC-176",
+      "suite": "slash",
+      "source_line": 532,
+      "runner": "slash",
+      "case": "cd-normal-nonempty",
+      "check": "action",
+      "expected_text": "ignore"
+    },
+    {
+      "id": "SRC-177",
+      "suite": "slash",
+      "source_line": 537,
+      "runner": "slash",
+      "case": "cd-normal-empty",
+      "check": "directory-state",
+      "expected_text": "root"
+    },
+    {
+      "id": "SRC-178",
+      "suite": "slash",
+      "source_line": 538,
+      "runner": "slash",
+      "case": "cd-normal-empty",
+      "check": "actions-contain-clear-query",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-179",
+      "suite": "slash",
+      "source_line": 504,
+      "runner": "slash",
+      "case": "cp-exact-parent",
+      "check": "directory-state",
+      "expected_text": "parent"
+    },
+    {
+      "id": "SRC-180",
+      "suite": "slash",
+      "source_line": 505,
+      "runner": "slash",
+      "case": "cp-exact-parent",
+      "check": "actions-contain-reload-sync",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-181",
+      "suite": "slash",
+      "source_line": 506,
+      "runner": "slash",
+      "case": "cp-exact-parent",
+      "check": "actions-contain-clear-query",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-182",
+      "suite": "slash",
+      "source_line": 511,
+      "runner": "slash",
+      "case": "cp-parent-at-root",
+      "check": "directory-state",
+      "expected_text": "root"
+    },
+    {
+      "id": "SRC-183",
+      "suite": "slash",
+      "source_line": 512,
+      "runner": "slash",
+      "case": "cp-parent-at-root",
+      "check": "actions-contain-clear-query",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-184",
+      "suite": "slash",
+      "source_line": 520,
+      "runner": "slash",
+      "case": "cp-ordinary-query",
+      "check": "action",
+      "expected_text": "put(/)"
+    },
+    {
+      "id": "SRC-185",
+      "suite": "slash",
+      "source_line": 521,
+      "runner": "slash",
+      "case": "cp-ordinary-query",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-186",
+      "suite": "slash",
+      "source_line": 522,
+      "runner": "slash",
+      "case": "cp-ordinary-query",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-187",
+      "suite": "slash",
+      "source_line": 527,
+      "runner": "slash",
+      "case": "cp-add-mode",
+      "check": "action",
+      "expected_text": "put(/)"
+    },
+    {
+      "id": "SRC-188",
+      "suite": "slash",
+      "source_line": 532,
+      "runner": "slash",
+      "case": "cp-normal-nonempty",
+      "check": "action",
+      "expected_text": "ignore"
+    },
+    {
+      "id": "SRC-189",
+      "suite": "slash",
+      "source_line": 537,
+      "runner": "slash",
+      "case": "cp-normal-empty",
+      "check": "directory-state",
+      "expected_text": "root"
+    },
+    {
+      "id": "SRC-190",
+      "suite": "slash",
+      "source_line": 538,
+      "runner": "slash",
+      "case": "cp-normal-empty",
+      "check": "actions-contain-clear-query",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-191",
+      "suite": "slash",
+      "source_line": 548,
+      "runner": "slash",
+      "case": "invalid-picker",
+      "check": "action",
+      "expected_text": ""
+    },
+    {
+      "id": "SRC-192",
+      "suite": "slash",
+      "source_line": 549,
+      "runner": "slash",
+      "case": "invalid-picker",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-193",
+      "suite": "slash",
+      "source_line": 556,
+      "runner": "slash",
+      "case": "missing-directory-state",
+      "check": "action",
+      "expected_text": ""
+    },
+    {
+      "id": "SRC-194",
+      "suite": "slash",
+      "source_line": 564,
+      "runner": "slash",
+      "case": "missing-keymap-state",
+      "check": "action",
+      "expected_text": ""
+    },
+    {
+      "id": "SRC-195",
+      "suite": "modal",
+      "source_line": 578,
+      "runner": "modal",
+      "case": "insert",
+      "check": "mode",
+      "expected_text": "insert"
+    },
+    {
+      "id": "SRC-196",
+      "suite": "modal",
+      "source_line": 579,
+      "runner": "modal",
+      "case": "insert",
+      "check": "search-enabled",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-197",
+      "suite": "modal",
+      "source_line": 580,
+      "runner": "modal",
+      "case": "insert",
+      "check": "normal-keys-unbound",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-198",
+      "suite": "modal",
+      "source_line": 581,
+      "runner": "modal",
+      "case": "insert",
+      "check": "navigation-keys-rebound",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-199",
+      "suite": "modal",
+      "source_line": 584,
+      "runner": "modal",
+      "case": "insert",
+      "check": "cursor-sequence",
+      "expected_text": "\\u001b[6 q"
+    },
+    {
+      "id": "SRC-200",
+      "suite": "modal",
+      "source_line": 588,
+      "runner": "modal",
+      "case": "insert-escape",
+      "check": "mode",
+      "expected_text": "normal"
+    },
+    {
+      "id": "SRC-201",
+      "suite": "modal",
+      "source_line": 589,
+      "runner": "modal",
+      "case": "insert-escape",
+      "check": "marks-preserved",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-202",
+      "suite": "modal",
+      "source_line": 593,
+      "runner": "modal",
+      "case": "normal-escape",
+      "check": "mode",
+      "expected_text": "normal"
+    },
+    {
+      "id": "SRC-203",
+      "suite": "modal",
+      "source_line": 594,
+      "runner": "modal",
+      "case": "normal-escape",
+      "check": "action",
+      "expected_text": "clear-multi"
+    },
+    {
+      "id": "SRC-204",
+      "suite": "modal",
+      "source_line": 598,
+      "runner": "modal",
+      "case": "add",
+      "check": "mode",
+      "expected_text": "add"
+    },
+    {
+      "id": "SRC-205",
+      "suite": "modal",
+      "source_line": 599,
+      "runner": "modal",
+      "case": "add",
+      "check": "search-enabled",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-206",
+      "suite": "modal",
+      "source_line": 600,
+      "runner": "modal",
+      "case": "add",
+      "check": "normal-and-navigation-keys-unbound",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-207",
+      "suite": "modal",
+      "source_line": 602,
+      "runner": "modal",
+      "case": "add",
+      "check": "query-cleared",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-208",
+      "suite": "modal",
+      "source_line": 604,
+      "runner": "modal",
+      "case": "add",
+      "check": "cursor-sequence",
+      "expected_text": "\\u001b[6 q"
+    },
+    {
+      "id": "SRC-209",
+      "suite": "modal",
+      "source_line": 608,
+      "runner": "modal",
+      "case": "add-escape",
+      "check": "mode",
+      "expected_text": "normal"
+    },
+    {
+      "id": "SRC-210",
+      "suite": "modal",
+      "source_line": 609,
+      "runner": "modal",
+      "case": "add-escape",
+      "check": "keys-rebound",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-211",
+      "suite": "modal",
+      "source_line": 611,
+      "runner": "modal",
+      "case": "add-escape",
+      "check": "query-cleared",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-212",
+      "suite": "modal",
+      "source_line": 612,
+      "runner": "modal",
+      "case": "add-escape",
+      "check": "marks-preserved",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-213",
+      "suite": "modal",
+      "source_line": 617,
+      "runner": "modal",
+      "case": "insert-enter",
+      "check": "action",
+      "expected_text": "print(enter)+accept"
+    },
+    {
+      "id": "SRC-214",
+      "suite": "modal",
+      "source_line": 621,
+      "runner": "modal",
+      "case": "normal-enter",
+      "check": "action",
+      "expected_text": "print(enter)+accept"
+    },
+    {
+      "id": "SRC-215",
+      "suite": "create",
+      "source_line": 644,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "exists",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-216",
+      "suite": "create",
+      "source_line": 647,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "directory-state",
+      "expected_text": "created-target"
+    },
+    {
+      "id": "SRC-217",
+      "suite": "create",
+      "source_line": 648,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "mode",
+      "expected_text": "normal"
+    },
+    {
+      "id": "SRC-218",
+      "suite": "create",
+      "source_line": 649,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "source-mode",
+      "expected_text": "local"
+    },
+    {
+      "id": "SRC-219",
+      "suite": "create",
+      "source_line": 650,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "prompt",
+      "expected_text": "[N] created-target/ "
+    },
+    {
+      "id": "SRC-220",
+      "suite": "create",
+      "source_line": 651,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "normal-keymap-activated",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-221",
+      "suite": "create",
+      "source_line": 653,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "marks-cleared",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-222",
+      "suite": "create",
+      "source_line": 654,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "query-cleared",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-223",
+      "suite": "create",
+      "source_line": 655,
+      "runner": "create",
+      "case": "new-directory",
+      "check": "candidates-reloaded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-224",
+      "suite": "create",
+      "source_line": 663,
+      "runner": "create",
+      "case": "existing-directory",
+      "check": "directory-state",
+      "expected_text": "existing-target"
+    },
+    {
+      "id": "SRC-225",
+      "suite": "create",
+      "source_line": 664,
+      "runner": "create",
+      "case": "existing-directory",
+      "check": "mode",
+      "expected_text": "normal"
+    },
+    {
+      "id": "SRC-226",
+      "suite": "create",
+      "source_line": 675,
+      "runner": "create",
+      "case": "invalid-empty",
+      "check": "mode",
+      "expected_text": "add"
+    },
+    {
+      "id": "SRC-227",
+      "suite": "create",
+      "source_line": 676,
+      "runner": "create",
+      "case": "invalid-empty",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-228",
+      "suite": "create",
+      "source_line": 677,
+      "runner": "create",
+      "case": "invalid-empty",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-229",
+      "suite": "create",
+      "source_line": 678,
+      "runner": "create",
+      "case": "invalid-empty",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-230",
+      "suite": "create",
+      "source_line": 679,
+      "runner": "create",
+      "case": "invalid-empty",
+      "check": "prompt",
+      "expected_text": "[A!] current-directory/ "
+    },
+    {
+      "id": "SRC-231",
+      "suite": "create",
+      "source_line": 680,
+      "runner": "create",
+      "case": "invalid-empty",
+      "check": "prompt-refreshed",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-232",
+      "suite": "create",
+      "source_line": 681,
+      "runner": "create",
+      "case": "invalid-empty",
+      "check": "query-retained",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-233",
+      "suite": "create",
+      "source_line": 682,
+      "runner": "create",
+      "case": "invalid-empty",
+      "check": "candidates-not-reloaded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-234",
+      "suite": "create",
+      "source_line": 675,
+      "runner": "create",
+      "case": "invalid-absolute",
+      "check": "mode",
+      "expected_text": "add"
+    },
+    {
+      "id": "SRC-235",
+      "suite": "create",
+      "source_line": 676,
+      "runner": "create",
+      "case": "invalid-absolute",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-236",
+      "suite": "create",
+      "source_line": 677,
+      "runner": "create",
+      "case": "invalid-absolute",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-237",
+      "suite": "create",
+      "source_line": 678,
+      "runner": "create",
+      "case": "invalid-absolute",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-238",
+      "suite": "create",
+      "source_line": 679,
+      "runner": "create",
+      "case": "invalid-absolute",
+      "check": "prompt",
+      "expected_text": "[A!] current-directory/ "
+    },
+    {
+      "id": "SRC-239",
+      "suite": "create",
+      "source_line": 680,
+      "runner": "create",
+      "case": "invalid-absolute",
+      "check": "prompt-refreshed",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-240",
+      "suite": "create",
+      "source_line": 681,
+      "runner": "create",
+      "case": "invalid-absolute",
+      "check": "query-retained",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-241",
+      "suite": "create",
+      "source_line": 682,
+      "runner": "create",
+      "case": "invalid-absolute",
+      "check": "candidates-not-reloaded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-242",
+      "suite": "create",
+      "source_line": 675,
+      "runner": "create",
+      "case": "invalid-parent-escape",
+      "check": "mode",
+      "expected_text": "add"
+    },
+    {
+      "id": "SRC-243",
+      "suite": "create",
+      "source_line": 676,
+      "runner": "create",
+      "case": "invalid-parent-escape",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-244",
+      "suite": "create",
+      "source_line": 677,
+      "runner": "create",
+      "case": "invalid-parent-escape",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-245",
+      "suite": "create",
+      "source_line": 678,
+      "runner": "create",
+      "case": "invalid-parent-escape",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-246",
+      "suite": "create",
+      "source_line": 679,
+      "runner": "create",
+      "case": "invalid-parent-escape",
+      "check": "prompt",
+      "expected_text": "[A!] current-directory/ "
+    },
+    {
+      "id": "SRC-247",
+      "suite": "create",
+      "source_line": 680,
+      "runner": "create",
+      "case": "invalid-parent-escape",
+      "check": "prompt-refreshed",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-248",
+      "suite": "create",
+      "source_line": 681,
+      "runner": "create",
+      "case": "invalid-parent-escape",
+      "check": "query-retained",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-249",
+      "suite": "create",
+      "source_line": 682,
+      "runner": "create",
+      "case": "invalid-parent-escape",
+      "check": "candidates-not-reloaded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-250",
+      "suite": "create",
+      "source_line": 675,
+      "runner": "create",
+      "case": "invalid-embedded-parent-escape",
+      "check": "mode",
+      "expected_text": "add"
+    },
+    {
+      "id": "SRC-251",
+      "suite": "create",
+      "source_line": 676,
+      "runner": "create",
+      "case": "invalid-embedded-parent-escape",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-252",
+      "suite": "create",
+      "source_line": 677,
+      "runner": "create",
+      "case": "invalid-embedded-parent-escape",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-253",
+      "suite": "create",
+      "source_line": 678,
+      "runner": "create",
+      "case": "invalid-embedded-parent-escape",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-254",
+      "suite": "create",
+      "source_line": 679,
+      "runner": "create",
+      "case": "invalid-embedded-parent-escape",
+      "check": "prompt",
+      "expected_text": "[A!] current-directory/ "
+    },
+    {
+      "id": "SRC-255",
+      "suite": "create",
+      "source_line": 680,
+      "runner": "create",
+      "case": "invalid-embedded-parent-escape",
+      "check": "prompt-refreshed",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-256",
+      "suite": "create",
+      "source_line": 681,
+      "runner": "create",
+      "case": "invalid-embedded-parent-escape",
+      "check": "query-retained",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-257",
+      "suite": "create",
+      "source_line": 682,
+      "runner": "create",
+      "case": "invalid-embedded-parent-escape",
+      "check": "candidates-not-reloaded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-258",
+      "suite": "create",
+      "source_line": 675,
+      "runner": "create",
+      "case": "invalid-existing-file",
+      "check": "mode",
+      "expected_text": "add"
+    },
+    {
+      "id": "SRC-259",
+      "suite": "create",
+      "source_line": 676,
+      "runner": "create",
+      "case": "invalid-existing-file",
+      "check": "directory-state-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-260",
+      "suite": "create",
+      "source_line": 677,
+      "runner": "create",
+      "case": "invalid-existing-file",
+      "check": "source-mode-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-261",
+      "suite": "create",
+      "source_line": 678,
+      "runner": "create",
+      "case": "invalid-existing-file",
+      "check": "candidates-unchanged",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-262",
+      "suite": "create",
+      "source_line": 679,
+      "runner": "create",
+      "case": "invalid-existing-file",
+      "check": "prompt",
+      "expected_text": "[A!] current-directory/ "
+    },
+    {
+      "id": "SRC-263",
+      "suite": "create",
+      "source_line": 680,
+      "runner": "create",
+      "case": "invalid-existing-file",
+      "check": "prompt-refreshed",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-264",
+      "suite": "create",
+      "source_line": 681,
+      "runner": "create",
+      "case": "invalid-existing-file",
+      "check": "query-retained",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-265",
+      "suite": "create",
+      "source_line": 682,
+      "runner": "create",
+      "case": "invalid-existing-file",
+      "check": "candidates-not-reloaded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-266",
+      "suite": "preview",
+      "source_line": 699,
+      "runner": "preview",
+      "case": "literal-trailing-newline",
+      "check": "marker-present",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-267",
+      "suite": "preview",
+      "source_line": 703,
+      "runner": "preview",
+      "case": "literal-nbsp",
+      "check": "marker-present",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-268",
+      "suite": "preview",
+      "source_line": 707,
+      "runner": "preview",
+      "case": "fzf-tab-second-field",
+      "check": "completion-marker-present",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-269",
+      "suite": "zshrc-cd",
+      "source_line": 719,
+      "runner": "zshrc-cd",
+      "case": "widget-delimiters",
+      "check": "start-present",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-270",
+      "suite": "zshrc-cd",
+      "source_line": 722,
+      "runner": "zshrc-cd",
+      "case": "widget-delimiters",
+      "check": "end-after-start",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-271",
+      "suite": "zshrc-cd",
+      "source_line": 726,
+      "runner": "zshrc-cd",
+      "case": "initial-state",
+      "check": "encoded-cwd",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-272",
+      "suite": "zshrc-cd",
+      "source_line": 728,
+      "runner": "zshrc-cd",
+      "case": "initial-state",
+      "check": "encoded-root",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-273",
+      "suite": "zshrc-cd",
+      "source_line": 730,
+      "runner": "zshrc-cd",
+      "case": "initial-state",
+      "check": "encoded-home",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-274",
+      "suite": "zshrc-cd",
+      "source_line": 732,
+      "runner": "zshrc-cd",
+      "case": "bindings",
+      "check": "escape-callback",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-275",
+      "suite": "zshrc-cd",
+      "source_line": 733,
+      "runner": "zshrc-cd",
+      "case": "bindings",
+      "check": "enter-callback",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-276",
+      "suite": "zshrc-cd",
+      "source_line": 734,
+      "runner": "zshrc-cd",
+      "case": "bindings",
+      "check": "slash-callback",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-277",
+      "suite": "zshrc-cd",
+      "source_line": 736,
+      "runner": "zshrc-cd",
+      "case": "bindings",
+      "check": "add-mode-callback",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-278",
+      "suite": "zshrc-cd",
+      "source_line": 737,
+      "runner": "zshrc-cd",
+      "case": "initial-mode",
+      "check": "normal-keys-unbound",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-279",
+      "suite": "zshrc-cd",
+      "source_line": 739,
+      "runner": "zshrc-cd",
+      "case": "merged-source",
+      "check": "initialized",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-280",
+      "suite": "zshrc-cd",
+      "source_line": 741,
+      "runner": "zshrc-cd",
+      "case": "merged-source",
+      "check": "excludes-cd-local",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-281",
+      "suite": "zshrc-cd",
+      "source_line": 742,
+      "runner": "zshrc-cd",
+      "case": "merged-source",
+      "check": "excludes-cd-zoxide",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-282",
+      "suite": "zshrc-cd",
+      "source_line": 743,
+      "runner": "zshrc-cd",
+      "case": "merged-source",
+      "check": "excludes-source-mode-state",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-283",
+      "suite": "zshrc-cd",
+      "source_line": 744,
+      "runner": "zshrc-cd",
+      "case": "merged-source",
+      "check": "excludes-shift-tab-switching",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-284",
+      "suite": "zshrc-cd",
+      "source_line": 745,
+      "runner": "zshrc-cd",
+      "case": "merged-source",
+      "check": "excludes-toggle-sort",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-285",
+      "suite": "zshrc-cd",
+      "source_line": 746,
+      "runner": "zshrc-cd",
+      "case": "merged-source",
+      "check": "feeds-fzf",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-286",
+      "suite": "zshrc-cd",
+      "source_line": 751,
+      "runner": "zshrc-cd",
+      "case": "field-three",
+      "check": "occurrences",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-287",
+      "suite": "zshrc-cd",
+      "source_line": 755,
+      "runner": "zshrc-cd",
+      "case": "field-three",
+      "check": "forward-assignment-occurrences",
+      "expected_text": "1"
+    },
+    {
+      "id": "SRC-288",
+      "suite": "zshrc-cd",
+      "source_line": 759,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "forward-and-parent-route-count",
+      "expected_text": "2"
+    },
+    {
+      "id": "SRC-289",
+      "suite": "zshrc-cd",
+      "source_line": 761,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "parent-helper-route",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-290",
+      "suite": "zshrc-cd",
+      "source_line": 763,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "parent-starts-current-directory",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-291",
+      "suite": "zshrc-cd",
+      "source_line": 765,
+      "runner": "zshrc-cd",
+      "case": "preview",
+      "check": "encoded-helper-route",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-292",
+      "suite": "zshrc-cd",
+      "source_line": 767,
+      "runner": "zshrc-cd",
+      "case": "acceptance",
+      "check": "field-three-parsed",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-293",
+      "suite": "zshrc-cd",
+      "source_line": 772,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "destination-count",
+      "expected_text": "3"
+    },
+    {
+      "id": "SRC-294",
+      "suite": "zshrc-cd",
+      "source_line": 774,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "root-does-not-bypass-slash",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-295",
+      "suite": "zshrc-cd",
+      "source_line": 776,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "encoded-home-route",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-296",
+      "suite": "zshrc-cd",
+      "source_line": 778,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "raw-root-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-297",
+      "suite": "zshrc-cd",
+      "source_line": 780,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "raw-home-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-298",
+      "suite": "zshrc-cd",
+      "source_line": 782,
+      "runner": "zshrc-cd",
+      "case": "preview",
+      "check": "encoded-eza-route-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-299",
+      "suite": "zshrc-cd",
+      "source_line": 783,
+      "runner": "zshrc-cd",
+      "case": "preview",
+      "check": "encoded-script-route-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-300",
+      "suite": "zshrc-cd",
+      "source_line": 785,
+      "runner": "zshrc-cd",
+      "case": "navigation",
+      "check": "raw-path-modifier-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-301",
+      "suite": "zshrc-cd",
+      "source_line": 786,
+      "runner": "zshrc-cd",
+      "case": "acceptance",
+      "check": "payload-decoded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-302",
+      "suite": "zshrc-cd",
+      "source_line": 788,
+      "runner": "zshrc-cd",
+      "case": "acceptance",
+      "check": "nul-aware-read",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-303",
+      "suite": "zshrc-cd",
+      "source_line": 790,
+      "runner": "zshrc-cd",
+      "case": "acceptance",
+      "check": "no-command-substitution-decode",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-304",
+      "suite": "zshrc-cd",
+      "source_line": 792,
+      "runner": "zshrc-cd",
+      "case": "acceptance",
+      "check": "exactly-one-target",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-305",
+      "suite": "zshrc-cd",
+      "source_line": 793,
+      "runner": "zshrc-cd",
+      "case": "acceptance",
+      "check": "zsh-quoted-command",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-306",
+      "suite": "zshrc-cd",
+      "source_line": 795,
+      "runner": "zshrc-cd",
+      "case": "selection",
+      "check": "single",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-307",
+      "suite": "zshrc-cd",
+      "source_line": 796,
+      "runner": "zshrc-cd",
+      "case": "selection",
+      "check": "sort-and-query",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-308",
+      "suite": "zshrc-cd",
+      "source_line": 799,
+      "runner": "zshrc-cd",
+      "case": "process",
+      "check": "fzf-count",
+      "expected_text": "1"
+    },
+    {
+      "id": "SRC-309",
+      "suite": "zshrc-cd",
+      "source_line": 839,
+      "runner": "zshrc-cd",
+      "case": "eof-newline-target",
+      "check": "buffer",
+      "expected_text": "zsh-quoted-decoded-target"
+    },
+    {
+      "id": "SRC-310",
+      "suite": "zshrc-cd",
+      "source_line": 840,
+      "runner": "zshrc-cd",
+      "case": "eof-newline-target",
+      "check": "accept-line-count",
+      "expected_text": "1"
+    },
+    {
+      "id": "SRC-311",
+      "suite": "zshrc-cp",
+      "source_line": 855,
+      "runner": "zshrc-cp",
+      "case": "widget-delimiters",
+      "check": "start-present",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-312",
+      "suite": "zshrc-cp",
+      "source_line": 858,
+      "runner": "zshrc-cp",
+      "case": "widget-delimiters",
+      "check": "end-after-start",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-313",
+      "suite": "zshrc-cp",
+      "source_line": 862,
+      "runner": "zshrc-cp",
+      "case": "initial-state",
+      "check": "encoded-base",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-314",
+      "suite": "zshrc-cp",
+      "source_line": 864,
+      "runner": "zshrc-cp",
+      "case": "initial-state",
+      "check": "encoded-cwd",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-315",
+      "suite": "zshrc-cp",
+      "source_line": 866,
+      "runner": "zshrc-cp",
+      "case": "initial-state",
+      "check": "encoded-root",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-316",
+      "suite": "zshrc-cp",
+      "source_line": 868,
+      "runner": "zshrc-cp",
+      "case": "initial-state",
+      "check": "encoded-home",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-317",
+      "suite": "zshrc-cp",
+      "source_line": 870,
+      "runner": "zshrc-cp",
+      "case": "selection",
+      "check": "unrestricted-multi",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-318",
+      "suite": "zshrc-cp",
+      "source_line": 871,
+      "runner": "zshrc-cp",
+      "case": "selection",
+      "check": "single-selection-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-319",
+      "suite": "zshrc-cp",
+      "source_line": 872,
+      "runner": "zshrc-cp",
+      "case": "bindings",
+      "check": "escape-callback",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-320",
+      "suite": "zshrc-cp",
+      "source_line": 873,
+      "runner": "zshrc-cp",
+      "case": "bindings",
+      "check": "enter-callback",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-321",
+      "suite": "zshrc-cp",
+      "source_line": 874,
+      "runner": "zshrc-cp",
+      "case": "bindings",
+      "check": "slash-callback",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-322",
+      "suite": "zshrc-cp",
+      "source_line": 876,
+      "runner": "zshrc-cp",
+      "case": "bindings",
+      "check": "add-mode-callback",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-323",
+      "suite": "zshrc-cp",
+      "source_line": 877,
+      "runner": "zshrc-cp",
+      "case": "bindings",
+      "check": "normal-space-toggle",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-324",
+      "suite": "zshrc-cp",
+      "source_line": 878,
+      "runner": "zshrc-cp",
+      "case": "bindings",
+      "check": "normal-space-preserves-marks",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-325",
+      "suite": "zshrc-cp",
+      "source_line": 879,
+      "runner": "zshrc-cp",
+      "case": "initial-mode",
+      "check": "normal-keys-unbound",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-326",
+      "suite": "zshrc-cp",
+      "source_line": 884,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "destination-count",
+      "expected_text": "3"
+    },
+    {
+      "id": "SRC-327",
+      "suite": "zshrc-cp",
+      "source_line": 886,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "field-three-helper-route",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-328",
+      "suite": "zshrc-cp",
+      "source_line": 888,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "parent-helper-route",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-329",
+      "suite": "zshrc-cp",
+      "source_line": 890,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "root-does-not-bypass-slash",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-330",
+      "suite": "zshrc-cp",
+      "source_line": 892,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "encoded-home-route",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-331",
+      "suite": "zshrc-cp",
+      "source_line": 894,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "raw-root-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-332",
+      "suite": "zshrc-cp",
+      "source_line": 896,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "raw-home-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-333",
+      "suite": "zshrc-cp",
+      "source_line": 898,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "direct-reload-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-334",
+      "suite": "zshrc-cp",
+      "source_line": 900,
+      "runner": "zshrc-cp",
+      "case": "preview",
+      "check": "encoded-helper-route",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-335",
+      "suite": "zshrc-cp",
+      "source_line": 902,
+      "runner": "zshrc-cp",
+      "case": "preview",
+      "check": "encoded-script-route-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-336",
+      "suite": "zshrc-cp",
+      "source_line": 904,
+      "runner": "zshrc-cp",
+      "case": "navigation",
+      "check": "raw-path-modifier-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-337",
+      "suite": "zshrc-cp",
+      "source_line": 906,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "enter-key-first",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-338",
+      "suite": "zshrc-cp",
+      "source_line": 907,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "all-records-collected",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-339",
+      "suite": "zshrc-cp",
+      "source_line": 909,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "exactly-two-tabs",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-340",
+      "suite": "zshrc-cp",
+      "source_line": 911,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "full-record-count-map",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-341",
+      "suite": "zshrc-cp",
+      "source_line": 913,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "counts-keyed-by-full-record",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-342",
+      "suite": "zshrc-cp",
+      "source_line": 915,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "nested-matching-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-343",
+      "suite": "zshrc-cp",
+      "source_line": 917,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "all-records-match",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-344",
+      "suite": "zshrc-cp",
+      "source_line": 919,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "all-payloads-collected",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-345",
+      "suite": "zshrc-cp",
+      "source_line": 921,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "atomic-relative-decode",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-346",
+      "suite": "zshrc-cp",
+      "source_line": 923,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "nul-aware-relative-read",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-347",
+      "suite": "zshrc-cp",
+      "source_line": 925,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "decode-cardinality",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-348",
+      "suite": "zshrc-cp",
+      "source_line": 927,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "zsh-quote-each-path",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-349",
+      "suite": "zshrc-cp",
+      "source_line": 929,
+      "runner": "zshrc-cp",
+      "case": "acceptance",
+      "check": "single-space-join",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-350",
+      "suite": "zshrc-cp",
+      "source_line": 934,
+      "runner": "zshrc-cp",
+      "case": "process",
+      "check": "fzf-count",
+      "expected_text": "1"
+    },
+    {
+      "id": "SRC-351",
+      "suite": "zshrc-cp",
+      "source_line": 990,
+      "runner": "zshrc-cp",
+      "case": "visible-order",
+      "check": "restored-by-full-record",
+      "expected_text": "true",
+      "golden": "golden/cp-order.bin"
+    },
+    {
+      "id": "SRC-352",
+      "suite": "zshrc-cp",
+      "source_line": 1004,
+      "runner": "zshrc-cp",
+      "case": "duplicate-selection",
+      "check": "multiplicity-preserved",
+      "expected_text": "true",
+      "golden": "golden/cp-order.bin"
+    },
+    {
+      "id": "SRC-353",
+      "suite": "zshrc-cp",
+      "source_line": 1009,
+      "runner": "zshrc-cp",
+      "case": "unknown-full-record",
+      "check": "rejected",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-354",
+      "suite": "zshrc-add-mode-query-bindings",
+      "source_line": 1031,
+      "runner": "zshrc-add-mode-query-bindings",
+      "case": "cd",
+      "check": "slash-delegates",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-355",
+      "suite": "zshrc-add-mode-query-bindings",
+      "source_line": 1033,
+      "runner": "zshrc-add-mode-query-bindings",
+      "case": "cp",
+      "check": "slash-delegates",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-356",
+      "suite": "zshrc-add-mode-query-bindings",
+      "source_line": 1036,
+      "runner": "zshrc-add-mode-query-bindings",
+      "case": "cd",
+      "check": "inline-slash-branch-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-357",
+      "suite": "zshrc-add-mode-query-bindings",
+      "source_line": 1038,
+      "runner": "zshrc-add-mode-query-bindings",
+      "case": "cd",
+      "check": "add-tilde-put-precedes-navigation",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-358",
+      "suite": "zshrc-add-mode-query-bindings",
+      "source_line": 1036,
+      "runner": "zshrc-add-mode-query-bindings",
+      "case": "cp",
+      "check": "inline-slash-branch-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-359",
+      "suite": "zshrc-add-mode-query-bindings",
+      "source_line": 1038,
+      "runner": "zshrc-add-mode-query-bindings",
+      "case": "cp",
+      "check": "add-tilde-put-precedes-navigation",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-360",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1060,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cd",
+      "check": "initializes-mode",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-361",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1062,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cd",
+      "check": "binds-add",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-362",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1064,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cd",
+      "check": "binds-escape",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-363",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1068,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cd",
+      "check": "forward-transform-count",
+      "expected_text": "1"
+    },
+    {
+      "id": "SRC-364",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1072,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cd",
+      "check": "parent-transform-count",
+      "expected_text": "1"
+    },
+    {
+      "id": "SRC-365",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1060,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cp",
+      "check": "initializes-mode",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-366",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1062,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cp",
+      "check": "binds-add",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-367",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1064,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cp",
+      "check": "binds-escape",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-368",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1068,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cp",
+      "check": "forward-transform-count",
+      "expected_text": "1"
+    },
+    {
+      "id": "SRC-369",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1072,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cp",
+      "check": "parent-transform-count",
+      "expected_text": "1"
+    },
+    {
+      "id": "SRC-370",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1076,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cd",
+      "check": "shift-tab-source-switching-excluded",
+      "expected_text": "true"
+    },
+    {
+      "id": "SRC-371",
+      "suite": "zshrc-add-mode-navigation-bindings",
+      "source_line": 1078,
+      "runner": "zshrc-add-mode-navigation-bindings",
+      "case": "cp",
+      "check": "shift-tab-source-switching-excluded",
+      "expected_text": "true"
+    }
+  ]
+}
