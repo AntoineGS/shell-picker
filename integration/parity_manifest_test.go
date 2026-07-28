@@ -44,6 +44,16 @@ func loadParityMatrix(t *testing.T) []parityRow {
 }
 
 func TestParityManifestCoverage(t *testing.T) {
+	const wantManifestSHA256 = "b268bc6c6c585d72014041d22747d71b7c80019005e0a9c5aaf2ca49ff425fac"
+	rawManifest, err := os.ReadFile("testdata/parity/source-assertions.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotManifestSHA256 := fmt.Sprintf("%x", sha256.Sum256(rawManifest))
+	if gotManifestSHA256 != wantManifestSHA256 {
+		t.Fatalf("manifest SHA-256=%s, want %s", gotManifestSHA256, wantManifestSHA256)
+	}
+
 	manifest := loadParityManifest(t)
 	rows := loadParityMatrix(t)
 	want := map[string]int{
