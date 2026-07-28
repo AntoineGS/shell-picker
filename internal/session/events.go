@@ -1,0 +1,236 @@
+package session
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/AntoineGS/shell-picker/internal/candidate"
+	"github.com/AntoineGS/shell-picker/internal/pathutil"
+	"github.com/AntoineGS/shell-picker/internal/protocol"
+)
+
+var (
+	ErrInvalidEvent      = errors.New("invalid session event")
+	ErrInvalidNavigation = errors.New("invalid navigation target")
+)
+
+func Handle(ctx context.Context, actor *Actor, event protocol.Event) (TransitionResult, error) {
+	if ctx == nil {
+		return TransitionResult{}, errNilContext
+	}
+	if actor == nil {
+		return TransitionResult{}, errors.New("session handle: nil actor")
+	}
+	snapshot, err := actor.Current(ctx)
+	if err != nil {
+		return TransitionResult{}, err
+	}
+	proposal, err := Reduce(snapshot, event)
+	if err != nil {
+		return TransitionResult{}, err
+	}
+	return actor.Apply(ctx, proposal)
+}
+
+func Reduce(snapshot Snapshot, event protocol.Event) (ProposedTransition, error) {
+	proposal := ProposedTransition{
+		BaseGeneration: snapshot.generation,
+		State:          cloneState(snapshot.state),
+	}
+	state := snapshot.state
+	switch event.Opcode {
+	case protocol.OpModeInsert:
+		if state.Mode != protocol.ModeNormal {
+			return ProposedTransition{}, fmt.Errorf("%w: insert mode is unbound in %s", ErrInvalidEvent, state.Mode)
+		}
+		setMode(&proposal, protocol.ModeInsert, false)
+	case protocol.OpModeAdd:
+		if state.Mode != protocol.ModeNormal {
+			return ProposedTransition{}, fmt.Errorf("%w: add mode is unbound in %s", ErrInvalidEvent, state.Mode)
+		}
+		setMode(&proposal, protocol.ModeAdd, true)
+	case protocol.OpEscape:
+		reduceEscape(&proposal)
+	case protocol.OpForward:
+		if state.Mode == protocol.ModeAdd {
+			proposal.Effect.Ignore = true
+			break
+		}
+		record, err := resolveNavigationRecord(snapshot, event.CurrentItem)
+		if err != nil {
+			return ProposedTransition{}, err
+		}
+		if !canNavigate(state.Picker, record.Kind) {
+			return ProposedTransition{}, fmt.Errorf("%w: %s cannot navigate %s", ErrInvalidNavigation, state.Picker, record.Kind)
+		}
+		target, err := navigationTarget(record)
+		if err != nil {
+			return ProposedTransition{}, err
+		}
+		setNavigationUnchecked(&proposal, target)
+	case protocol.OpParent:
+		if state.Mode == protocol.ModeAdd {
+			proposal.Effect.Ignore = true
+			break
+		}
+		setNavigationUnchecked(&proposal, pathutil.Parent(state.Location))
+	case protocol.OpSlash:
+		if state.Mode == protocol.ModeAdd {
+			proposal.Effect.Put = "/"
+			break
+		}
+		if len(event.Query) == 0 {
+			setNavigationUnchecked(&proposal, pathutil.Root())
+		} else if state.Mode == protocol.ModeInsert && bytes.Equal(event.Query, []byte("..")) {
+			setNavigationUnchecked(&proposal, pathutil.Parent(state.Location))
+		} else if state.Mode == protocol.ModeInsert {
+			proposal.Effect.Put = "/"
+		} else {
+			proposal.Effect.Ignore = true
+		}
+	case protocol.OpHome:
+		if state.Mode == protocol.ModeAdd || (state.Mode == protocol.ModeInsert && len(event.Query) != 0) {
+			proposal.Effect.Put = "~"
+		} else if state.Mode == protocol.ModeNormal && len(event.Query) != 0 {
+			proposal.Effect.Ignore = true
+		} else {
+			setNavigationUnchecked(&proposal, state.Home)
+		}
+	case protocol.OpEnter:
+		return reduceEnter(snapshot, proposal, event)
+	default:
+		return ProposedTransition{}, fmt.Errorf("%w: unknown opcode %q", ErrInvalidEvent, event.Opcode)
+	}
+	return proposal, nil
+}
+
+func reduceEscape(proposal *ProposedTransition) {
+	switch proposal.State.Mode {
+	case protocol.ModeInsert:
+		setMode(proposal, protocol.ModeNormal, false)
+	case protocol.ModeNormal:
+		setMode(proposal, protocol.ModeNormal, false)
+		proposal.Effect.ClearMulti = true
+	case protocol.ModeAdd:
+		setMode(proposal, protocol.ModeNormal, true)
+	}
+}
+
+func reduceEnter(snapshot Snapshot, proposal ProposedTransition, event protocol.Event) (ProposedTransition, error) {
+	if snapshot.state.Mode == protocol.ModeAdd {
+		created, err := pathutil.CreateDirectoryTree(snapshot.state.Location, event.Query)
+		if err != nil {
+			proposal.State.AddError = true
+			proposal.State.Prompt = modePrompt(protocol.ModeAdd, snapshot.state.Location, true)
+			proposal.Effect = protocol.Effect{Prompt: proposal.State.Prompt, ErrorPrompt: true}
+			return proposal, nil
+		}
+		proposal.Created = &created
+		setNavigationUnchecked(&proposal, created.Target)
+		return proposal, nil
+	}
+	if len(event.CurrentItem) != 0 {
+		record, err := resolveRecord(snapshot, event.CurrentItem)
+		if err != nil {
+			return ProposedTransition{}, err
+		}
+		if record.Kind == protocol.KindVirtual {
+			target, err := navigationTarget(record)
+			if err != nil {
+				return ProposedTransition{}, err
+			}
+			setNavigationUnchecked(&proposal, target)
+			return proposal, nil
+		}
+	}
+	proposal.Effect.Accept = true
+	return proposal, nil
+}
+
+func setMode(proposal *ProposedTransition, mode protocol.Mode, clearQuery bool) {
+	proposal.State.Mode = mode
+	proposal.State.AddError = false
+	proposal.State.Prompt = modePrompt(mode, proposal.State.Location, false)
+	proposal.Effect = modeEffect(proposal.State, clearQuery)
+}
+
+func modeEffect(state State, clearQuery bool) protocol.Effect {
+	effect := protocol.Effect{
+		Mode: state.Mode, Prompt: state.Prompt, Search: "on", Rebind: state.Mode,
+		ClearQuery: clearQuery, Cursor: protocol.CursorLine,
+	}
+	if state.Mode == protocol.ModeNormal {
+		effect.Search = "off"
+		effect.Cursor = protocol.CursorBlock
+	}
+	return effect
+}
+
+func modePrompt(mode protocol.Mode, location pathutil.Location, addError bool) string {
+	prefix := "[I]"
+	switch mode {
+	case protocol.ModeNormal:
+		prefix = "[N]"
+	case protocol.ModeAdd:
+		prefix = "[A]"
+		if addError {
+			prefix = "[A!]"
+		}
+	}
+	return prefix + " " + pathutil.PromptDisplay(location) + " "
+}
+
+func navigationTarget(record candidate.Record) (pathutil.Location, error) {
+	if record.Kind == protocol.KindVirtual {
+		if record.Target.Kind != pathutil.KindDrives || len(record.Target.Path) != 0 {
+			return pathutil.Location{}, fmt.Errorf("%w: virtual record does not target Drives", ErrInvalidNavigation)
+		}
+		return cloneLocation(record.Target), nil
+	}
+	if record.Target.Kind != pathutil.KindFilesystem {
+		return pathutil.Location{}, fmt.Errorf("%w: filesystem record has non-filesystem target", ErrInvalidNavigation)
+	}
+	return cloneLocation(record.Target), nil
+}
+
+func setNavigationUnchecked(proposal *ProposedTransition, target pathutil.Location) {
+	proposal.State.Location = cloneLocation(target)
+	proposal.State.Mode = protocol.ModeNormal
+	proposal.State.AddError = false
+	proposal.State.Prompt = modePrompt(protocol.ModeNormal, target, false)
+	proposal.Build = &candidate.BuildRequest{Picker: proposal.State.Picker, Location: cloneLocation(target)}
+	proposal.Effect = modeEffect(proposal.State, true)
+	proposal.Effect.ClearMulti = true
+}
+
+func resolveNavigationRecord(snapshot Snapshot, raw []byte) (candidate.Record, error) {
+	if len(raw) == 0 {
+		return candidate.Record{}, fmt.Errorf("%w: empty current item", ErrInvalidNavigation)
+	}
+	record, err := resolveRecord(snapshot, raw)
+	if err != nil {
+		return candidate.Record{}, fmt.Errorf("%w: %v", ErrInvalidNavigation, err)
+	}
+	return record, nil
+}
+
+func resolveRecord(snapshot Snapshot, raw []byte) (candidate.Record, error) {
+	if _, err := protocol.ParseRecord(raw); err != nil {
+		return candidate.Record{}, fmt.Errorf("%w: malformed record: %v", ErrUnknownRecord, err)
+	}
+	positions := snapshot.byFullRecord[string(raw)]
+	if len(positions) == 0 {
+		return candidate.Record{}, ErrUnknownRecord
+	}
+	return cloneRecord(snapshot.records[positions[0]]), nil
+}
+
+func canNavigate(picker protocol.Picker, kind protocol.Kind) bool {
+	if picker == protocol.PickerCD {
+		return kind == protocol.KindLocal || kind == protocol.KindDirectory || kind == protocol.KindZoxide ||
+			kind == protocol.KindDrive || kind == protocol.KindVirtual
+	}
+	return picker == protocol.PickerCP && (kind == protocol.KindDirectory || kind == protocol.KindDrive || kind == protocol.KindVirtual)
+}
