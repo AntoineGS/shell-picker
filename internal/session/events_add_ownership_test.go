@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,22 @@ import (
 type cancelWhenPathExistsContext struct {
 	context.Context
 	path string
+}
+
+type pauseWhenPathExistsContext struct {
+	context.Context
+	path     string
+	trigger  chan struct{}
+	advanced chan struct{}
+	once     sync.Once
+}
+
+func (ctx *pauseWhenPathExistsContext) Err() error {
+	if _, err := os.Lstat(ctx.path); err == nil {
+		ctx.once.Do(func() { close(ctx.trigger) })
+		<-ctx.advanced
+	}
+	return nil
 }
 
 func (ctx cancelWhenPathExistsContext) Err() error {
@@ -238,6 +255,37 @@ func TestActorOwnsStaleAddTreeRollback(t *testing.T) {
 	setNavigationUnchecked(&proposal, created.Target)
 	if _, err := actor.Apply(context.Background(), proposal); !errors.Is(err, ErrStaleGeneration) {
 		t.Fatalf("Apply() = %v", err)
+	}
+	assertPathMissing(t, filepath.Join(base, "stale"))
+}
+
+func TestHandleTransfersActualCreatedTreeForStaleBaseRollback(t *testing.T) {
+	base := t.TempDir()
+	actor := readyAddActor(t, context.Background(), base, func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error) {
+		return candidate.BuildResult{}, nil
+	})
+	target := filepath.Join(base, "stale", "child")
+	ctx := &pauseWhenPathExistsContext{
+		Context: context.Background(), path: target,
+		trigger: make(chan struct{}), advanced: make(chan struct{}),
+	}
+	advanceResult := make(chan error, 1)
+	go func() {
+		<-ctx.trigger
+		state := testState("/advanced", protocol.ModeNormal, "advanced")
+		_, err := actor.Apply(context.Background(), ProposedTransition{
+			BaseGeneration: 0, State: state,
+			Build: &candidate.BuildRequest{Picker: protocol.PickerCD, Location: state.Location},
+		})
+		advanceResult <- err
+		close(ctx.advanced)
+	}()
+	_, err := Handle(ctx, actor, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("stale/child")})
+	if !errors.Is(err, ErrStaleGeneration) {
+		t.Fatalf("Handle() = %v", err)
+	}
+	if advanceErr := <-advanceResult; advanceErr != nil {
+		t.Fatalf("advance Apply() = %v", advanceErr)
 	}
 	assertPathMissing(t, filepath.Join(base, "stale"))
 }
