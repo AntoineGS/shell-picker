@@ -140,6 +140,20 @@ func TestPreviewLongPermittedTextLineEmitsUsefulFallback(t *testing.T) {
 	}
 }
 
+func TestPreviewExactInputLimitTextLineEmitsOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exact-limit.txt")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", int(DefaultLimits.MaxInternalInputBytes))), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := Render(context.Background(), resolved(path), testOptions(&output)); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() == 0 {
+		t.Fatal("blank exact-limit text preview")
+	}
+}
+
 func TestPreviewExternalStreamsStaySeparateUnderOneBudget(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-specific")
@@ -160,6 +174,30 @@ func TestPreviewExternalStreamsStaySeparateUnderOneBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stdout.String() != "stdout" || stderr.String() != "stderr" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestPreviewStderrOnlyExternalSuccessFallsBackToNativeStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-specific")
+	}
+	tools := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tools, "bat"), []byte("#!/bin/sh\nprintf diagnostic >&2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "plain.txt")
+	if err := os.WriteFile(path, []byte("native output\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	options := testOptions(&stdout)
+	options.Stderr = &stderr
+	options.Environment = []string{"PATH=" + tools}
+	if err := Render(context.Background(), resolved(path), options); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.Len() == 0 || !strings.Contains(stdout.String(), "native output") || stderr.String() != "diagnostic" {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }

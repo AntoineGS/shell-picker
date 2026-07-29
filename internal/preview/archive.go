@@ -79,19 +79,24 @@ func preflightZip(path string, maximumEntries int) error {
 	entries := uint64(binary.LittleEndian.Uint16(eocd[10:12]))
 	centralSize := uint64(binary.LittleEndian.Uint32(eocd[12:16]))
 	centralOffset := uint64(binary.LittleEndian.Uint32(eocd[16:20]))
+	directoryEndOffset := info.Size() - tailSize + int64(eocdIndex)
 	if entries == 0xffff || centralSize == 0xffffffff || centralOffset == 0xffffffff {
-		absoluteEOCD := info.Size() - tailSize + int64(eocdIndex)
-		if absoluteEOCD < 20 {
+		if directoryEndOffset < 20 {
 			return zip.ErrFormat
 		}
 		locator := make([]byte, 20)
-		if _, err := file.ReadAt(locator, absoluteEOCD-20); err != nil {
+		if _, err := file.ReadAt(locator, directoryEndOffset-20); err != nil {
 			return err
 		}
-		if !bytes.Equal(locator[:4], []byte{'P', 'K', 0x06, 0x07}) {
+		if !bytes.Equal(locator[:4], []byte{'P', 'K', 0x06, 0x07}) ||
+			binary.LittleEndian.Uint32(locator[4:8]) != 0 || binary.LittleEndian.Uint32(locator[16:20]) != 1 {
 			return zip.ErrFormat
 		}
-		zip64Offset := int64(binary.LittleEndian.Uint64(locator[8:16]))
+		zip64OffsetRaw := binary.LittleEndian.Uint64(locator[8:16])
+		if zip64OffsetRaw > uint64(^uint64(0)>>1) {
+			return zip.ErrFormat
+		}
+		zip64Offset := int64(zip64OffsetRaw)
 		record := make([]byte, 56)
 		if _, err := file.ReadAt(record, zip64Offset); err != nil {
 			return err
@@ -102,29 +107,35 @@ func preflightZip(path string, maximumEntries int) error {
 		entries = binary.LittleEndian.Uint64(record[32:40])
 		centralSize = binary.LittleEndian.Uint64(record[40:48])
 		centralOffset = binary.LittleEndian.Uint64(record[48:56])
+		directoryEndOffset = zip64Offset
 	}
 	if entries > uint64(maximumEntries) {
 		return ErrArchiveEntries
 	}
-	return scanZipCentralDirectory(file, info.Size(), centralOffset, centralSize, entries, maximumEntries)
-}
-
-func scanZipCentralDirectory(file *os.File, fileSize int64, offset, size, declaredEntries uint64, maximumEntries int) error {
-	if offset > uint64(fileSize) || size > uint64(fileSize)-offset {
+	const maxInt64 = uint64(1<<63 - 1)
+	if centralSize > maxInt64 || centralOffset > maxInt64 || centralSize > uint64(directoryEndOffset) {
 		return zip.ErrFormat
 	}
-	cursor, end := int64(offset), int64(offset+size)
+	effectiveOffset := directoryEndOffset - int64(centralSize)
+	if effectiveOffset < 0 || effectiveOffset >= info.Size() {
+		return zip.ErrFormat
+	}
+	if uint64(effectiveOffset) > centralOffset && validZipDirectoryHeaderAt(file, int64(centralOffset), info.Size()) {
+		effectiveOffset = int64(centralOffset)
+	}
+	return scanZipCentralDirectory(file, info.Size(), effectiveOffset, entries, maximumEntries)
+}
+
+func scanZipCentralDirectory(file *os.File, fileSize, offset int64, declaredEntries uint64, maximumEntries int) error {
+	cursor := offset
 	var entries uint64
 	header := make([]byte, 46)
-	for cursor < end {
-		if end-cursor < int64(len(header)) {
-			return zip.ErrFormat
-		}
+	for cursor <= fileSize-int64(len(header)) {
 		if _, err := file.ReadAt(header, cursor); err != nil {
 			return err
 		}
 		if !bytes.Equal(header[:4], []byte{'P', 'K', 0x01, 0x02}) {
-			return zip.ErrFormat
+			break
 		}
 		entries++
 		if entries > uint64(maximumEntries) {
@@ -132,15 +143,64 @@ func scanZipCentralDirectory(file *os.File, fileSize int64, offset, size, declar
 		}
 		variable := int64(binary.LittleEndian.Uint16(header[28:30])) +
 			int64(binary.LittleEndian.Uint16(header[30:32])) + int64(binary.LittleEndian.Uint16(header[32:34]))
-		cursor += int64(len(header)) + variable
-		if cursor > end {
+		step := int64(len(header)) + variable
+		if step > fileSize-cursor {
 			return zip.ErrFormat
 		}
+		cursor += step
 	}
-	if entries != declaredEntries {
+	if uint16(entries) != uint16(declaredEntries) {
 		return zip.ErrFormat
 	}
 	return nil
+}
+
+func validZipDirectoryHeaderAt(file *os.File, offset, fileSize int64) bool {
+	const headerSize = 46
+	if offset < 0 || offset > fileSize-headerSize {
+		return false
+	}
+	header := make([]byte, headerSize)
+	if _, err := file.ReadAt(header, offset); err != nil || !bytes.Equal(header[:4], []byte{'P', 'K', 0x01, 0x02}) {
+		return false
+	}
+	nameLength := int64(binary.LittleEndian.Uint16(header[28:30]))
+	extraLength := int64(binary.LittleEndian.Uint16(header[30:32]))
+	commentLength := int64(binary.LittleEndian.Uint16(header[32:34]))
+	variableLength := nameLength + extraLength + commentLength
+	if variableLength > fileSize-offset-headerSize {
+		return false
+	}
+	extra := make([]byte, extraLength)
+	if _, err := file.ReadAt(extra, offset+headerSize+nameLength); err != nil {
+		return false
+	}
+	needUncompressed := binary.LittleEndian.Uint32(header[24:28]) == 0xffffffff
+	needCompressed := binary.LittleEndian.Uint32(header[20:24]) == 0xffffffff
+	needOffset := binary.LittleEndian.Uint32(header[42:46]) == 0xffffffff
+	for len(extra) >= 4 {
+		tag, size := binary.LittleEndian.Uint16(extra[:2]), int(binary.LittleEndian.Uint16(extra[2:4]))
+		extra = extra[4:]
+		if size > len(extra) {
+			break
+		}
+		field := extra[:size]
+		extra = extra[size:]
+		if tag != 0x0001 {
+			continue
+		}
+		for _, needed := range []*bool{&needUncompressed, &needCompressed, &needOffset} {
+			if !*needed {
+				continue
+			}
+			if len(field) < 8 {
+				return false
+			}
+			field = field[8:]
+			*needed = false
+		}
+	}
+	return !needCompressed && !needOffset
 }
 
 func renderGzip(ctx context.Context, path string, output io.Writer, limits Limits) error {

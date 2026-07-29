@@ -141,3 +141,50 @@ func TestZipPreflightCountsCentralHeadersInsteadOfTrustingEOCD(t *testing.T) {
 		t.Fatalf("preflight error=%v", err)
 	}
 }
+
+func TestZipPreflightScansArchiveZipEffectiveShiftedDirectory(t *testing.T) {
+	data := shiftedZipWithRawOffsetDecoy(t, DefaultLimits.MaxArchiveEntries+1)
+	path := filepath.Join(t.TempDir(), "shifted-decoy.zip")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err == nil {
+		t.Fatal("archive/zip accepted forged shifted directory count")
+	}
+	if err := preflightZip(path, DefaultLimits.MaxArchiveEntries); !errors.Is(err, ErrArchiveEntries) {
+		t.Fatalf("preflight error=%v", err)
+	}
+}
+
+func shiftedZipWithRawOffsetDecoy(t *testing.T, entries int) []byte {
+	t.Helper()
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for index := 0; index < entries; index++ {
+		if _, err := writer.Create(fmt.Sprintf("real-entry-%03d", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	zipData := archive.Bytes()
+	eocd := bytes.LastIndex(zipData, []byte{'P', 'K', 0x05, 0x06})
+	if eocd < 0 {
+		t.Fatal("missing EOCD")
+	}
+	centralSize := int(binary.LittleEndian.Uint32(zipData[eocd+12 : eocd+16]))
+	if centralSize <= 50 || centralSize-46 > 0xffff {
+		t.Fatalf("unexpected central size %d", centralSize)
+	}
+	decoy := make([]byte, centralSize)
+	copy(decoy[:4], []byte{'P', 'K', 0x01, 0x02})
+	binary.LittleEndian.PutUint32(decoy[20:24], 0xffffffff)
+	binary.LittleEndian.PutUint16(decoy[30:32], uint16(centralSize-46))
+	binary.LittleEndian.PutUint16(decoy[46:48], 0x0001)
+	binary.LittleEndian.PutUint16(decoy[48:50], 0)
+	binary.LittleEndian.PutUint16(zipData[eocd+8:eocd+10], 1)
+	binary.LittleEndian.PutUint16(zipData[eocd+10:eocd+12], 1)
+	binary.LittleEndian.PutUint32(zipData[eocd+16:eocd+20], 0)
+	return append(decoy, zipData...)
+}

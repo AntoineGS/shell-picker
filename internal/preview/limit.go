@@ -80,6 +80,7 @@ type outputBudget struct {
 type budgetWriter struct {
 	budget      *outputBudget
 	destination io.Writer
+	written     int64
 }
 
 func newOutputBudget(maximum int64, onLimit func()) *outputBudget {
@@ -109,6 +110,7 @@ func (writer *budgetWriter) Write(data []byte) (int, error) {
 	written, err := writer.destination.Write(data[:allowed])
 	budget.remaining -= int64(written)
 	budget.written += int64(written)
+	writer.written += int64(written)
 	if err != nil {
 		return written, err
 	}
@@ -117,6 +119,12 @@ func (writer *budgetWriter) Write(data []byte) (int, error) {
 		return written, ErrOutputLimit
 	}
 	return written, nil
+}
+
+func (writer *budgetWriter) bytesWritten() int64 {
+	writer.budget.mu.Lock()
+	defer writer.budget.mu.Unlock()
+	return writer.written
 }
 
 func (budget *outputBudget) limitReachedLocked() {

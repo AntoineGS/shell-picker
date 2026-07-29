@@ -61,14 +61,14 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 	stdout, stderr := budget.writer(options.Stdout), budget.writer(options.Stderr)
 	started := time.Now()
 	used, externalErr := renderExternal(renderCtx, path, category, options, stdout, stderr)
-	written, exceeded := budget.status()
+	_, exceeded := budget.status()
 	if exceeded {
 		return ErrOutputLimit
 	}
 	if err := renderCtx.Err(); err != nil {
 		return err
 	}
-	if used && externalErr == nil && written > 0 {
+	if used && externalErr == nil && stdout.bytesWritten() > 0 {
 		return nil
 	}
 	if options.OnDispatch != nil {
@@ -252,14 +252,28 @@ func renderText(ctx context.Context, path string, output io.Writer, limits Limit
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(io.LimitReader(file, limits.MaxInternalInputBytes))
-	scanner.Buffer(make([]byte, min(limits.MaxInternalInputBytes, int64(64<<10))), int(limits.MaxInternalInputBytes))
+	maximumToken := limits.MaxInternalInputBytes
+	maximumInt := int64(^uint(0) >> 1)
+	if maximumToken < maximumInt {
+		maximumToken++
+	} else {
+		maximumToken = maximumInt
+	}
+	scanner.Buffer(make([]byte, min(maximumToken, int64(64<<10))), int(maximumToken))
 	lines := 0
 	for scanner.Scan() && lines < limits.MaxInternalLines {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		lines++
-		if _, err := fmt.Fprintf(output, "%6d  %s\n", lines, escaped(scanner.Text())); err != nil {
+		line := scanner.Text()
+		const maximumRenderedLineBytes = 64 << 10
+		truncated := ""
+		if len(line) > maximumRenderedLineBytes {
+			line = line[:maximumRenderedLineBytes]
+			truncated = " ... [truncated]"
+		}
+		if _, err := fmt.Fprintf(output, "%6d  %s%s\n", lines, escaped(line), truncated); err != nil {
 			return err
 		}
 	}
