@@ -1,10 +1,18 @@
 package preview
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/AntoineGS/shell-picker/internal/process"
 )
 
 var (
@@ -141,4 +149,90 @@ func (budget *outputBudget) status() (int64, bool) {
 	budget.mu.Lock()
 	defer budget.mu.Unlock()
 	return budget.written, budget.exceeded
+}
+
+func externalProcessSpec(executable string, arguments, environment []string, stdout, stderr io.Writer) process.Spec {
+	return process.Spec{Path: executable, Args: arguments, Env: environment, Stdout: stdout, Stderr: stderr,
+		Containment: process.ContainmentInheritTree, WaitDelay: time.Second}
+}
+
+func lookupTool(name string, environment []string) string {
+	search := environmentValue(environment, "PATH")
+	if search == "" {
+		return ""
+	}
+	extensions := []string{""}
+	if runtime.GOOS == "windows" {
+		extensions = []string{".exe", ".com", ".bat", ".cmd"}
+	}
+	for _, directory := range filepath.SplitList(search) {
+		for _, extension := range extensions {
+			candidate := filepath.Join(directory, name+extension)
+			info, err := os.Stat(candidate)
+			if err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0) {
+				if absolute, absoluteErr := filepath.Abs(candidate); absoluteErr == nil {
+					return absolute
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func environmentValue(environment []string, name string) string {
+	for _, entry := range environment {
+		if key, value, ok := strings.Cut(entry, "="); ok && (key == name || runtime.GOOS == "windows" && strings.EqualFold(key, name)) {
+			return value
+		}
+	}
+	return ""
+}
+
+func fileHint(ctx context.Context, path string, fallback Category, options Options, budget *outputBudget, stderr io.Writer) (Category, bool) {
+	executable := lookupTool("file", options.Environment)
+	if executable == "" {
+		return fallback, false
+	}
+	var hint bytes.Buffer
+	child, err := options.Runner.Start(ctx, externalProcessSpec(executable,
+		[]string{"--brief", "--mime-type", "--", path}, options.Environment, budget.writer(&hint), stderr))
+	if err != nil {
+		return fallback, false
+	}
+	if options.OnDispatch != nil {
+		options.OnDispatch("file", child.PID(), 0)
+	}
+	if err := child.Wait(); err != nil || ctx.Err() != nil {
+		return fallback, true
+	}
+	return categoryFromMIME(strings.TrimSpace(hint.String()), fallback), true
+}
+
+func categoryFromMIME(mime string, fallback Category) Category {
+	switch {
+	case mime == "text/markdown":
+		return CategoryMarkdown
+	case strings.HasPrefix(mime, "text/"):
+		return CategoryText
+	case strings.HasPrefix(mime, "image/"):
+		return CategoryImage
+	case mime == "application/pdf":
+		return CategoryPDF
+	case strings.HasPrefix(mime, "video/"):
+		return CategoryVideo
+	case strings.HasPrefix(mime, "audio/"):
+		return CategoryAudio
+	case mime == "application/zip":
+		return CategoryZip
+	case mime == "application/gzip" || mime == "application/x-gzip":
+		return CategoryGzip
+	case mime == "application/x-xz":
+		return CategoryXz
+	case mime == "application/x-tar":
+		return CategoryTar
+	case mime == "application/x-bzip2":
+		return CategoryBzip
+	default:
+		return fallback
+	}
 }

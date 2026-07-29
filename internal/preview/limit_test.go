@@ -3,6 +3,8 @@ package preview
 import (
 	"bytes"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -22,5 +24,33 @@ func TestNormalizedLimitsRestoreSecurityDefaults(t *testing.T) {
 	got := normalizedLimits(Limits{})
 	if got != DefaultLimits {
 		t.Fatalf("got %+v want %+v", got, DefaultLimits)
+	}
+}
+
+func TestOutputBudgetAggregatesConcurrentDestinations(t *testing.T) {
+	var first, second bytes.Buffer
+	var limitCalls atomic.Int32
+	budget := newOutputBudget(10, func() { limitCalls.Add(1) })
+	writers := []*budgetWriter{budget.writer(&first), budget.writer(&second)}
+	errorsSeen := make(chan error, len(writers))
+	var group sync.WaitGroup
+	for _, writer := range writers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, err := writer.Write([]byte("12345678"))
+			errorsSeen <- err
+		}()
+	}
+	group.Wait()
+	close(errorsSeen)
+	limited := false
+	for err := range errorsSeen {
+		limited = limited || errors.Is(err, ErrOutputLimit)
+	}
+	written, exceeded := budget.status()
+	if written != 10 || first.Len()+second.Len() != 10 || !exceeded || !limited || limitCalls.Load() != 1 {
+		t.Fatalf("written=%d destinations=%d exceeded=%v limited=%v callbacks=%d", written,
+			first.Len()+second.Len(), exceeded, limited, limitCalls.Load())
 	}
 }

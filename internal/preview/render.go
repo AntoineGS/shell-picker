@@ -12,7 +12,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -59,8 +58,19 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 	}
 	budget := newOutputBudget(limits.MaxOutputBytes, cancel)
 	stdout, stderr := budget.writer(options.Stdout), budget.writer(options.Stderr)
-	started := time.Now()
-	used, externalErr := renderExternal(renderCtx, path, category, options, stdout, stderr)
+	startedChild := false
+	if category == CategoryBinary {
+		category, startedChild = fileHint(renderCtx, path, category, options, budget, stderr)
+	}
+	if category == CategoryZip {
+		if preflightErr := preflightZip(path, limits.MaxArchiveEntries); preflightErr != nil {
+			if !startedChild && options.OnDispatch != nil {
+				options.OnDispatch("native", 0, 0)
+			}
+			return renderNative(renderCtx, path, info, prefix, category, stdout, limits)
+		}
+	}
+	startedChild, rendered := renderExternal(renderCtx, path, category, options, stdout, stderr, startedChild)
 	_, exceeded := budget.status()
 	if exceeded {
 		return ErrOutputLimit
@@ -68,90 +78,87 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 	if err := renderCtx.Err(); err != nil {
 		return err
 	}
-	if used && externalErr == nil && stdout.bytesWritten() > 0 {
+	if rendered {
 		return nil
 	}
-	if options.OnDispatch != nil {
+	if !startedChild && options.OnDispatch != nil {
 		options.OnDispatch("native", 0, 0)
 	}
 	err = renderNative(renderCtx, path, info, prefix, category, stdout, limits)
-	if options.OnDispatch != nil {
-		options.OnDispatch("native", 0, time.Since(started))
-	}
 	return err
 }
 
-func renderExternal(ctx context.Context, path string, category Category, options Options, stdout, stderr io.Writer) (bool, error) {
-	tool, arguments := externalTool(category, path)
-	if tool == "" {
-		return false, nil
+func renderExternal(ctx context.Context, path string, category Category, options Options, stdout *budgetWriter, stderr io.Writer, started bool) (bool, bool) {
+	for _, tool := range externalTools(category, path, options) {
+		executable := lookupTool(tool.name, options.Environment)
+		if executable == "" {
+			continue
+		}
+		before := stdout.bytesWritten()
+		child, err := options.Runner.Start(ctx, externalProcessSpec(executable, tool.arguments, options.Environment, stdout, stderr))
+		if err != nil {
+			continue
+		}
+		if !started && options.OnDispatch != nil {
+			options.OnDispatch(tool.name, child.PID(), 0)
+		}
+		started = true
+		err = child.Wait()
+		if ctx.Err() != nil {
+			return started, false
+		}
+		if err == nil && stdout.bytesWritten() > before {
+			return started, true
+		}
 	}
-	executable := lookupTool(tool, options.Environment)
-	if executable == "" {
-		return false, nil
-	}
-	started := time.Now()
-	child, err := options.Runner.Start(ctx, externalProcessSpec(executable, arguments, options.Environment, stdout, stderr))
-	if err != nil {
-		return false, err
-	}
-	if options.OnDispatch != nil {
-		options.OnDispatch(tool, child.PID(), 0)
-	}
-	err = child.Wait()
-	if options.OnDispatch != nil {
-		options.OnDispatch(tool, child.PID(), time.Since(started))
-	}
-	return true, err
+	return started, false
 }
 
-func externalProcessSpec(executable string, arguments, environment []string, stdout, stderr io.Writer) process.Spec {
-	return process.Spec{Path: executable, Args: arguments, Env: environment, Stdout: stdout, Stderr: stderr,
-		Containment: process.ContainmentInheritTree, WaitDelay: time.Second}
+type directTool struct {
+	name      string
+	arguments []string
 }
 
-func externalTool(category Category, path string) (string, []string) {
+func externalTools(category Category, path string, options Options) []directTool {
 	switch category {
-	case CategoryMarkdown, CategoryText:
-		return "bat", []string{"--color=always", "--style=plain", "--paging=never", "--", path}
+	case CategoryDirectory:
+		return []directTool{{"eza", []string{"--color=always", "--icons=always", "--group-directories-first", "--", path}}}
+	case CategoryMarkdown:
+		return []directTool{{"glow", []string{"--width", strconv.Itoa(max(1, options.Columns-1)), path}},
+			{"bat", []string{"--color=always", "--style=plain", "--paging=never", "--", path}}}
+	case CategoryText:
+		return []directTool{{"bat", []string{"--color=always", "--style=plain", "--paging=never", "--", path}}}
 	case CategoryImage:
-		return "chafa", []string{"--", path}
-	case CategoryPDF:
-		return "pdftotext", []string{path, "-"}
-	case CategoryVideo, CategoryAudio:
-		return "ffprobe", []string{"-hide_banner", path}
+		tools := []directTool{}
+		if terminalQualified(options.Environment) {
+			tools = append(tools, directTool{"kitten", []string{"icat", "--clear", "--transfer-mode=memory", "--place",
+				fmt.Sprintf("%dx%d@0x0", options.Columns, options.Lines), "--", path}})
+		}
+		return append(tools, directTool{"chafa", []string{"--size", fmt.Sprintf("%dx%d", options.Columns, options.Lines), "--", path}})
+	case CategoryAudio:
+		return []directTool{{"exiftool", []string{"--", path}}}
+	case CategoryZip:
+		return []directTool{{"unzip", []string{"-l", "--", path}}}
+	case CategoryGzip:
+		return []directTool{{"gzip", []string{"--list", "--", path}}}
+	case CategoryXz:
+		return []directTool{{"xz", []string{"--list", "--", path}}}
+	case CategoryTar:
+		return []directTool{{"tar", []string{"--list", "--file", path}}}
+	case CategoryBzip:
+		return []directTool{{"bzip2", []string{"--test", "--verbose", "--", path}}}
 	default:
-		return "", nil
+		return nil
 	}
 }
 
-func lookupTool(name string, environment []string) string {
-	var search string
+func terminalQualified(environment []string) bool {
 	for _, entry := range environment {
-		if key, value, ok := strings.Cut(entry, "="); ok && ((runtime.GOOS == "windows" && strings.EqualFold(key, "PATH")) || key == "PATH") {
-			search = value
+		if key, value, ok := strings.Cut(entry, "="); ok && key == "TERM" && strings.Contains(strings.ToLower(value), "kitty") {
+			return true
 		}
 	}
-	if search == "" {
-		return ""
-	}
-	extensions := []string{""}
-	if runtime.GOOS == "windows" {
-		extensions = []string{".exe", ".com", ".bat", ".cmd"}
-	}
-	for _, directory := range filepath.SplitList(search) {
-		for _, extension := range extensions {
-			candidate := filepath.Join(directory, name+extension)
-			info, err := os.Stat(candidate)
-			if err == nil && !info.IsDir() && (runtime.GOOS == "windows" || info.Mode()&0o111 != 0) {
-				absolute, err := filepath.Abs(candidate)
-				if err == nil {
-					return absolute
-				}
-			}
-		}
-	}
-	return ""
+	return false
 }
 
 func readPrefix(ctx context.Context, path string, info os.FileInfo, maximum int64) ([]byte, error) {
