@@ -10,6 +10,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -113,6 +114,34 @@ func TestParseCompletionInputCompatibility(t *testing.T) {
 				t.Fatalf("ParseCompletionInput()=%+v, %v; want path=%q line=%d", got, err, tc.want, tc.line)
 			}
 		})
+	}
+}
+
+func TestParseCompletionInputPreservesEscapedColonAndInvalidBytes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("invalid-byte filesystem names are Unix-specific")
+	}
+	dir := []byte(t.TempDir())
+	base := append(append(bytes.Clone(dir), filepath.Separator), []byte("foo")...)
+	literalColon := append(bytes.Clone(base), []byte(":12")...)
+	invalid := append(append(bytes.Clone(dir), filepath.Separator), []byte{'b', 'a', 'd', 0xff}...)
+	for _, path := range [][]byte{base, literalColon, invalid} {
+		if err := os.WriteFile(string(path), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	escaped := append(append(bytes.Clone(base), '\\'), []byte(":12")...)
+	got, err := ParseCompletionInput(escaped, false, nil)
+	if err != nil || !bytes.Equal(got.Path, literalColon) || got.Line != 0 {
+		t.Fatalf("escaped=%+v err=%v want path=%v", got, err, literalColon)
+	}
+	got, err = ParseCompletionInput(append(bytes.Clone(base), []byte(":12")...), false, nil)
+	if err != nil || !bytes.Equal(got.Path, base) || got.Line != 12 {
+		t.Fatalf("suffix=%+v err=%v want path=%v line=12", got, err, base)
+	}
+	got, err = ParseCompletionInput(append(bytes.Clone(invalid), []byte(":7")...), false, nil)
+	if err != nil || !bytes.Equal(got.Path, invalid) || got.Line != 7 {
+		t.Fatalf("invalid=%+v err=%v want path=%v line=7", got, err, invalid)
 	}
 }
 

@@ -37,13 +37,14 @@ type processResult struct {
 }
 
 type Child struct {
-	process windows.Handle
-	job     windows.Handle
-	pid     int
-	ctx     context.Context
-	path    string
-	observe func(ProcessEvent)
-	streams *preparedStreams
+	process     windows.Handle
+	job         windows.Handle
+	containment Containment
+	pid         int
+	ctx         context.Context
+	path        string
+	observe     func(ProcessEvent)
+	streams     *preparedStreams
 
 	waitOnce      sync.Once
 	waitErr       error
@@ -118,7 +119,7 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 	}
 	_ = winCloseHandle(info.Thread)
 	streams.closeChildren()
-	child := &Child{process: info.Process, job: job, pid: int(info.ProcessId), ctx: ctx, path: spec.Path,
+	child := &Child{process: info.Process, job: job, containment: spec.Containment, pid: int(info.ProcessId), ctx: ctx, path: spec.Path,
 		observe: r.Observe, streams: streams, observedExit: make(chan struct{}), result: make(chan processResult, 1),
 		watchDone: make(chan struct{}), pumpDone: make(chan struct{}), targetValid: true,
 		pumpErr: make(chan error, len(streams.pumps))}
@@ -160,6 +161,20 @@ func createSuspendedProcess(path string, spec Spec, streams *preparedStreams,
 
 func (c *Child) PID() int       { return c.pid }
 func (c *Child) pumpCount() int { return len(c.streams.pumps) }
+
+func (c *Child) RetainTree() (*TreeHandle, error) {
+	c.lifeMu.Lock()
+	defer c.lifeMu.Unlock()
+	if c.containment != ContainmentInheritTree || !c.targetValid {
+		return nil, ErrTreeUnavailable
+	}
+	var retained windows.Handle
+	if err := winDuplicateHandle(windows.CurrentProcess(), c.job, windows.CurrentProcess(), &retained,
+		0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+		return nil, err
+	}
+	return newTreeHandle(func() error { return terminateJob(retained) }, func() error { return winCloseHandle(retained) }), nil
+}
 
 func (c *Child) KillTree() error {
 	c.lifeMu.Lock()

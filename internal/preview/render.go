@@ -28,6 +28,7 @@ type Options struct {
 	Limits         Limits
 	Stdout, Stderr io.Writer
 	OnDispatch     func(string, int, time.Duration)
+	retainTree     func(*process.Child) (treeHandle, error)
 }
 
 func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options Options) error {
@@ -58,60 +59,74 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 	}
 	budget := newOutputBudget(limits.MaxOutputBytes, cancel)
 	stdout, stderr := budget.writer(options.Stdout), budget.writer(options.Stderr)
-	startedChild := false
+	session := newRenderSession(options)
+	defer session.close()
 	if category == CategoryBinary {
-		category, startedChild = fileHint(renderCtx, path, category, options, budget, stderr)
-	}
-	if category == CategoryZip {
-		if preflightErr := preflightZip(path, limits.MaxArchiveEntries); preflightErr != nil {
-			if !startedChild && options.OnDispatch != nil {
-				options.OnDispatch("native", 0, 0)
-			}
-			return renderNative(renderCtx, path, info, prefix, category, stdout, limits)
+		category, err = fileHint(renderCtx, path, category, options, budget, stderr, session)
+		if err != nil {
+			return err
 		}
 	}
-	startedChild, rendered := renderExternal(renderCtx, path, category, options, stdout, stderr, startedChild)
-	_, exceeded := budget.status()
-	if exceeded {
-		return ErrOutputLimit
+	nativeOnly := category == CategoryZip && preflightZip(path, limits.MaxArchiveEntries) != nil
+	if nativeOnly && !session.started && options.OnDispatch != nil {
+		options.OnDispatch("native", 0, 0)
 	}
-	if err := renderCtx.Err(); err != nil {
-		return err
+	rendered := false
+	if !nativeOnly {
+		rendered, err = renderExternal(renderCtx, path, category, options, stdout, stderr, session)
+		if err != nil {
+			return err
+		}
+	}
+	if resourceErr := resourceFailure(renderCtx, budget, nil); resourceErr != nil {
+		if session.started {
+			return session.terminal(resourceErr)
+		}
+		return resourceErr
 	}
 	if rendered {
 		return nil
 	}
-	if !startedChild && options.OnDispatch != nil {
+	if !session.started && options.OnDispatch != nil {
 		options.OnDispatch("native", 0, 0)
 	}
 	err = renderNative(renderCtx, path, info, prefix, category, stdout, limits)
+	if session.started {
+		if resourceErr := resourceFailure(renderCtx, budget, err); resourceErr != nil {
+			return session.terminal(resourceErr)
+		}
+	}
 	return err
 }
 
-func renderExternal(ctx context.Context, path string, category Category, options Options, stdout *budgetWriter, stderr io.Writer, started bool) (bool, bool) {
+func renderExternal(ctx context.Context, path string, category Category, options Options, stdout *budgetWriter,
+	stderr io.Writer, session *renderSession) (bool, error) {
 	for _, tool := range externalTools(category, path, options) {
 		executable := lookupTool(tool.name, options.Environment)
 		if executable == "" {
 			continue
 		}
-		before := stdout.bytesWritten()
+		before := stdout.meaningfulBytes()
 		child, err := options.Runner.Start(ctx, externalProcessSpec(executable, tool.arguments, options.Environment, stdout, stderr))
 		if err != nil {
 			continue
 		}
-		if !started && options.OnDispatch != nil {
+		first, retainErr := session.start(child)
+		if first && options.OnDispatch != nil {
 			options.OnDispatch(tool.name, child.PID(), 0)
 		}
-		started = true
 		err = child.Wait()
-		if ctx.Err() != nil {
-			return started, false
+		if retainErr != nil {
+			return false, session.terminal(retainErr)
 		}
-		if err == nil && stdout.bytesWritten() > before {
-			return started, true
+		if resourceErr := resourceFailure(ctx, stdout.budget, err); resourceErr != nil {
+			return false, session.terminal(resourceErr)
+		}
+		if stdout.meaningfulBytes() > before {
+			return true, nil
 		}
 	}
-	return started, false
+	return false, nil
 }
 
 type directTool struct {

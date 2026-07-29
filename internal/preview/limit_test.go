@@ -2,10 +2,16 @@ package preview
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	processpkg "github.com/AntoineGS/shell-picker/internal/process"
 )
 
 func TestCountingWriterReturnsOutputLimitWithoutExceedingBound(t *testing.T) {
@@ -52,5 +58,80 @@ func TestOutputBudgetAggregatesConcurrentDestinations(t *testing.T) {
 	if written != 10 || first.Len()+second.Len() != 10 || !exceeded || !limited || limitCalls.Load() != 1 {
 		t.Fatalf("written=%d destinations=%d exceeded=%v limited=%v callbacks=%d", written,
 			first.Len()+second.Len(), exceeded, limited, limitCalls.Load())
+	}
+}
+
+type fakeTreeHandle struct{ kills, closes int }
+
+func (handle *fakeTreeHandle) KillTree() error { handle.kills++; return nil }
+func (handle *fakeTreeHandle) Close() error    { handle.closes++; return nil }
+
+type cancelWriter struct {
+	cancel context.CancelFunc
+	writes int
+}
+
+func (writer *cancelWriter) Write(data []byte) (int, error) {
+	writer.writes++
+	writer.cancel()
+	return len(data), nil
+}
+
+func TestNativeResourceFailureAfterOrdinaryChildIsTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct executable fixture is Unix-specific")
+	}
+	tools := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tools, "bat"), []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "plain.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"output", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var output bytes.Buffer
+			var destination = interface{ Write([]byte) (int, error) }(&output)
+			if mode == "deadline" {
+				destination = &cancelWriter{cancel: cancel}
+			}
+			tree := &fakeTreeHandle{}
+			options := Options{Columns: 80, Lines: 40, Environment: []string{"PATH=" + tools}, Runner: processpkg.Runner{},
+				Limits: DefaultLimits, Stdout: destination, Stderr: &bytes.Buffer{}}
+			options.retainTree = func(*processpkg.Child) (treeHandle, error) { return tree, nil }
+			if mode == "output" {
+				options.Limits.MaxOutputBytes = 8
+			}
+			err := Render(ctx, resolved(path), options)
+			if !errors.Is(err, ErrTerminalResource) || tree.kills != 1 || tree.closes != 1 {
+				t.Fatalf("err=%v tree=%+v", err, tree)
+			}
+		})
+	}
+}
+
+func TestFileHintedZipNativeResourceFailureIsTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct executable fixture is Unix-specific")
+	}
+	tools := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tools, "file"), []byte("#!/bin/sh\nprintf application/zip\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "unknown")
+	if err := os.WriteFile(path, []byte{0, 1, 2}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tree := &fakeTreeHandle{}
+	options := Options{Columns: 80, Lines: 40, Environment: []string{"PATH=" + tools}, Runner: processpkg.Runner{},
+		Limits: DefaultLimits, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	options.Limits.MaxOutputBytes = 20
+	options.retainTree = func(*processpkg.Child) (treeHandle, error) { return tree, nil }
+	err := Render(context.Background(), resolved(path), options)
+	if !errors.Is(err, ErrTerminalResource) || tree.kills != 1 || tree.closes != 1 {
+		t.Fatalf("err=%v tree=%+v", err, tree)
 	}
 }

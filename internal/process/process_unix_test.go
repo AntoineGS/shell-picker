@@ -55,10 +55,21 @@ func platformHelper(args []string) bool {
 		spec.Containment, spec.Stdout = ContainmentInheritTree, os.Stdout
 		_ = (Runner{}).Run(ctx, spec)
 		return true
+	case "retain-tree-session":
+		spec := helperSpec("exit", "0")
+		spec.Containment = ContainmentInheritTree
+		child, err := (Runner{}).Start(context.Background(), spec)
+		if err != nil {
+			return true
+		}
+		tree, err := child.RetainTree()
+		if err != nil || child.Wait() != nil || tree.KillTree() != nil {
+			return true
+		}
+		os.Exit(3)
 	}
 	return false
 }
-
 func TestCancelKillsOwnedProcessTreeEventually(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	spec := helperSpec("spawn")
@@ -76,7 +87,6 @@ func TestCancelKillsOwnedProcessTreeEventually(t *testing.T) {
 	}
 	assertProcessGoneWithin(t, pid, 3*time.Second)
 }
-
 func TestInheritedTreeCancellationKillsCallbackGroup(t *testing.T) {
 	cmd := helperExec("inherit-session")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -92,6 +102,14 @@ func TestInheritedTreeCancellationKillsCallbackGroup(t *testing.T) {
 		t.Fatal("inherited callback group survived cancellation")
 	}
 	assertProcessGoneWithin(t, pid, 3*time.Second)
+}
+
+func TestRetainedInheritedTreeKillsGroupAfterChildWait(t *testing.T) {
+	cmd := helperExec("retain-tree-session")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Run(); err == nil {
+		t.Fatal("post-Wait retained tree kill returned to callback")
+	}
 }
 
 func TestProcessGroupLeaderRemainsUnreapedThroughCleanup(t *testing.T) {

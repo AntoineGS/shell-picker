@@ -3,17 +3,24 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
+	"github.com/AntoineGS/shell-picker/internal/sessionipc"
 )
 
 func TestVersionCommand(t *testing.T) {
@@ -28,11 +35,78 @@ func TestPreviewEnvironmentAllowsOnlyPathLocaleAndTerminalMetadata(t *testing.T)
 	inherited := []string{
 		"PATH=/usr/bin", "LANG=en_CA.UTF-8", "LC_ALL=C", "LC_CTYPE=C.UTF-8", "TERM=xterm-256color",
 		"COLORTERM=truecolor", "NO_COLOR=1", "GITHUB_TOKEN=secret", "AWS_SECRET_ACCESS_KEY=secret",
-		"SSH_AUTH_SOCK=/tmp/agent", "FZF_QUERY=event", "SHELL_PICKER_TOKEN=credential", "HOME=/home/user",
+		"SSH_AUTH_SOCK=/tmp/agent", "FZF_QUERY=event", "FZF_PREVIEW_COLUMNS=999", "FZF_PREVIEW_LINES=888",
+		"SHELL_PICKER_TOKEN=credential", "HOME=/home/user",
 	}
 	want := []string{"PATH=/usr/bin", "LANG=en_CA.UTF-8", "LC_ALL=C", "LC_CTYPE=C.UTF-8", "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=1"}
 	if got := previewEnvironment(inherited); !reflect.DeepEqual(got, want) {
 		t.Fatalf("previewEnvironment()=%q want %q", got, want)
+	}
+}
+
+func TestPreviewDimensionsNormalizeCallbackEnvironment(t *testing.T) {
+	tests := []struct {
+		name, columns, lines   string
+		wantColumns, wantLines int
+	}{
+		{name: "defaults", wantColumns: 80, wantLines: 40},
+		{name: "valid", columns: "132", lines: "57", wantColumns: 132, wantLines: 57},
+		{name: "malformed", columns: "12x", lines: "-4", wantColumns: 80, wantLines: 40},
+		{name: "zero and overflow", columns: "0", lines: "999999999999999999999999", wantColumns: 80, wantLines: 40},
+		{name: "clamped", columns: "1001", lines: "5000", wantColumns: 1000, wantLines: 1000},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			values := map[string]string{"FZF_PREVIEW_COLUMNS": tc.columns, "FZF_PREVIEW_LINES": tc.lines}
+			columns, lines := previewDimensions(func(name string) string { return values[name] })
+			if columns != tc.wantColumns || lines != tc.wantLines {
+				t.Fatalf("dimensions=%dx%d want %dx%d", columns, lines, tc.wantColumns, tc.wantLines)
+			}
+		})
+	}
+}
+
+func TestPreviewCallbackPassesClampedDimensionsWithoutChildEnvLeak(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct executable fixture is Unix-specific")
+	}
+	path := filepath.Join(t.TempDir(), "readme.md")
+	if err := os.WriteFile(path, []byte("# title\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		var input sessionipc.PreviewRequest
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			http.Error(response, "bad request", http.StatusBadRequest)
+			return
+		}
+		if input.Phase == "resolve" {
+			_ = json.NewEncoder(response).Encode(sessionipc.PreviewResponse{Kind: protocol.KindFile,
+				PathBase64: base64.StdEncoding.EncodeToString([]byte(path))})
+			return
+		}
+		_, _ = response.Write([]byte("{}"))
+	}))
+	defer server.Close()
+	tools, log := t.TempDir(), filepath.Join(t.TempDir(), "glow.log")
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf 'dims=%%s,%%s\\n' \"$FZF_PREVIEW_COLUMNS\" \"$FZF_PREVIEW_LINES\" >> %q\nprintf rendered\n", log, log)
+	if err := os.WriteFile(filepath.Join(tools, "glow"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SHELL_PICKER_ADDR", server.URL)
+	t.Setenv("SHELL_PICKER_TOKEN", base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	t.Setenv("FZF_CURRENT_ITEM", "record")
+	t.Setenv("FZF_PREVIEW_COLUMNS", "5000")
+	t.Setenv("FZF_PREVIEW_LINES", "57")
+	t.Setenv("PATH", tools)
+	var stdout, stderr bytes.Buffer
+	if code := callbackMain(context.Background(), []string{"--fzf-shell", "p"}, Streams{Out: &stdout, Err: &stderr}); code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	data, err := os.ReadFile(log)
+	if err != nil || string(data) != "--width\n999\n"+path+"\ndims=,\n" {
+		t.Fatalf("log=%q err=%v", data, err)
 	}
 }
 

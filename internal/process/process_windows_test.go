@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,13 +19,21 @@ import (
 )
 
 func platformHelper(args []string) bool {
-	if args[0] != "handle-probe" {
-		return false
+	if args[0] == "retain-tree-descendant" {
+		cmd := helperExec("block")
+		if err := cmd.Start(); err != nil {
+			return true
+		}
+		_, _ = fmt.Fprintln(os.Stdout, cmd.Process.Pid)
+		return true
 	}
-	value, _ := strconv.ParseUint(args[1], 10, 64)
-	_, err := windows.GetFileType(windows.Handle(value))
-	_ = json.NewEncoder(os.Stdout).Encode(handleProbe{UnexpectedInheritedHandles: boolInt(err == nil)})
-	return true
+	if args[0] == "handle-probe" {
+		value, _ := strconv.ParseUint(args[1], 10, 64)
+		_, err := windows.GetFileType(windows.Handle(value))
+		_ = json.NewEncoder(os.Stdout).Encode(handleProbe{UnexpectedInheritedHandles: boolInt(err == nil)})
+		return true
+	}
+	return false
 }
 
 func boolInt(value bool) int {
@@ -79,6 +88,41 @@ func TestWindowsForegroundUsesOwnedJobWithoutTTY(t *testing.T) {
 	if err := (Runner{}).Run(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRetainedInheritedJobKillsDescendantAfterChildWait(t *testing.T) {
+	spec := helperSpec("retain-tree-descendant")
+	spec.Containment = ContainmentInheritTree
+	var output bytes.Buffer
+	spec.Stdout = &output
+	child, err := (Runner{}).Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := child.RetainTree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(output.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.KillTree(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.KillTree(); err != nil {
+		t.Fatalf("second KillTree: %v", err)
+	}
+	if err := tree.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	assertProcessGoneWithin(t, pid, 3*time.Second)
 }
 
 type handleProbe struct {

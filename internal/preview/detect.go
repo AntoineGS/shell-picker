@@ -93,6 +93,7 @@ func Detect(prefix []byte, info fs.FileInfo) (Category, error) {
 
 func ParseCompletionInput(input []byte, literal bool, home []byte) (ParsedInput, error) {
 	path := bytes.Clone(input)
+	var escaped []bool
 	if !literal {
 		if fields := bytes.Split(path, []byte("\u00a0")); len(fields) > 1 {
 			path = bytes.Clone(fields[1])
@@ -100,36 +101,47 @@ func ParseCompletionInput(input []byte, literal bool, home []byte) (ParsedInput,
 		if len(path) > 0 && path[len(path)-1] == ' ' {
 			path = path[:len(path)-1]
 		}
-		path = unescapeCompletion(path)
+		path, escaped = unescapeCompletion(path)
 	}
 	if len(home) > 0 && bytes.HasPrefix(path, []byte("~/")) {
 		remainder := bytes.Clone(path[2:])
+		var remainderEscaped []bool
+		if len(escaped) >= 2 {
+			remainderEscaped = append([]bool(nil), escaped[2:]...)
+		}
 		path = bytes.Clone(home)
 		if last := path[len(path)-1]; last != '/' && last != '\\' {
 			path = append(path, filepath.Separator)
 		}
 		path = append(path, remainder...)
+		if escaped != nil {
+			escaped = append(make([]bool, len(path)-len(remainder)), remainderEscaped...)
+		}
 	}
 	if literal {
 		return ParsedInput{Path: path}, nil
 	}
-	path, line := splitReadableLine(path)
+	path, line := splitReadableLine(path, escaped)
 	return ParsedInput{Path: path, Line: line}, nil
 }
 
-func unescapeCompletion(path []byte) []byte {
+func unescapeCompletion(path []byte) ([]byte, []bool) {
 	result := make([]byte, 0, len(path))
+	escaped := make([]bool, 0, len(path))
 	for index := 0; index < len(path); index++ {
+		wasEscaped := false
 		if path[index] == '\\' && index+1 < len(path) {
 			index++
+			wasEscaped = true
 		}
 		result = append(result, path[index])
+		escaped = append(escaped, wasEscaped)
 	}
-	return result
+	return result, escaped
 }
 
-func splitReadableLine(path []byte) ([]byte, int) {
-	last := bytes.LastIndexByte(path, ':')
+func splitReadableLine(path []byte, escaped []bool) ([]byte, int) {
+	last := lastUnescapedColon(path, escaped, len(path))
 	if last < 0 {
 		return path, 0
 	}
@@ -138,7 +150,7 @@ func splitReadableLine(path []byte) ([]byte, int) {
 		return path, 0
 	}
 	base, line := path[:last], value
-	if previous := bytes.LastIndexByte(base, ':'); previous >= 0 {
+	if previous := lastUnescapedColon(path, escaped, last); previous >= 0 {
 		if parsed, parseErr := strconv.Atoi(string(base[previous+1:])); parseErr == nil && parsed > 0 && readable(base[:previous]) {
 			return bytes.Clone(base[:previous]), parsed
 		}
@@ -147,6 +159,15 @@ func splitReadableLine(path []byte) ([]byte, int) {
 		return bytes.Clone(base), line
 	}
 	return path, 0
+}
+
+func lastUnescapedColon(path []byte, escaped []bool, before int) int {
+	for index := before - 1; index >= 0; index-- {
+		if path[index] == ':' && (len(escaped) <= index || !escaped[index]) {
+			return index
+		}
+	}
+	return -1
 }
 
 func readable(path []byte) bool {

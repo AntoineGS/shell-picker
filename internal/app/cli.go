@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -134,13 +135,15 @@ func callbackMain(ctx context.Context, args []string, streams Streams) int {
 		return 1
 	}
 	defer client.CloseIdleConnections()
+	columns, lines := previewDimensions(os.Getenv)
+	environment := previewEnvironment(os.Environ())
 	dependencies := callback.Dependencies{Client: client, LookupEnv: os.Getenv, Stdout: streams.Out, Stderr: streams.Err}
 	dependencies.Preview = func(renderCtx context.Context, candidate protocol.ResolvedCandidate, stdout, stderr io.Writer) error {
 		runner := process.Runner{Observe: func(event process.ProcessEvent) {
 			callback.ObservePreviewProcess(renderCtx, event)
 		}}
-		return preview.Render(renderCtx, candidate, preview.Options{Columns: 80, Lines: 40,
-			Environment: previewEnvironment(os.Environ()), Runner: runner, Limits: preview.DefaultLimits,
+		return preview.Render(renderCtx, candidate, preview.Options{Columns: columns, Lines: lines,
+			Environment: environment, Runner: runner, Limits: preview.DefaultLimits,
 			Stdout: stdout, Stderr: stderr, OnDispatch: func(renderer string, pid int, duration time.Duration) {
 				callback.ObservePreviewDispatch(renderCtx, renderer, pid, duration)
 			}})
@@ -154,6 +157,26 @@ func callbackMain(ctx context.Context, args []string, streams Streams) int {
 		return 1
 	}
 	return 0
+}
+
+func previewDimensions(lookup func(string) string) (int, int) {
+	return previewDimension(lookup("FZF_PREVIEW_COLUMNS"), 80), previewDimension(lookup("FZF_PREVIEW_LINES"), 40)
+}
+
+func previewDimension(raw string, fallback int) int {
+	if raw == "" {
+		return fallback
+	}
+	for _, value := range []byte(raw) {
+		if value < '0' || value > '9' {
+			return fallback
+		}
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return min(value, 1000)
 }
 
 func previewEnvironment(inherited []string) []string {

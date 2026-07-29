@@ -16,11 +16,12 @@ import (
 )
 
 var (
-	ErrOutputLimit     = errors.New("preview: output limit exceeded")
-	ErrInputLimit      = errors.New("preview: input limit exceeded")
-	ErrArtifactLimit   = errors.New("preview: artifact limit exceeded")
-	ErrArchiveEntries  = errors.New("preview: archive entry limit exceeded")
-	ErrPathNotAbsolute = errors.New("preview: path is not an absolute filesystem candidate")
+	ErrOutputLimit      = errors.New("preview: output limit exceeded")
+	ErrInputLimit       = errors.New("preview: input limit exceeded")
+	ErrArtifactLimit    = errors.New("preview: artifact limit exceeded")
+	ErrArchiveEntries   = errors.New("preview: archive entry limit exceeded")
+	ErrPathNotAbsolute  = errors.New("preview: path is not an absolute filesystem candidate")
+	ErrTerminalResource = errors.New("preview: terminal resource failure")
 )
 
 type Limits struct {
@@ -31,6 +32,65 @@ type Limits struct {
 	MaxArchiveEntries           int
 	MaxArchiveDecompressedBytes int64
 	MaxArtifactBytes            int64
+}
+
+type treeHandle interface {
+	KillTree() error
+	Close() error
+}
+
+type renderSession struct {
+	tree       treeHandle
+	retainTree func(*process.Child) (treeHandle, error)
+	started    bool
+}
+
+func newRenderSession(options Options) *renderSession {
+	retain := options.retainTree
+	if retain == nil {
+		retain = func(child *process.Child) (treeHandle, error) { return child.RetainTree() }
+	}
+	return &renderSession{retainTree: retain}
+}
+
+func (session *renderSession) start(child *process.Child) (bool, error) {
+	first := !session.started
+	session.started = true
+	if !first {
+		return false, nil
+	}
+	tree, err := session.retainTree(child)
+	if err == nil {
+		session.tree = tree
+	}
+	return true, err
+}
+
+func (session *renderSession) terminal(cause error) error {
+	var killErr error
+	if session.tree != nil {
+		killErr = session.tree.KillTree()
+	}
+	return errors.Join(ErrTerminalResource, cause, killErr)
+}
+
+func (session *renderSession) close() {
+	if session.tree != nil {
+		_ = session.tree.Close()
+	}
+}
+
+func resourceFailure(ctx context.Context, budget *outputBudget, err error) error {
+	if _, exceeded := budget.status(); exceeded {
+		return ErrOutputLimit
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, process.ErrWaitDelay) || errors.Is(err, ErrOutputLimit) {
+		return err
+	}
+	return nil
 }
 
 var DefaultLimits = Limits{
@@ -89,6 +149,7 @@ type budgetWriter struct {
 	budget      *outputBudget
 	destination io.Writer
 	written     int64
+	meaningful  int64
 }
 
 func newOutputBudget(maximum int64, onLimit func()) *outputBudget {
@@ -119,6 +180,11 @@ func (writer *budgetWriter) Write(data []byte) (int, error) {
 	budget.remaining -= int64(written)
 	budget.written += int64(written)
 	writer.written += int64(written)
+	for _, value := range data[:written] {
+		if value != ' ' && value != '\t' && value != '\n' && value != '\r' && value != '\v' && value != '\f' {
+			writer.meaningful++
+		}
+	}
 	if err != nil {
 		return written, err
 	}
@@ -133,6 +199,12 @@ func (writer *budgetWriter) bytesWritten() int64 {
 	writer.budget.mu.Lock()
 	defer writer.budget.mu.Unlock()
 	return writer.written
+}
+
+func (writer *budgetWriter) meaningfulBytes() int64 {
+	writer.budget.mu.Lock()
+	defer writer.budget.mu.Unlock()
+	return writer.meaningful
 }
 
 func (budget *outputBudget) limitReachedLocked() {
@@ -188,24 +260,33 @@ func environmentValue(environment []string, name string) string {
 	return ""
 }
 
-func fileHint(ctx context.Context, path string, fallback Category, options Options, budget *outputBudget, stderr io.Writer) (Category, bool) {
+func fileHint(ctx context.Context, path string, fallback Category, options Options, budget *outputBudget,
+	stderr io.Writer, session *renderSession) (Category, error) {
 	executable := lookupTool("file", options.Environment)
 	if executable == "" {
-		return fallback, false
+		return fallback, nil
 	}
 	var hint bytes.Buffer
 	child, err := options.Runner.Start(ctx, externalProcessSpec(executable,
 		[]string{"--brief", "--mime-type", "--", path}, options.Environment, budget.writer(&hint), stderr))
 	if err != nil {
-		return fallback, false
+		return fallback, nil
 	}
-	if options.OnDispatch != nil {
+	first, retainErr := session.start(child)
+	if first && options.OnDispatch != nil {
 		options.OnDispatch("file", child.PID(), 0)
 	}
-	if err := child.Wait(); err != nil || ctx.Err() != nil {
-		return fallback, true
+	waitErr := child.Wait()
+	if retainErr != nil {
+		return fallback, session.terminal(retainErr)
 	}
-	return categoryFromMIME(strings.TrimSpace(hint.String()), fallback), true
+	if resourceErr := resourceFailure(ctx, budget, waitErr); resourceErr != nil {
+		return fallback, session.terminal(resourceErr)
+	}
+	if waitErr != nil {
+		return fallback, nil
+	}
+	return categoryFromMIME(strings.TrimSpace(hint.String()), fallback), nil
 }
 
 func categoryFromMIME(mime string, fallback Category) Category {

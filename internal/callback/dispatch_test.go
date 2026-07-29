@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
+	previewpkg "github.com/AntoineGS/shell-picker/internal/preview"
 	processpkg "github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
@@ -201,6 +203,24 @@ func TestPreviewTelemetryFailureDoesNotReplaceRendererStatus(t *testing.T) {
 	err := Dispatch(context.Background(), mustParse(t, "p"), deps)
 	if !errors.Is(err, renderErr) || time.Since(started) > time.Second {
 		t.Fatalf("err=%v duration=%s", err, time.Since(started))
+	}
+}
+
+func TestPreviewTerminalResourceSkipsFinishedTelemetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "file")
+	client := &fakeClient{resolved: sessionipc.PreviewResponse{Kind: protocol.KindFile,
+		PathBase64: base64.StdEncoding.EncodeToString([]byte(path))}}
+	deps := Dependencies{Client: client, LookupEnv: func(string) string { return "item" }, Stdout: io.Discard, Stderr: io.Discard,
+		Preview: func(ctx context.Context, _ protocol.ResolvedCandidate, _, _ io.Writer) error {
+			ObservePreviewDispatch(ctx, "bat", 101, 0)
+			ObservePreviewProcess(ctx, processpkg.ProcessEvent{Phase: "start", PID: 101})
+			ObservePreviewProcess(ctx, processpkg.ProcessEvent{Phase: "exit", PID: 101})
+			return fmt.Errorf("renderer limit: %w", previewpkg.ErrTerminalResource)
+		}}
+	err := Dispatch(context.Background(), mustParse(t, "p"), deps)
+	if !errors.Is(err, previewpkg.ErrTerminalResource) || len(client.previews) != 2 ||
+		client.previews[0].Phase != "resolve" || client.previews[1].Phase != "started" {
+		t.Fatalf("err=%v previews=%+v", err, client.previews)
 	}
 }
 

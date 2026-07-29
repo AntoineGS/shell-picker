@@ -35,6 +35,16 @@ func TestExternalRendererDeadlineKillsInheritedGroupWithoutFallback(t *testing.T
 	testExternalRendererResourceKill(t, "deadline")
 }
 
+func TestExternalRendererWaitDelayKillsInheritedGroupWithoutFallback(t *testing.T) {
+	testExternalRendererResourceKill(t, "waitdelay")
+}
+
+func TestNativeFallbackResourceFailureKillsRetainedInheritedGroup(t *testing.T) {
+	for _, mode := range []string{"native-output", "native-deadline"} {
+		t.Run(mode, func(t *testing.T) { testExternalRendererResourceKill(t, mode) })
+	}
+}
+
 func testExternalRendererResourceKill(t *testing.T, mode string) {
 	t.Helper()
 	root := t.TempDir()
@@ -51,9 +61,15 @@ func testExternalRendererResourceKill(t *testing.T, mode string) {
 	if mode == "output" {
 		resourceAction = fmt.Sprintf("printf '%s'\nprintf '%s' >&2\n/bin/sleep 30", strings.Repeat("o", 700), strings.Repeat("e", 700))
 	}
-	script := fmt.Sprintf("#!/bin/sh\necho $$ > %s\n(while :; do /bin/sleep 1; done) &\necho $! > %s\nwhile [ ! -f %s ]; do /bin/sleep 0.01; done\n%s\n",
-		strconv.Quote(rendererPID), strconv.Quote(descendantPID), strconv.Quote(startSignal),
-		resourceAction)
+	if mode == "waitdelay" || strings.HasPrefix(mode, "native-") {
+		resourceAction = "exit 7"
+	}
+	script := fmt.Sprintf("#!/bin/sh\necho $$ > %s\nwhile [ ! -f %s ]; do /bin/sleep 0.01; done\n%s\n",
+		strconv.Quote(rendererPID), strconv.Quote(startSignal), resourceAction)
+	if !strings.HasPrefix(mode, "native-") {
+		script = fmt.Sprintf("#!/bin/sh\necho $$ > %s\n(while :; do /bin/sleep 1; done) &\necho $! > %s\nwhile [ ! -f %s ]; do /bin/sleep 0.01; done\n%s\n",
+			strconv.Quote(rendererPID), strconv.Quote(descendantPID), strconv.Quote(startSignal), resourceAction)
+	}
 	if err := os.WriteFile(filepath.Join(tools, "bat"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -86,13 +102,16 @@ func testExternalRendererResourceKill(t *testing.T, mode string) {
 		t.Fatalf("telemetry=%q err=%v", data, readErr)
 	}
 	assertProcessGone(t, rendererPID)
-	assertProcessGone(t, descendantPID)
+	if !strings.HasPrefix(mode, "native-") {
+		assertProcessGone(t, descendantPID)
+	}
 }
 
 func TestPreviewResourceHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_PREVIEW_RESOURCE_HELPER") != "1" {
 		return
 	}
+	ctx := context.Background()
 	var stdout, stderr bytes.Buffer
 	options := testOptions(&stdout)
 	options.Stderr = &stderr
@@ -100,9 +119,18 @@ func TestPreviewResourceHelperProcess(t *testing.T) {
 	if os.Getenv("GO_PREVIEW_RESOURCE_MODE") == "output" {
 		options.Limits.MaxOutputBytes = 1000
 	}
+	if os.Getenv("GO_PREVIEW_RESOURCE_MODE") == "native-output" {
+		options.Limits.MaxOutputBytes = 8
+	}
 	options.Limits.Deadline = 5 * time.Second
 	if os.Getenv("GO_PREVIEW_RESOURCE_MODE") == "deadline" {
 		options.Limits.Deadline = 100 * time.Millisecond
+	}
+	if os.Getenv("GO_PREVIEW_RESOURCE_MODE") == "native-deadline" {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		options.Stdout = &cancelWriter{cancel: cancel}
 	}
 	options.OnDispatch = func(renderer string, _ int, duration time.Duration) {
 		if duration != 0 {
@@ -119,7 +147,7 @@ func TestPreviewResourceHelperProcess(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	err := Render(context.Background(), resolved(os.Getenv("GO_PREVIEW_FIXTURE")), options)
+	err := Render(ctx, resolved(os.Getenv("GO_PREVIEW_FIXTURE")), options)
 	file, _ := os.OpenFile(os.Getenv("GO_PREVIEW_TELEMETRY"), os.O_WRONLY|os.O_APPEND, 0o600)
 	if file != nil {
 		_, _ = fmt.Fprintf(file, "returned:%v\n", err)

@@ -180,27 +180,44 @@ func TestPreviewExternalStreamsStaySeparateUnderOneBudget(t *testing.T) {
 	}
 }
 
-func TestPreviewStderrOnlyExternalSuccessFallsBackToNativeStdout(t *testing.T) {
+func TestExternalMeaningfulStdoutControlsFallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-specific")
 	}
-	tools := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tools, "bat"), []byte("#!/bin/sh\nprintf diagnostic >&2\n"), 0o700); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name, glow     string
+		wantBat        bool
+		stdout, stderr string
+	}{
+		{name: "nonzero meaningful", glow: "printf useful; exit 7", stdout: "useful"},
+		{name: "whitespace only", glow: "printf ' \\t\\n'", wantBat: true, stdout: " \t\nbat\n"},
+		{name: "stderr only", glow: "printf diagnostic >&2", wantBat: true, stdout: "bat\n", stderr: "diagnostic"},
 	}
-	path := filepath.Join(t.TempDir(), "plain.txt")
-	if err := os.WriteFile(path, []byte("native output\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	options := testOptions(&stdout)
-	options.Stderr = &stderr
-	options.Environment = []string{"PATH=" + tools}
-	if err := Render(context.Background(), resolved(path), options); err != nil {
-		t.Fatal(err)
-	}
-	if stdout.Len() == 0 || !strings.Contains(stdout.String(), "native output") || stderr.String() != "diagnostic" {
-		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tools, batLog := t.TempDir(), filepath.Join(t.TempDir(), "bat")
+			if err := os.WriteFile(filepath.Join(tools, "glow"), []byte("#!/bin/sh\n"+tc.glow+"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			script := fmt.Sprintf("#!/bin/sh\nprintf called > %s\nprintf 'bat\\n'\n", strconv.Quote(batLog))
+			if err := os.WriteFile(filepath.Join(tools, "bat"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "readme.md")
+			if err := os.WriteFile(path, []byte("# native\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			options := testOptions(&stdout)
+			options.Stderr, options.Environment = &stderr, []string{"PATH=" + tools}
+			if err := Render(context.Background(), resolved(path), options); err != nil {
+				t.Fatal(err)
+			}
+			_, statErr := os.Stat(batLog)
+			if (statErr == nil) != tc.wantBat || stdout.String() != tc.stdout || stderr.String() != tc.stderr {
+				t.Fatalf("bat err=%v stdout=%q stderr=%q", statErr, stdout.String(), stderr.String())
+			}
+		})
 	}
 }
 
@@ -258,13 +275,14 @@ func TestOptionalRendererPrecedenceAndArguments(t *testing.T) {
 	fixtures := writeFixtures(t, t.TempDir())
 	cases := []struct {
 		name, fixture, tool, term string
+		columns, lines            int
 		arguments                 func(string) []string
 	}{
-		{name: "qualified kitten", fixture: "image.png", tool: "kitten", term: "xterm-kitty", arguments: func(path string) []string {
-			return []string{"icat", "--clear", "--transfer-mode=memory", "--place", "80x40@0x0", "--", path}
+		{name: "qualified kitten", fixture: "image.png", tool: "kitten", term: "xterm-kitty", columns: 132, lines: 57, arguments: func(path string) []string {
+			return []string{"icat", "--clear", "--transfer-mode=memory", "--place", "132x57@0x0", "--", path}
 		}},
-		{name: "chafa", fixture: "image.png", tool: "chafa", arguments: func(path string) []string {
-			return []string{"--size", "80x40", "--", path}
+		{name: "chafa", fixture: "image.png", tool: "chafa", columns: 132, lines: 57, arguments: func(path string) []string {
+			return []string{"--size", "132x57", "--", path}
 		}},
 		{name: "audio metadata", fixture: "audio.mp3", tool: "exiftool", arguments: afterDoubleDash},
 		{name: "zip listing", fixture: "sample.zip", tool: "unzip", arguments: func(path string) []string { return []string{"-l", "--", path} }},
@@ -279,6 +297,9 @@ func TestOptionalRendererPrecedenceAndArguments(t *testing.T) {
 			installPreviewTool(t, tools, tc.tool, log, 0)
 			var output bytes.Buffer
 			options := testOptions(&output)
+			if tc.columns != 0 {
+				options.Columns, options.Lines = tc.columns, tc.lines
+			}
 			options.Environment = []string{"PATH=" + tools, "TERM=" + tc.term}
 			if err := Render(context.Background(), resolved(fixtures[tc.fixture]), options); err != nil {
 				t.Fatal(err)
@@ -293,8 +314,8 @@ func TestRendererFailuresAreWaitedSequentiallyBeforeNativeFallback(t *testing.T)
 		t.Skip("direct executable fixtures are Unix-specific")
 	}
 	tools := t.TempDir()
-	installPreviewTool(t, tools, "kitten", filepath.Join(t.TempDir(), "kitten"), 1)
-	installPreviewTool(t, tools, "chafa", filepath.Join(t.TempDir(), "chafa"), 1)
+	installPreviewToolOutput(t, tools, "kitten", filepath.Join(t.TempDir(), "kitten"), "", 1)
+	installPreviewToolOutput(t, tools, "chafa", filepath.Join(t.TempDir(), "chafa"), "", 1)
 	path := writeFixtures(t, t.TempDir())["image.png"]
 	var output bytes.Buffer
 	options := testOptions(&output)

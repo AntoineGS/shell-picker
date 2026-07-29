@@ -43,7 +43,6 @@ type ProcessEvent struct {
 }
 
 type Runner struct{ Observe func(ProcessEvent) }
-
 type ExitError struct{ Code uint32 }
 
 func (e *ExitError) Error() string { return fmt.Sprintf("process exited with code %d", e.Code) }
@@ -54,7 +53,42 @@ var ErrWaitDelay = errors.New("process: I/O pumps did not finish before WaitDela
 var ErrInvalidStream = errors.New("process: pumped io.Closer requires stable pointer identity")
 var ErrExitObserver = errors.New("process: exit observer failed")
 var ErrUnsupportedPlatform = errors.New("process: unsupported Unix process backend")
+var ErrTreeUnavailable = errors.New("process: inherited tree unavailable")
 
+type TreeHandle struct {
+	mu                  sync.Mutex
+	kill, close         func() error
+	killed, closed      bool
+	killErr, closeError error
+}
+
+func newTreeHandle(kill, close func() error) *TreeHandle {
+	return &TreeHandle{kill: kill, close: close}
+}
+
+func (handle *TreeHandle) KillTree() error {
+	handle.mu.Lock()
+	defer handle.mu.Unlock()
+	if handle.closed {
+		return nil
+	}
+	if !handle.killed {
+		handle.killed = true
+		handle.killErr = handle.kill()
+	}
+	return handle.killErr
+}
+func (handle *TreeHandle) Close() error {
+	handle.mu.Lock()
+	defer handle.mu.Unlock()
+	if !handle.closed {
+		handle.closed = true
+		if handle.close != nil {
+			handle.closeError = handle.close()
+		}
+	}
+	return handle.closeError
+}
 func (r Runner) Run(ctx context.Context, spec Spec) error {
 	child, err := r.Start(ctx, spec)
 	if err != nil {

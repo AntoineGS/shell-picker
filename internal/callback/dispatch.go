@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	"github.com/AntoineGS/shell-picker/internal/preview"
 	processpkg "github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
@@ -137,6 +138,9 @@ func dispatchPreview(ctx context.Context, dependencies Dependencies) error {
 	renderCtx := context.WithValue(ctx, previewTelemetryKey{}, state)
 	renderErr := dependencies.Preview(renderCtx, candidate, dependencies.Stdout, dependencies.Stderr)
 	state.ensureStarted()
+	if errors.Is(renderErr, preview.ErrTerminalResource) {
+		return renderErr
+	}
 	duration := time.Since(started)
 	if duration > 10*time.Second {
 		duration = 10 * time.Second

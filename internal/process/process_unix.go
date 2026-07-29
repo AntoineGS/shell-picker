@@ -130,6 +130,22 @@ func setParentDeathSignal(attr *syscall.SysProcAttr) {
 
 func (c *Child) PID() int { return c.cmd.Process.Pid }
 
+func (c *Child) RetainTree() (*TreeHandle, error) {
+	c.lifeMu.Lock()
+	defer c.lifeMu.Unlock()
+	if c.containment != ContainmentInheritTree || !c.targetValid {
+		return nil, ErrTreeUnavailable
+	}
+	pgid := c.pgid
+	return newTreeHandle(func() error {
+		err := syscall.Kill(-pgid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}, nil), nil
+}
+
 func (c *Child) KillTree() error {
 	c.lifeMu.Lock()
 	defer c.lifeMu.Unlock()
