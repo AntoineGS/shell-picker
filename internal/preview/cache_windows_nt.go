@@ -3,19 +3,99 @@
 package preview
 
 import (
+	"encoding/hex"
 	"errors"
 	"os"
+	"strings"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
+func cacheCleanupStale(cache *Cache) {
+	root, err := openCache(cache)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(root)
+	var duplicate windows.Handle
+	process := windows.CurrentProcess()
+	if windows.DuplicateHandle(process, root, process, &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS) != nil {
+		return
+	}
+	directory := os.NewFile(uintptr(duplicate), cache.root)
+	entries, readErr := directory.Readdir(-1)
+	_ = directory.Close()
+	if readErr != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && validPrivateStageName(entry.Name()) {
+			cleanupStaleStageAt(root, entry.Name())
+		}
+	}
+}
+
+func validPrivateStageName(name string) bool {
+	if len(name) != len(cacheTempPrefix)+32 || !strings.HasPrefix(name, cacheTempPrefix) {
+		return false
+	}
+	_, err := hex.DecodeString(name[len(cacheTempPrefix):])
+	return err == nil && name == strings.ToLower(name)
+}
+
+func cleanupStaleStageAt(root windows.Handle, name string) {
+	directory, err := ntOpenAt(root, name, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE, rootAccessMask|windows.DELETE)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(directory)
+	if _, err := directoryIdentity(directory); err != nil {
+		return
+	}
+	var duplicate windows.Handle
+	process := windows.CurrentProcess()
+	if windows.DuplicateHandle(process, directory, process, &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS) != nil {
+		return
+	}
+	stream := os.NewFile(uintptr(duplicate), name)
+	entries, readErr := stream.Readdir(-1)
+	_ = stream.Close()
+	if readErr != nil || len(entries) != 1 || entries[0].IsDir() || entries[0].Name() != "artifact.jpg" {
+		return
+	}
+	artifact, _, _, _, err := openAcceptedAt(directory, entries[0].Name(), fileIdentity{}, true)
+	if err != nil {
+		return
+	}
+	deleted := deleteHandle(artifact) == nil
+	_ = windows.CloseHandle(artifact)
+	if deleted {
+		_ = deleteHandle(directory)
+	}
+}
+
 type fileRenameInformation struct {
 	ReplaceIfExists uint32
 	RootDirectory   uintptr
 	FileNameLength  uint32
 	FileName        [1]uint16
+}
+
+func (artifact *converterArtifact) Abandon() {
+	artifact.mu.Lock()
+	defer artifact.mu.Unlock()
+	if artifact.complete {
+		return
+	}
+	if artifact.held != 0 {
+		_ = windows.CloseHandle(artifact.held)
+		artifact.held = 0
+	}
+	_ = windows.CloseHandle(artifact.directory)
+	_ = windows.CloseHandle(artifact.root)
+	artifact.complete = true
 }
 
 func ntOpenAt(root windows.Handle, name string, disposition, options, access uint32) (windows.Handle, error) {

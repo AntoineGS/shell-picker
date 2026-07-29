@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,6 +95,28 @@ func TestTerminalRetriesBlockedCleanupAfterTreeKill(t *testing.T) {
 	}
 }
 
+func TestTerminalBoundsCleanupRetryThenReleasesOwnedHandles(t *testing.T) {
+	oldNow, oldSleep := cleanupNow, cleanupSleep
+	now := time.Unix(100, 0)
+	cleanupNow = func() time.Time { return now }
+	cleanupSleep = func(duration time.Duration) { now = now.Add(duration) }
+	t.Cleanup(func() { cleanupNow, cleanupSleep = oldNow, oldSleep })
+	events := []string{}
+	session := &renderSession{tree: orderedTreeHandle{&events}}
+	session.cleanup = func() bool { events = append(events, "cleanup"); return false }
+	session.abandon = func() { events = append(events, "abandon") }
+	_ = session.terminal(ErrArtifactLimit)
+	if elapsed := now.Sub(time.Unix(100, 0)); elapsed != time.Second {
+		t.Fatalf("retry duration=%v", elapsed)
+	}
+	if events[0] != "cleanup" || events[1] != "kill" || events[len(events)-1] != "abandon" {
+		t.Fatalf("events=%v", events)
+	}
+	if session.cleanup != nil || session.abandon != nil {
+		t.Fatalf("cleanup retained=%v abandon retained=%v", session.cleanup != nil, session.abandon != nil)
+	}
+}
+
 func TestNewCacheRejectsComponentReplacementAfterCreationWalk(t *testing.T) {
 	base := t.TempDir()
 	components := []string{base, "anchor", "observed"}
@@ -174,7 +197,43 @@ func TestStagedArtifactRejectsReplacementAfterExclusiveCreation(t *testing.T) {
 		t.Fatalf("replacement writer error=%v", err)
 	}
 }
-
+func TestStagedArtifactTruncatesValidatedCreationIdentity(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	stage, err := newConverterArtifact(cache, ".jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Cleanup()
+	attacker, err := stage.OpenWritable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attacker.Write([]byte("attacker-trailing-bytes")); err != nil {
+		t.Fatal(err)
+	}
+	if err := attacker.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := stage.OpenWritable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("safe")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, _, err := stage.OpenAccepted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || string(data) != "safe" {
+		t.Fatalf("data=%q read=%v close=%v", data, readErr, closeErr)
+	}
+}
 func TestRendererReadsValidatedStageWhenPathIsReplaced(t *testing.T) {
 	tools := t.TempDir()
 	executable := filepath.Join(tools, "chafa")

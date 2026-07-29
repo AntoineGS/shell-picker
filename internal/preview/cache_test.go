@@ -192,17 +192,35 @@ func TestCacheConcurrentProductionPutHasImmutableSingleLinkWinner(t *testing.T) 
 	for _, reader := range readers {
 		<-reader.started
 	}
-	for _, reader := range readers {
-		close(reader.proceed)
+	close(readers[0].proceed)
+	if err := <-errs; err != nil {
+		t.Fatal(err)
 	}
-	for range readers {
-		if err := <-errs; err != nil {
-			t.Fatal(err)
-		}
+	winner, err := openCacheSource(cache, key)
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(cache.root, key))
-	if err != nil || string(data) != "first" && string(data) != "second" {
-		t.Fatalf("winner=%q err=%v", data, err)
+	winnerIdentity := winner.identity
+	winnerData, readErr := io.ReadAll(winner)
+	closeErr := winner.Close()
+	if readErr != nil || closeErr != nil || string(winnerData) != "first" {
+		t.Fatalf("initial winner=%q read=%v close=%v", winnerData, readErr, closeErr)
+	}
+	close(readers[1].proceed)
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	after, err := openCacheSource(cache, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Close()
+	if after.identity != winnerIdentity {
+		t.Fatalf("winner replaced: before=%+v after=%+v", winnerIdentity, after.identity)
+	}
+	data, err := io.ReadAll(after)
+	if err != nil || string(data) != "first" {
+		t.Fatalf("final winner=%q err=%v", data, err)
 	}
 	probe := filepath.Join(cache.root, "winner-hardlink")
 	if err := os.Link(filepath.Join(cache.root, key), probe); err == nil {

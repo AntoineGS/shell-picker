@@ -41,7 +41,6 @@ type cacheSource struct {
 func (source *cacheSource) Read(data []byte) (int, error) { return source.file.Read(data) }
 func (source *cacheSource) Close() error                  { return source.file.Close() }
 func (artifact *converterArtifact) Path() string          { return artifact.path }
-
 func NewCache(root string, maximumBytes int64) (*Cache, error) {
 	var err error
 	if root == "" {
@@ -61,9 +60,10 @@ func NewCache(root string, maximumBytes int64) (*Cache, error) {
 	if maximumBytes <= 0 {
 		maximumBytes = defaultCacheBytes
 	}
-	return &Cache{root: absolute, maxBytes: maximumBytes, rootIdentity: rootIdentity}, nil
+	cache := &Cache{root: absolute, maxBytes: maximumBytes, rootIdentity: rootIdentity}
+	cacheCleanupStale(cache)
+	return cache, nil
 }
-
 func defaultCacheRoot() (string, error) {
 	base := cacheGetenv(cacheEnvironmentVariable)
 	if base == "" {
@@ -75,7 +75,6 @@ func defaultCacheRoot() (string, error) {
 	}
 	return filepath.Join(base, "shell-picker", "previews"), nil
 }
-
 func (cache *Cache) Key(candidate protocol.ResolvedCandidate, renderer string) string {
 	hash := sha256.New()
 	_, _ = hash.Write([]byte{1})
@@ -87,7 +86,6 @@ func (cache *Cache) Key(candidate protocol.ResolvedCandidate, renderer string) s
 	_, _ = hash.Write([]byte(renderer))
 	return hex.EncodeToString(hash.Sum(nil))
 }
-
 func (cache *Cache) Get(key string) (string, bool) {
 	if !validCacheKey(key) {
 		return "", false
@@ -103,7 +101,6 @@ func (cache *Cache) Get(key string) (string, bool) {
 	err = source.Validate()
 	return filepath.Join(cache.root, key), err == nil
 }
-
 func (cache *Cache) Put(key string, source io.Reader) (string, error) {
 	if !validCacheKey(key) {
 		return "", ErrUnsafeCache
@@ -114,7 +111,6 @@ func (cache *Cache) Put(key string, source io.Reader) (string, error) {
 	_ = cachePrune(cache)
 	return filepath.Join(cache.root, key), nil
 }
-
 func (cache *Cache) Prune() error { return cachePrune(cache) }
 
 func validCacheKey(key string) bool {
@@ -166,9 +162,11 @@ func renderCachedArtifact(ctx context.Context, candidate protocol.ResolvedCandid
 		return false, false, nil
 	}
 	session.cleanup = temp.Cleanup
+	session.abandon = temp.Abandon
 	defer func() {
 		if temp.Cleanup() {
 			session.cleanup = nil
+			session.abandon = nil
 		}
 	}()
 	child, err := options.Runner.Start(ctx, externalProcessSpec(executable,
@@ -238,9 +236,11 @@ func renderStagedCache(ctx context.Context, cache *Cache, key string, options Op
 		return false, true, nil
 	}
 	session.cleanup = staged.Cleanup
+	session.abandon = staged.Abandon
 	defer func() {
 		if staged.Cleanup() {
 			session.cleanup = nil
+			session.abandon = nil
 		}
 	}()
 	rendered, err := renderExternal(ctx, staged.Path(), CategoryImage, options, stdout, stderr, session, staged.RenderFiles()...)

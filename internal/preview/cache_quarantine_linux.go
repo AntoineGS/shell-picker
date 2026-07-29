@@ -8,6 +8,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func cacheCleanupStale(*Cache) {}
+
+func (artifact *converterArtifact) Abandon() {
+	if artifact.complete {
+		return
+	}
+	if artifact.held != nil {
+		_ = artifact.held.Close()
+	}
+	_ = artifact.directory.Close()
+	_ = artifact.root.Close()
+	artifact.complete = true
+}
+
 func cachePrune(cache *Cache) error {
 	root, err := openCache(cache)
 	if err != nil {

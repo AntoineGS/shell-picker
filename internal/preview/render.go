@@ -72,8 +72,7 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 	if nativeOnly && !session.started && options.OnDispatch != nil {
 		options.OnDispatch("native", 0, 0)
 	}
-	rendered := false
-	richHandled := false
+	rendered, richHandled := false, false
 	if !nativeOnly {
 		rendered, richHandled, err = renderCachedArtifact(renderCtx, candidate, category, options, stdout, stderr, session)
 		if err == nil && !rendered && !richHandled {
@@ -103,7 +102,6 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 	}
 	return err
 }
-
 func renderExternal(ctx context.Context, path string, category Category, options Options, stdout *budgetWriter,
 	stderr io.Writer, session *renderSession, extraFiles ...*os.File) (bool, error) {
 	for _, tool := range externalTools(category, path, options) {
@@ -111,12 +109,16 @@ func renderExternal(ctx context.Context, path string, category Category, options
 		if executable == "" {
 			continue
 		}
-		before := stdout.meaningfulBytes()
-		var processStdout io.Writer = stdout
+		before, processStdout := stdout.meaningfulBytes(), io.Writer(stdout)
 		if category == CategoryZip || category == CategoryGzip || category == CategoryXz || category == CategoryTar || category == CategoryBzip {
 			processStdout = &lineLimitWriter{writer: stdout, remaining: options.Limits.MaxArchiveEntries}
 		}
 		spec := externalProcessSpec(executable, tool.arguments, options.Environment, processStdout, stderr)
+		for _, file := range extraFiles {
+			if _, err := file.Seek(0, io.SeekStart); err != nil {
+				return false, session.terminal(err)
+			}
+		}
 		spec.ExtraFiles = extraFiles
 		child, err := options.Runner.Start(ctx, spec)
 		if err != nil {
@@ -155,7 +157,6 @@ func richConverterArguments(category Category, path, artifact string) []string {
 		return []string{"-y", "-i", path, "-an", "-c:v", "copy", artifact}
 	}
 }
-
 func externalTools(category Category, path string, options Options) []directTool {
 	switch category {
 	case CategoryDirectory:
@@ -188,7 +189,6 @@ func externalTools(category Category, path string, options Options) []directTool
 		return nil
 	}
 }
-
 func readPrefix(ctx context.Context, path string, info os.FileInfo, maximum int64) ([]byte, error) {
 	if info.IsDir() {
 		return nil, nil

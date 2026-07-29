@@ -21,7 +21,6 @@ func writeHashUint64(writer io.Writer, value uint64) {
 	binary.BigEndian.PutUint64(data[:], value)
 	_, _ = writer.Write(data[:])
 }
-
 func terminalQualified(environment []string) bool {
 	for _, entry := range environment {
 		if key, value, ok := strings.Cut(entry, "="); ok && key == "TERM" && strings.Contains(strings.ToLower(value), "kitty") {
@@ -32,12 +31,13 @@ func terminalQualified(environment []string) bool {
 }
 
 var (
-	ErrOutputLimit      = errors.New("preview: output limit exceeded")
-	ErrInputLimit       = errors.New("preview: input limit exceeded")
-	ErrArtifactLimit    = errors.New("preview: artifact limit exceeded")
-	ErrArchiveEntries   = errors.New("preview: archive entry limit exceeded")
-	ErrPathNotAbsolute  = errors.New("preview: path is not an absolute filesystem candidate")
-	ErrTerminalResource = errors.New("preview: terminal resource failure")
+	ErrOutputLimit           = errors.New("preview: output limit exceeded")
+	ErrInputLimit            = errors.New("preview: input limit exceeded")
+	ErrArtifactLimit         = errors.New("preview: artifact limit exceeded")
+	ErrArchiveEntries        = errors.New("preview: archive entry limit exceeded")
+	ErrPathNotAbsolute       = errors.New("preview: path is not an absolute filesystem candidate")
+	ErrTerminalResource      = errors.New("preview: terminal resource failure")
+	cleanupNow, cleanupSleep = time.Now, time.Sleep
 )
 
 type Limits struct {
@@ -49,7 +49,6 @@ type Limits struct {
 	MaxArchiveDecompressedBytes int64
 	MaxArtifactBytes            int64
 }
-
 type treeHandle interface {
 	KillTree() error
 	Close() error
@@ -60,6 +59,7 @@ type renderSession struct {
 	retainTree func(*process.Child) (treeHandle, error)
 	started    bool
 	cleanup    func() bool
+	abandon    func()
 }
 
 func newRenderSession(options Options) *renderSession {
@@ -69,7 +69,6 @@ func newRenderSession(options Options) *renderSession {
 	}
 	return &renderSession{retainTree: retain}
 }
-
 func (session *renderSession) start(child *process.Child) (bool, error) {
 	first := !session.started
 	session.started = true
@@ -82,33 +81,45 @@ func (session *renderSession) start(child *process.Child) (bool, error) {
 	}
 	return true, err
 }
-
 func (session *renderSession) terminal(cause error) error {
 	cleaned := session.cleanup == nil || session.cleanup()
 	var killErr error
 	if session.tree != nil {
 		killErr = session.tree.KillTree()
 	}
-	for attempts := 0; !cleaned && attempts < 100; attempts++ {
+	deadline := cleanupNow().Add(time.Second)
+	for !cleaned && cleanupNow().Before(deadline) {
 		cleaned = session.cleanup()
 		if !cleaned {
-			time.Sleep(time.Millisecond)
+			remaining := deadline.Sub(cleanupNow())
+			cleanupSleep(min(time.Millisecond, remaining))
 		}
 	}
 	if cleaned {
 		session.cleanup = nil
+		session.abandon = nil
+	} else if session.abandon != nil {
+		session.abandon()
+		session.cleanup = nil
+		session.abandon = nil
 	}
 	return errors.Join(ErrTerminalResource, cause, killErr)
 }
 func (session *renderSession) close() {
 	if session.cleanup != nil && session.cleanup() {
 		session.cleanup = nil
+		session.abandon = nil
 	}
 	if session.tree != nil {
 		_ = session.tree.Close()
 	}
 	if session.cleanup != nil && session.cleanup() {
 		session.cleanup = nil
+		session.abandon = nil
+	} else if session.abandon != nil {
+		session.abandon()
+		session.cleanup = nil
+		session.abandon = nil
 	}
 }
 func resourceFailure(ctx context.Context, budget *outputBudget, err error) error {
@@ -163,7 +174,6 @@ func newCountingWriter(destination io.Writer, maximum int64) *countingWriter {
 	budget := newOutputBudget(maximum, nil)
 	return &countingWriter{writer: budget.writer(destination)}
 }
-
 func (writer *countingWriter) Write(data []byte) (int, error) {
 	return writer.writer.Write(data)
 }
@@ -186,14 +196,12 @@ type budgetWriter struct {
 func newOutputBudget(maximum int64, onLimit func()) *outputBudget {
 	return &outputBudget{remaining: maximum, onLimit: onLimit}
 }
-
 func (budget *outputBudget) writer(destination io.Writer) *budgetWriter {
 	if destination == nil {
 		destination = io.Discard
 	}
 	return &budgetWriter{budget: budget, destination: destination}
 }
-
 func (writer *budgetWriter) Write(data []byte) (int, error) {
 	budget := writer.budget
 	budget.mu.Lock()
@@ -225,19 +233,16 @@ func (writer *budgetWriter) Write(data []byte) (int, error) {
 	}
 	return written, nil
 }
-
 func (writer *budgetWriter) bytesWritten() int64 {
 	writer.budget.mu.Lock()
 	defer writer.budget.mu.Unlock()
 	return writer.written
 }
-
 func (writer *budgetWriter) meaningfulBytes() int64 {
 	writer.budget.mu.Lock()
 	defer writer.budget.mu.Unlock()
 	return writer.meaningful
 }
-
 func (budget *outputBudget) limitReachedLocked() {
 	if budget.exceeded {
 		return
@@ -253,12 +258,10 @@ func (budget *outputBudget) status() (int64, bool) {
 	defer budget.mu.Unlock()
 	return budget.written, budget.exceeded
 }
-
 func externalProcessSpec(executable string, arguments, environment []string, stdout, stderr io.Writer) process.Spec {
 	return process.Spec{Path: executable, Args: arguments, Env: environment, Stdout: stdout, Stderr: stderr,
 		Containment: process.ContainmentInheritTree, WaitDelay: time.Second}
 }
-
 func lookupTool(name string, environment []string) string {
 	search := environmentValue(environment, "PATH")
 	if search == "" {
@@ -281,7 +284,6 @@ func lookupTool(name string, environment []string) string {
 	}
 	return ""
 }
-
 func environmentValue(environment []string, name string) string {
 	for _, entry := range environment {
 		if key, value, ok := strings.Cut(entry, "="); ok && (key == name || runtime.GOOS == "windows" && strings.EqualFold(key, name)) {
@@ -290,7 +292,6 @@ func environmentValue(environment []string, name string) string {
 	}
 	return ""
 }
-
 func fileHint(ctx context.Context, path string, fallback Category, options Options, budget *outputBudget,
 	stderr io.Writer, session *renderSession) (Category, error) {
 	executable := lookupTool("file", options.Environment)
@@ -319,7 +320,6 @@ func fileHint(ctx context.Context, path string, fallback Category, options Optio
 	}
 	return categoryFromMIME(strings.TrimSpace(hint.String()), fallback), nil
 }
-
 func categoryFromMIME(mime string, fallback Category) Category {
 	switch {
 	case mime == "text/markdown":

@@ -35,6 +35,8 @@ const cacheEnvironmentVariable = "LOCALAPPDATA"
 const rootAccessMask = windows.FILE_GENERIC_READ
 const cacheHomeSuffix = `AppData\Local`
 
+var cacheArtifactCreated = func() {}
+
 func ensureCacheRoot(path string) (fileIdentity, error) {
 	root, err := openCacheRoot(path, true)
 	if err != nil {
@@ -153,6 +155,7 @@ func cachePut(cache *Cache, key string, source io.Reader) error {
 	return err
 }
 func cachePrune(cache *Cache) error {
+	cacheCleanupStale(cache)
 	root, err := openCache(cache)
 	if err != nil {
 		return err
@@ -230,15 +233,17 @@ func newConverterArtifact(cache *Cache, suffix string) (*converterArtifact, erro
 		_ = windows.CloseHandle(root)
 		return nil, err
 	}
+	artifact := &converterArtifact{root: root, directory: directory, name: name, path: filepath.Join(cache.root, directoryName, name)}
+	cacheArtifactCreated()
 	identity, _, err := validateHandle(file, 1, fileIdentity{})
 	if err != nil {
 		_ = windows.CloseHandle(file)
-		_ = windows.CloseHandle(directory)
-		_ = windows.CloseHandle(root)
+		_ = artifact.Cleanup()
 		return nil, err
 	}
 	_ = windows.CloseHandle(file)
-	return &converterArtifact{root: root, directory: directory, name: name, path: filepath.Join(cache.root, directoryName, name), identity: identity}, nil
+	artifact.identity = identity
+	return artifact, nil
 }
 func (artifact *converterArtifact) Size() (int64, error) {
 	handle, err := ntOpenAt(artifact.directory, artifact.name, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE, windows.FILE_GENERIC_READ)
@@ -250,7 +255,7 @@ func (artifact *converterArtifact) Size() (int64, error) {
 	return size, err
 }
 func (artifact *converterArtifact) OpenAccepted() (io.ReadCloser, int64, error) {
-	handle, _, size, _, err := openAcceptedAt(artifact.directory, artifact.name, fileIdentity{}, false)
+	handle, _, size, _, err := openAcceptedAt(artifact.directory, artifact.name, artifact.identity, false)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -303,7 +308,12 @@ func (artifact *converterArtifact) OpenWritable() (syncWriteCloser, error) {
 		_ = windows.CloseHandle(handle)
 		return nil, err
 	}
-	return os.NewFile(uintptr(handle), artifact.name), nil
+	file := os.NewFile(uintptr(handle), artifact.name)
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
 }
 func (artifact *converterArtifact) RenderFiles() []*os.File { return nil }
 func (artifact *converterArtifact) Validate() error {

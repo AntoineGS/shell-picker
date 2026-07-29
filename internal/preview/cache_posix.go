@@ -35,6 +35,8 @@ func (source *cacheSource) Validate() error {
 const cacheEnvironmentVariable = "XDG_CACHE_HOME"
 const cacheHomeSuffix = ".cache"
 
+var cacheArtifactCreated = func() {}
+
 func ensureCacheRoot(path string) (fileIdentity, error) {
 	root, err := openCacheRoot(path, true)
 	if root == nil {
@@ -172,19 +174,21 @@ func newConverterArtifact(cache *Cache, suffix string) (*converterArtifact, erro
 		_ = root.Close()
 		return nil, err
 	}
-	identity, _, err := validateOpenFile(file, 1, fileIdentity{})
-	if err != nil {
-		_ = file.Close()
-		_ = directory.Close()
-		_ = root.Close()
-		return nil, err
-	}
-	_ = file.Close()
 	path := filepath.Join(cache.root, directoryName, name)
 	if runtime.GOOS == "linux" {
 		path = fmt.Sprintf("/proc/%d/fd/%d/%s", os.Getpid(), directory.Fd(), name)
 	}
-	return &converterArtifact{root: root, directory: directory, directoryName: directoryName, name: name, path: path, identity: identity}, nil
+	artifact := &converterArtifact{root: root, directory: directory, directoryName: directoryName, name: name, path: path}
+	cacheArtifactCreated()
+	identity, _, err := validateOpenFile(file, 1, fileIdentity{})
+	if err != nil {
+		_ = file.Close()
+		_ = artifact.Cleanup()
+		return nil, err
+	}
+	_ = file.Close()
+	artifact.identity = identity
+	return artifact, nil
 }
 func (artifact *converterArtifact) Size() (int64, error) {
 	fd, err := unix.Openat(int(artifact.directory.Fd()), artifact.name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -200,7 +204,7 @@ func (artifact *converterArtifact) Size() (int64, error) {
 	return info.Size(), nil
 }
 func (artifact *converterArtifact) OpenAccepted() (io.ReadCloser, int64, error) {
-	file, _, size, err := openAcceptedAt(artifact.directory, artifact.name, fileIdentity{})
+	file, _, size, err := openAcceptedAt(artifact.directory, artifact.name, artifact.identity)
 	return file, size, err
 }
 func (artifact *converterArtifact) Cleanup() bool {
@@ -239,6 +243,9 @@ func (artifact *converterArtifact) OpenWritable() (syncWriteCloser, error) {
 	file, err := openFileAt(artifact.directory, artifact.name, unix.O_WRONLY, 0)
 	if err == nil {
 		_, _, err = validateOpenFile(file, 1, artifact.identity)
+	}
+	if err == nil {
+		err = file.Truncate(0)
 	}
 	if err != nil && file != nil {
 		_ = file.Close()
