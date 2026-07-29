@@ -215,10 +215,13 @@ func TestPreviewTerminalResourceSkipsFinishedTelemetry(t *testing.T) {
 			ObservePreviewDispatch(ctx, "bat", 101, 0)
 			ObservePreviewProcess(ctx, processpkg.ProcessEvent{Phase: "start", PID: 101})
 			ObservePreviewProcess(ctx, processpkg.ProcessEvent{Phase: "exit", PID: 101})
-			return fmt.Errorf("renderer limit: %w", previewpkg.ErrTerminalResource)
+			return errors.Join(fmt.Errorf("renderer limit: %w", previewpkg.ErrTerminalResource),
+				&processpkg.ExitError{Code: 17}, processpkg.ErrWaitDelay)
 		}}
 	err := Dispatch(context.Background(), mustParse(t, "p"), deps)
-	if !errors.Is(err, previewpkg.ErrTerminalResource) || len(client.previews) != 2 ||
+	var exitErr *processpkg.ExitError
+	if !errors.Is(err, previewpkg.ErrTerminalResource) || !errors.Is(err, processpkg.ErrWaitDelay) ||
+		!errors.As(err, &exitErr) || exitErr.ExitCode() != 17 || len(client.previews) != 2 ||
 		client.previews[0].Phase != "resolve" || client.previews[1].Phase != "started" {
 		t.Fatalf("err=%v previews=%+v", err, client.previews)
 	}

@@ -216,10 +216,9 @@ func (c *Child) Wait() error {
 				c.waitErr = &ExitError{Code: result.code}
 			case pumpErr != nil:
 				c.waitErr = pumpErr
-			case timedOut:
-				c.waitErr = ErrWaitDelay
 			}
 		}
+		c.waitErr = preserveWaitDelay(c.waitErr, timedOut)
 		observe(c.observe, "exit", c.path, c.pid)
 	})
 	if !didWait {

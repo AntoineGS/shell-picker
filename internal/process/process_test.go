@@ -160,14 +160,29 @@ func TestExitErrorPrecedesWaitDelay(t *testing.T) {
 	spec.Stdout = &output
 	err := (Runner{}).Run(context.Background(), spec)
 	var exitErr *ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 17 {
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 17 || !errors.Is(err, ErrWaitDelay) {
 		t.Fatalf("error=%v", err)
+	}
+	if err.Error() != exitErr.Error() {
+		t.Fatalf("presentation=%q want %q", err, exitErr)
 	}
 	pid, parseErr := strconv.Atoi(strings.TrimSpace(output.String()))
 	if parseErr != nil {
 		t.Fatal(parseErr)
 	}
 	assertProcessGoneWithin(t, pid, 3*time.Second)
+}
+
+func TestWaitDelayAnnotationPreservesPrimaryErrors(t *testing.T) {
+	observer := fmt.Errorf("%w: watcher", ErrExitObserver)
+	primaries := []error{errors.New("pump"), observer, context.Canceled}
+	for _, primary := range primaries {
+		err := preserveWaitDelay(primary, true)
+		if !errors.Is(err, primary) || !errors.Is(err, ErrWaitDelay) || err.Error() != primary.Error() ||
+			primary == observer && !errors.Is(err, ErrExitObserver) {
+			t.Fatalf("primary=%v annotated=%v", primary, err)
+		}
+	}
 }
 
 type errorWriter struct{ err error }
@@ -308,7 +323,7 @@ func TestExitErrorPrecedesBlockingPumpWaitDelay(t *testing.T) {
 	<-stream.blocked
 	err = child.Wait()
 	var exitErr *ExitError
-	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 17 {
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 17 || !errors.Is(err, ErrWaitDelay) {
 		t.Fatalf("wait=%v", err)
 	}
 	if stream.closeCalls.Load() != 1 {

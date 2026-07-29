@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -123,6 +124,21 @@ func TestRetainedInheritedJobKillsDescendantAfterChildWait(t *testing.T) {
 		t.Fatalf("second Close: %v", err)
 	}
 	assertProcessGoneWithin(t, pid, 3*time.Second)
+}
+
+func TestWindowsExitErrorPreservesWaitDelayClassification(t *testing.T) {
+	spec := helperSpec("hold-stdout-exit")
+	spec.WaitDelay = 50 * time.Millisecond
+	var output bytes.Buffer
+	spec.Stdout = &output
+	err := (Runner{}).Run(context.Background(), spec)
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 17 || !errors.Is(err, ErrWaitDelay) {
+		t.Fatalf("error=%v", err)
+	}
+	if err.Error() != exitErr.Error() {
+		t.Fatalf("presentation=%q want %q", err, exitErr)
+	}
 }
 
 type handleProbe struct {

@@ -188,10 +188,9 @@ func (c *Child) Wait() error {
 				c.waitErr = pumpErr
 			} else if observeErr != nil {
 				c.waitErr = observeErr
-			} else if timedOut {
-				c.waitErr = ErrWaitDelay
 			}
 		}
+		c.waitErr = preserveWaitDelay(c.waitErr, timedOut)
 		observe(c.observe, "exit", c.path, c.PID())
 	})
 	if !didWait {

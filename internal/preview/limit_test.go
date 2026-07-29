@@ -135,3 +135,25 @@ func TestFileHintedZipNativeResourceFailureIsTerminal(t *testing.T) {
 		t.Fatalf("err=%v tree=%+v", err, tree)
 	}
 }
+
+func TestCombinedWaitDelayIsTerminalResource(t *testing.T) {
+	exitErr := &processpkg.ExitError{Code: 17}
+	combined := errors.Join(exitErr, processpkg.ErrWaitDelay)
+	tree := &fakeTreeHandle{}
+	session := &renderSession{tree: tree, started: true}
+	cause := resourceFailure(context.Background(), newOutputBudget(1, nil), combined)
+	err := session.terminal(cause)
+	session.close()
+	var gotExit *processpkg.ExitError
+	if !errors.Is(err, ErrTerminalResource) || !errors.Is(err, processpkg.ErrWaitDelay) ||
+		!errors.As(err, &gotExit) || gotExit.ExitCode() != 17 || tree.kills != 1 || tree.closes != 1 {
+		t.Fatalf("err=%v tree=%+v", err, tree)
+	}
+}
+
+func TestExitErrorWithoutWaitDelayRemainsOrdinary(t *testing.T) {
+	err := resourceFailure(context.Background(), newOutputBudget(1, nil), &processpkg.ExitError{Code: 17})
+	if err != nil {
+		t.Fatalf("ordinary exit classified as resource: %v", err)
+	}
+}
