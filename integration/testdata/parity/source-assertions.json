@@ -4,7 +4,7 @@
     "fzf-preview.sh": "232eb46eef32bff642985e42edbf0cd3a49098e7485eb6f5b0db0bdf48024159",
     "fzf-batch-encode.pl": "055d9a74cce513bbf02475fae97154b159de98d51cc565cf4859ced0226878fd",
     "fzf-picker.test.zsh": "f920b8f6194c76d5f8a1737c6e4860ab04f641da291dc3e984cbb63443552776",
-    ".zshrc": "92cc80ec53564642fe8e2f51375ed3108cc8bc0d6f1c52f01e572ee8f716dc94"
+    ".zshrc": "3bc868023693945a97b2e23f8f806ae5bdaa228a9898fb86cd8ad075e559ab18"
   },
   "assertions": [
     {

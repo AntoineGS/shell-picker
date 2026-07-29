@@ -18,6 +18,9 @@ import (
 const nushellPickerHelper = "SHELL_PICKER_NUSHELL_GO_HELPER"
 
 func TestMain(m *testing.M) {
+	if os.Getenv(parityHelperEnvironment) != "" {
+		os.Exit(runParityHelper())
+	}
 	if os.Getenv(nushellPickerHelper) == "1" {
 		os.Exit(runNushellPickerFake(os.Args[1:]))
 	}

@@ -1,0 +1,21 @@
+{
+  "categories": {
+    "directory": "eza",
+    "markdown": "glow",
+    "text": "bat",
+    "image": "kitten,chafa",
+    "pdf": "pdftoppm,kitten,chafa",
+    "video": "ffmpegthumbnailer,kitten,chafa",
+    "audio": "ffmpeg,kitten,chafa,exiftool",
+    "zip": "unzip",
+    "gzip": "gzip",
+    "xz": "xz",
+    "tar": "tar",
+    "bzip": "tar",
+    "binary": "file"
+  },
+  "variants": ["present", "missing", "failure", "hanging", "overflow"],
+  "maximum_live_children": 1,
+  "maximum_sequential_children": 3,
+  "intentional_fixes": ["useful missing-tool fallbacks instead of blank output", "no legacy cache basename collisions", "bounded preview/archive/cache resources"]
+}

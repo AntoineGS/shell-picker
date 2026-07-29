@@ -1,0 +1,7 @@
+{
+  "valid_query": "created-target",
+  "existing_query": "existing-target",
+  "invalid_queries": ["", "absolute", "../escape", "nested/../../escape", "existing-file"],
+  "error_prefix": "[A!]",
+  "intentional_fixes": ["safe Add traversal/rollback", "transactional state replacement"]
+}

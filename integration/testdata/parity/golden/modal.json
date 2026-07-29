@@ -1,0 +1,7 @@
+{
+  "insert": {"mode": "insert", "search": "on", "cursor": "line"},
+  "normal": {"mode": "normal", "search": "off", "cursor": "block"},
+  "add": {"mode": "add", "search": "on", "cursor": "line"},
+  "enter_action": "print(enter)+accept",
+  "intentional_fixes": ["typed cursor effects replace terminal byte assertions", "strict action grammar"]
+}

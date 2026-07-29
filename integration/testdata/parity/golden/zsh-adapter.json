@@ -1,0 +1,6 @@
+{
+  "cd": {"multi": "--multi=1", "sort": "--sort", "print_query": "--print-query"},
+  "cp": {"multi": "--multi", "sort": "--no-sort", "terminator": "--"},
+  "bindings": ["enter", "esc", "ctrl-l,tab,right", "ctrl-h,left", "/", "~", "a"],
+  "intentional_fixes": ["full-record authorization", "strict callback/action grammar", "one picker process per widget"]
+}

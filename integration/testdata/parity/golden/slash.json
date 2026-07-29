@@ -1,0 +1,8 @@
+{
+  "add_put": "/",
+  "insert_query_put": "/",
+  "normal_query_ignore": true,
+  "empty_query_target": "root",
+  "exact_parent_target": "parent",
+  "intentional_fixes": ["Windows slash targets Drives", "navigation commits transactionally"]
+}

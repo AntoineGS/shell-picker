@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 )
 
@@ -25,6 +27,15 @@ type parityManifest struct {
 	Assertions []parityRow       `json:"assertions"`
 }
 
+type parityGoldenMetadata struct {
+	IntentionalFixes         []string `json:"intentional_fixes"`
+	IntentionalSubstitutions []string `json:"intentional_substitutions"`
+}
+
+type parityRunner func(*testing.T, parityRow)
+
+var parityRunners = map[string]parityRunner{}
+
 func loadParityManifest(t *testing.T) parityManifest {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/parity/source-assertions.json")
@@ -43,8 +54,39 @@ func loadParityMatrix(t *testing.T) []parityRow {
 	return loadParityManifest(t).Assertions
 }
 
+func TestEveryParityRowHasExecutableRunner(t *testing.T) {
+	rows := loadParityMatrix(t)
+	seen := make(map[string]bool, len(rows))
+	executed := make(map[string]bool, len(rows))
+	var executedMu sync.Mutex
+	t.Cleanup(func() {
+		executedMu.Lock()
+		defer executedMu.Unlock()
+		if len(executed) != 371 {
+			t.Fatalf("executed=%d, want 371", len(executed))
+		}
+	})
+	for _, row := range rows {
+		if seen[row.ID] {
+			t.Fatalf("duplicate row ID %s", row.ID)
+		}
+		seen[row.ID] = true
+		runner, ok := parityRunners[row.Runner]
+		if !ok {
+			t.Fatalf("row %s has unknown runner %q", row.ID, row.Runner)
+		}
+		t.Run(row.ID, func(t *testing.T) {
+			executedMu.Lock()
+			executed[row.ID] = true
+			executedMu.Unlock()
+			runner(t, row)
+		})
+	}
+}
+
 func TestParityManifestCoverage(t *testing.T) {
-	const wantManifestSHA256 = "b268bc6c6c585d72014041d22747d71b7c80019005e0a9c5aaf2ca49ff425fac"
+	const wantManifestSHA256 = "611cfc8ba119df12189d5b61e9c634730c5e1c8952526e9525ecff03a7669d45"
+	const wantAssertionsSHA256 = "a00a40371c39b099d4ed1bd3ed705d56baa5d126e8d5a453242d4978a0a89e64"
 	rawManifest, err := os.ReadFile("testdata/parity/source-assertions.json")
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +98,13 @@ func TestParityManifestCoverage(t *testing.T) {
 
 	manifest := loadParityManifest(t)
 	rows := loadParityMatrix(t)
+	rawAssertions, err := json.Marshal(manifest.Assertions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(rawAssertions)); got != wantAssertionsSHA256 {
+		t.Fatalf("assertion rows SHA-256=%s, want %s", got, wantAssertionsSHA256)
+	}
 	want := map[string]int{
 		"codec": 50, "batch-encoder": 2, "directory-enumeration": 72, "cd-merged": 8,
 		"operations": 34, "slash": 28, "modal": 20, "create": 51, "preview": 3,
@@ -85,7 +134,7 @@ func TestParityManifestCoverage(t *testing.T) {
 		"fzf-preview.sh":            "232eb46eef32bff642985e42edbf0cd3a49098e7485eb6f5b0db0bdf48024159",
 		"fzf-batch-encode.pl":       "055d9a74cce513bbf02475fae97154b159de98d51cc565cf4859ced0226878fd",
 		"fzf-picker.test.zsh":       "f920b8f6194c76d5f8a1737c6e4860ab04f641da291dc3e984cbb63443552776",
-		".zshrc":                    "92cc80ec53564642fe8e2f51375ed3108cc8bc0d6f1c52f01e572ee8f716dc94",
+		".zshrc":                    "3bc868023693945a97b2e23f8f806ae5bdaa228a9898fb86cd8ad075e559ab18",
 	}
 	if !reflect.DeepEqual(manifest.Sources, wantSources) {
 		t.Fatalf("source hashes=%v", manifest.Sources)
@@ -110,5 +159,54 @@ func TestParityManifestCoverage(t *testing.T) {
 	}
 	if len(goldenReferences) != 0 {
 		t.Fatalf("unrecognized golden references: %v", goldenReferences)
+	}
+
+	wantCategoryGoldens := map[string]string{
+		"operations.json":    "bbe8213644a4203a1b6544680a55d4ae9d790e686db265e5e4978f09d1c36b76",
+		"slash.json":         "a4353f35d905f7d173408edb7ddd769ef71559d5e3252a195fbe8432900c23eb",
+		"modal.json":         "9559da329e3417cc260b347c93508b35d0a817d393768683ae315ec1bf136699",
+		"create.json":        "78e47c42a84d2ca34377516efbde9f747dbeba21e5a83409f6612dc297b238de",
+		"preview.json":       "fc8586501996c635152c07f3138794ec24398ec0a042bd63883e0ef010894921",
+		"zsh-adapter.json":   "a396d1dbfc358ad7defa890dadcc53b17765cdb996dc643c3d2daf5ad2c5c68c",
+		"windows-paths.json": "dcc60dfa9f10daae4e15032488df044e8cc1ef96faafff6f520769743added43",
+	}
+	for name, wantHash := range wantCategoryGoldens {
+		raw, err := os.ReadFile(filepath.Join("testdata", "parity", "golden", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != wantHash {
+			t.Fatalf("category golden %q SHA-256=%s, want %s", name, got, wantHash)
+		}
+	}
+}
+
+func TestParityGoldenMetadata(t *testing.T) {
+	files := []string{"operations.json", "slash.json", "modal.json", "create.json", "preview.json", "zsh-adapter.json", "windows-paths.json"}
+	declared := make(map[string]bool)
+	for _, name := range files {
+		raw, err := os.ReadFile(filepath.Join("testdata", "parity", "golden", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var metadata parityGoldenMetadata
+		if err := json.Unmarshal(raw, &metadata); err != nil {
+			t.Fatalf("decode %s metadata: %v", name, err)
+		}
+		if len(metadata.IntentionalFixes)+len(metadata.IntentionalSubstitutions) == 0 {
+			t.Fatalf("%s has no intentional parity metadata", name)
+		}
+		for _, item := range append(metadata.IntentionalFixes, metadata.IntentionalSubstitutions...) {
+			declared[item] = true
+		}
+	}
+	for _, required := range []string{
+		"deterministic non-locale sort", "no legacy cache basename collisions", "useful missing-tool fallbacks instead of blank output",
+		"full-record authorization", "drive and UNC share roots use virtual ..", "transactional state replacement",
+		"safe Add traversal/rollback", "strict callback/action grammar", "bounded preview/archive/cache resources",
+	} {
+		if !declared[required] {
+			t.Errorf("missing intentional parity declaration %q", required)
+		}
 	}
 }

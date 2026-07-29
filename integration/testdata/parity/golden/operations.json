@@ -1,0 +1,12 @@
+{
+  "navigation": {
+    "mode": "normal",
+    "search": "off",
+    "clear_query": true,
+    "clear_multi": true,
+    "cursor": "block"
+  },
+  "relative": ["child-newline", "./-leading", "absolute-missing-newline"],
+  "cp_order": ["current", "parent", "-leading", "child"],
+  "intentional_fixes": ["deterministic non-locale sort", "transactional state replacement", "full-record authorization", "strict callback/action grammar"]
+}
