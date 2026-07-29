@@ -26,7 +26,8 @@ func platformHelper(args []string) bool {
 	switch args[0] {
 	case "foreground-probe":
 		probe := foregroundProbe{}
-		tty := os.NewFile(3, "child-tty")
+		fd, _ := strconv.Atoi(args[1])
+		tty := os.NewFile(uintptr(fd), "child-tty")
 		other, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 		if err == nil {
 			var a, b syscall.Stat_t
@@ -70,6 +71,7 @@ func platformHelper(args []string) bool {
 	}
 	return false
 }
+
 func TestCancelKillsOwnedProcessTreeEventually(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	spec := helperSpec("spawn")
@@ -103,7 +105,6 @@ func TestInheritedTreeCancellationKillsCallbackGroup(t *testing.T) {
 	}
 	assertProcessGoneWithin(t, pid, 3*time.Second)
 }
-
 func TestRetainedInheritedTreeKillsGroupAfterChildWait(t *testing.T) {
 	cmd := helperExec("retain-tree-session")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -111,7 +112,6 @@ func TestRetainedInheritedTreeKillsGroupAfterChildWait(t *testing.T) {
 		t.Fatal("post-Wait retained tree kill returned to callback")
 	}
 }
-
 func TestProcessGroupLeaderRemainsUnreapedThroughCleanup(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux zombie-state lifecycle assertion")
@@ -136,7 +136,6 @@ func TestProcessGroupLeaderRemainsUnreapedThroughCleanup(t *testing.T) {
 	}
 	assertProcessGoneWithin(t, child.PID(), time.Second)
 }
-
 func TestForegroundRejectedBeforeLaunchWhenMaskUnsupported(t *testing.T) {
 	original := foregroundRestoreSupported
 	foregroundRestoreSupported = func() bool { return false }
@@ -153,7 +152,6 @@ func TestForegroundRejectedBeforeLaunchWhenMaskUnsupported(t *testing.T) {
 		t.Fatalf("err=%v events=%+v", err, events)
 	}
 }
-
 func TestSIGTTOUMaskSetsNumericSignalBit(t *testing.T) {
 	mask := sigttouMask()
 	root := reflect.ValueOf(mask)
@@ -182,7 +180,6 @@ type foregroundTTYReport struct {
 	DescriptorDelta              int    `json:"descriptor_delta"`
 	Err                          string `json:"err,omitempty"`
 }
-
 type foregroundProbe struct {
 	SameTTY bool   `json:"same_tty"`
 	Input   string `json:"input"`
@@ -235,13 +232,12 @@ func TestForegroundTreeOwnsTTYAndRestoresPreviousGroup(t *testing.T) {
 	_ = reportR.Close()
 	terminal.close()
 	if report.Err != "" || report.ParentTTYFD <= 3 || report.ParentTTYFD == report.ChildTTYFD ||
-		report.ChildTTYFD != 3 || !report.SameTTY || report.Input != "x\n" ||
+		report.ChildTTYFD != 4 || !report.SameTTY || report.Input != "x\n" ||
 		!report.RestoredPreviousGroup || !report.RestoredThreadMask || !report.PreservedSIGTTOUNotification || report.DescriptorDelta != 0 {
 		t.Fatalf("report=%+v", report)
 	}
 	assertDescriptorCountReturns(t, baseline)
 }
-
 func TestForegroundTTYSessionHelper(t *testing.T) {
 	if os.Getenv("GO_WANT_FOREGROUND_TTY_SESSION") != "1" {
 		return
@@ -255,7 +251,6 @@ func TestForegroundTTYSessionHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
 func runForegroundTTYSession() (report foregroundTTYReport) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -296,8 +291,15 @@ func runForegroundTTYSession() (report foregroundTTYReport) {
 		}
 		report.DescriptorDelta = descriptorCount() - baseline
 	}()
-	spec := helperSpec("foreground-probe")
+	extra, err := os.Open("/dev/null")
+	if err != nil {
+		report.Err = err.Error()
+		return
+	}
+	defer extra.Close()
+	spec := helperSpec("foreground-probe", "4")
 	spec.Containment, spec.ForegroundTTY = ContainmentForegroundTree, tty
+	spec.ExtraFiles = []*os.File{extra}
 	spec.Stdin, spec.Stdout, spec.Stderr = inR, outW, errW
 	child, err := (Runner{}).Start(context.Background(), spec)
 	if err != nil {
@@ -319,6 +321,10 @@ func runForegroundTTYSession() (report foregroundTTYReport) {
 		report.Err = err.Error()
 		return
 	}
+	if _, err := extra.Stat(); err != nil {
+		report.Err = "caller extra file closed: " + err.Error()
+		return
+	}
 	report.SameTTY, report.Input = probe.SameTTY, probe.Input
 	if probe.Err != "" {
 		report.Err = probe.Err
@@ -336,7 +342,6 @@ func runForegroundTTYSession() (report foregroundTTYReport) {
 	}
 	return
 }
-
 func TestRestoreForegroundPGRRestoresMaskOnIoctlError(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -355,7 +360,6 @@ func TestRestoreForegroundPGRRestoresMaskOnIoctlError(t *testing.T) {
 		t.Fatalf("mask changed: before=%+v after=%+v", before, after)
 	}
 }
-
 func TestRestoreForegroundPGRRestoresMaskWhenRestoreReportsError(t *testing.T) {
 	realMask, realIoctl := pthreadSigmask, setForegroundPGR
 	defer func() { pthreadSigmask, setForegroundPGR = realMask, realIoctl }()
@@ -377,13 +381,11 @@ func TestRestoreForegroundPGRRestoresMaskWhenRestoreReportsError(t *testing.T) {
 		t.Fatalf("mask calls=%d", calls)
 	}
 }
-
 func currentThreadMask() (threadSigset, error) {
 	var mask threadSigset
 	err := pthreadSigmask(threadSigSetmask, nil, &mask)
 	return mask, err
 }
-
 func TestUnixSharedStdoutStderrWriterIsSerialized(t *testing.T) {
 	writer := &unixConcurrencyWriter{}
 	spec := helperSpec("both-streams")
@@ -442,7 +444,6 @@ func testPipe(t *testing.T) (*os.File, *os.File) {
 	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
 	return r, w
 }
-
 func readPID(t *testing.T, reader io.Reader) int {
 	t.Helper()
 	line, err := bufio.NewReader(reader).ReadString('\n')
@@ -455,7 +456,6 @@ func readPID(t *testing.T, reader io.Reader) int {
 	}
 	return pid
 }
-
 func assertProcessGoneWithin(t *testing.T, pid int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

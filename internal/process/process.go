@@ -33,6 +33,7 @@ type Spec struct {
 	Stderr        io.Writer
 	Containment   Containment
 	ForegroundTTY *os.File
+	ExtraFiles    []*os.File
 	WaitDelay     time.Duration
 }
 
@@ -224,7 +225,6 @@ type exitObserverEvent struct {
 	Exit    bool
 	Data    int64
 }
-
 type exitObserverResult struct {
 	N      int
 	Events []exitObserverEvent

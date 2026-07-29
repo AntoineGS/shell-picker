@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -17,6 +17,9 @@ import (
 type converterArtifact struct {
 	root, directory, held windows.Handle
 	name, path            string
+	identity              fileIdentity
+	mu                    sync.Mutex
+	complete              bool
 }
 
 func (source *cacheSource) Validate() error {
@@ -39,7 +42,19 @@ func ensureCacheRoot(path string) (fileIdentity, error) {
 	}
 	identity, identityErr := directoryIdentity(root)
 	_ = windows.CloseHandle(root)
-	return identity, identityErr
+	if identityErr != nil {
+		return fileIdentity{}, identityErr
+	}
+	reopened, err := openCacheRoot(path, false)
+	if err != nil {
+		return fileIdentity{}, err
+	}
+	reopenedIdentity, identityErr := directoryIdentity(reopened)
+	_ = windows.CloseHandle(reopened)
+	if identityErr != nil || reopenedIdentity != identity {
+		return fileIdentity{}, ErrUnsafeCache
+	}
+	return identity, nil
 }
 func openCacheRoot(path string, create bool) (windows.Handle, error) {
 	volume := filepath.VolumeName(path)
@@ -90,25 +105,6 @@ func directoryIdentity(directory windows.Handle) (fileIdentity, error) {
 		return fileIdentity{}, ErrUnsafeCache
 	}
 	return fileIdentity{uint64(info.VolumeSerialNumber), uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow)}, nil
-}
-func ntOpenAt(root windows.Handle, name string, disposition, options, access uint32) (windows.Handle, error) {
-	objectName, err := windows.NewNTUnicodeString(name)
-	if err != nil {
-		return 0, err
-	}
-	attributes := windows.OBJECT_ATTRIBUTES{RootDirectory: root, ObjectName: objectName,
-		Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE}
-	attributes.Length = uint32(unsafe.Sizeof(attributes))
-	var handle windows.Handle
-	var status windows.IO_STATUS_BLOCK
-	options |= windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
-	share := uint32(windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE)
-	if options&windows.FILE_NON_DIRECTORY_FILE != 0 && access&(windows.FILE_WRITE_DATA|windows.DELETE) == 0 {
-		share = windows.FILE_SHARE_READ
-	}
-	share |= (options & windows.FILE_NON_DIRECTORY_FILE) / windows.FILE_NON_DIRECTORY_FILE * (access & windows.DELETE) / windows.DELETE * windows.FILE_SHARE_DELETE
-	err = windows.NtCreateFile(&handle, access, &attributes, &status, nil, windows.FILE_ATTRIBUTE_NORMAL, share, disposition, options, 0, 0)
-	return handle, err
 }
 func cachePut(cache *Cache, key string, source io.Reader) error {
 	root, err := openCache(cache)
@@ -188,12 +184,33 @@ func cachePrune(cache *Cache) error {
 		items = append(items, pruneItem{entry.Name(), size, modified, id})
 	}
 	pruneOldest(cache.maxBytes, total, items, func(item pruneItem) bool {
-		handle, _, _, _, openErr := openAcceptedAt(root, item.name, item.identity, true)
-		removed := openErr == nil && deleteHandle(handle) == nil
-		_ = windows.CloseHandle(handle)
-		return removed
+		return quarantinePrune(cache, item)
 	})
 	return nil
+}
+func quarantinePrune(cache *Cache, item pruneItem) bool {
+	root, err := openCache(cache)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(root)
+	handle, err := ntOpenAt(root, item.name, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE, windows.FILE_GENERIC_READ|windows.DELETE)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(handle)
+	quarantine, err := randomCacheName(cacheTempPrefix + "prune-")
+	if err != nil || renameHandleNoReplace(handle, root, quarantine) != nil {
+		return false
+	}
+	accepted, _, _, _, openErr := openAcceptedAt(root, quarantine, item.identity, true)
+	if openErr != nil {
+		_ = renameHandleNoReplace(handle, root, item.name)
+		return false
+	}
+	removed := deleteHandle(accepted) == nil
+	_ = windows.CloseHandle(accepted)
+	return removed
 }
 func newConverterArtifact(cache *Cache, suffix string) (*converterArtifact, error) {
 	root, err := openCache(cache)
@@ -213,8 +230,15 @@ func newConverterArtifact(cache *Cache, suffix string) (*converterArtifact, erro
 		_ = windows.CloseHandle(root)
 		return nil, err
 	}
+	identity, _, err := validateHandle(file, 1, fileIdentity{})
+	if err != nil {
+		_ = windows.CloseHandle(file)
+		_ = windows.CloseHandle(directory)
+		_ = windows.CloseHandle(root)
+		return nil, err
+	}
 	_ = windows.CloseHandle(file)
-	return &converterArtifact{root: root, directory: directory, name: name, path: filepath.Join(cache.root, directoryName, name)}, nil
+	return &converterArtifact{root: root, directory: directory, name: name, path: filepath.Join(cache.root, directoryName, name), identity: identity}, nil
 }
 func (artifact *converterArtifact) Size() (int64, error) {
 	handle, err := ntOpenAt(artifact.directory, artifact.name, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE, windows.FILE_GENERIC_READ)
@@ -232,19 +256,31 @@ func (artifact *converterArtifact) OpenAccepted() (io.ReadCloser, int64, error) 
 	}
 	return os.NewFile(uintptr(handle), artifact.name), size, nil
 }
-func (artifact *converterArtifact) Cleanup() {
-	if artifact.root == 0 {
-		return
+func (artifact *converterArtifact) Cleanup() bool {
+	artifact.mu.Lock()
+	defer artifact.mu.Unlock()
+	if artifact.complete {
+		return true
 	}
-	_ = windows.CloseHandle(artifact.held)
-	if handle, err := ntOpenAt(artifact.directory, artifact.name, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE, windows.DELETE); err == nil {
-		_ = deleteHandle(handle)
+	if artifact.held != 0 {
+		_ = windows.CloseHandle(artifact.held)
+		artifact.held = 0
+	}
+	handle, err := ntOpenAt(artifact.directory, artifact.name, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE, windows.DELETE)
+	if err == nil {
+		err = deleteHandle(handle)
 		_ = windows.CloseHandle(handle)
 	}
-	_ = deleteHandle(artifact.directory)
+	if err != nil && !errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) {
+		return false
+	}
+	if err = deleteHandle(artifact.directory); err != nil {
+		return false
+	}
 	_ = windows.CloseHandle(artifact.directory)
 	_ = windows.CloseHandle(artifact.root)
-	artifact.root = 0
+	artifact.complete = true
+	return true
 }
 func openCacheSource(cache *Cache, key string) (*cacheSource, error) {
 	root, err := openCache(cache)
@@ -263,10 +299,15 @@ func (artifact *converterArtifact) OpenWritable() (syncWriteCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+	if _, _, err = validateHandle(handle, 1, artifact.identity); err != nil {
+		_ = windows.CloseHandle(handle)
+		return nil, err
+	}
 	return os.NewFile(uintptr(handle), artifact.name), nil
 }
+func (artifact *converterArtifact) RenderFiles() []*os.File { return nil }
 func (artifact *converterArtifact) Validate() error {
-	handle, _, _, _, err := openAcceptedAt(artifact.directory, artifact.name, fileIdentity{}, false)
+	handle, _, _, _, err := openAcceptedAt(artifact.directory, artifact.name, artifact.identity, false)
 	artifact.held = handle
 	return err
 }
@@ -285,65 +326,4 @@ func createRandomAt(root windows.Handle, prefix string, options, access uint32) 
 		}
 	}
 	return 0, "", ErrUnsafeCache
-}
-func openAcceptedAt(root windows.Handle, name string, expected fileIdentity, deleting bool) (windows.Handle, fileIdentity, int64, time.Time, error) {
-	access := uint32(windows.FILE_GENERIC_READ | windows.FILE_WRITE_ATTRIBUTES)
-	if deleting {
-		access |= windows.DELETE
-	}
-	handle, err := ntOpenAt(root, name, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE, access)
-	if errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) {
-		return 0, fileIdentity{}, 0, time.Time{}, os.ErrNotExist
-	}
-	if err != nil {
-		return 0, fileIdentity{}, 0, time.Time{}, ErrUnsafeCache
-	}
-	identity, _, err := validateHandle(handle, 1, expected)
-	if err != nil {
-		_ = windows.CloseHandle(handle)
-		return 0, fileIdentity{}, 0, time.Time{}, err
-	}
-	_, _, size, modified, _ := handleInformation(handle)
-	return handle, identity, size, modified, nil
-}
-func validateHandle(handle windows.Handle, links uint32, expected fileIdentity) (fileIdentity, uint32, error) {
-	identity, count, size, _, err := handleInformation(handle)
-	if err != nil || count != links || size > maxCachedArtifactBytes || expected != (fileIdentity{}) && identity != expected {
-		if err == nil && size > maxCachedArtifactBytes {
-			return identity, count, ErrArtifactLimit
-		}
-		return identity, count, ErrUnsafeCache
-	}
-	return identity, count, nil
-}
-func handleInformation(handle windows.Handle) (fileIdentity, uint32, int64, time.Time, error) {
-	var info windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
-		return fileIdentity{}, 0, 0, time.Time{}, err
-	}
-	if info.FileAttributes&(windows.FILE_ATTRIBUTE_DIRECTORY|windows.FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
-		return fileIdentity{}, 0, 0, time.Time{}, ErrUnsafeCache
-	}
-	size := int64(uint64(info.FileSizeHigh)<<32 | uint64(info.FileSizeLow))
-	identity := fileIdentity{uint64(info.VolumeSerialNumber), uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow)}
-	return identity, info.NumberOfLinks, size, time.Unix(0, info.LastWriteTime.Nanoseconds()), nil
-}
-func renameHandleNoReplace(handle, root windows.Handle, name string) error {
-	utf16, err := windows.UTF16FromString(name)
-	if err != nil {
-		return err
-	}
-	nameBytes := (len(utf16) - 1) * 2
-	var dummy fileRenameInformation
-	buffer := make([]byte, int(unsafe.Offsetof(dummy.FileName))+nameBytes)
-	info := (*fileRenameInformation)(unsafe.Pointer(&buffer[0]))
-	info.RootDirectory, info.FileNameLength = uintptr(root), uint32(nameBytes)
-	copy((*[windows.MAX_LONG_PATH]uint16)(unsafe.Pointer(&info.FileName[0]))[:nameBytes/2:nameBytes/2], utf16)
-	var status windows.IO_STATUS_BLOCK
-	return windows.NtSetInformationFile(handle, &status, &buffer[0], uint32(len(buffer)), windows.FileRenameInformation)
-}
-func deleteHandle(handle windows.Handle) error {
-	flags := uint32(windows.FILE_DISPOSITION_DELETE | windows.FILE_DISPOSITION_POSIX_SEMANTICS)
-	var status windows.IO_STATUS_BLOCK
-	return windows.NtSetInformationFile(handle, &status, (*byte)(unsafe.Pointer(&flags)), uint32(unsafe.Sizeof(flags)), windows.FileDispositionInformationEx)
 }

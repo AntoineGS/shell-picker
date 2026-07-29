@@ -59,7 +59,7 @@ type renderSession struct {
 	tree       treeHandle
 	retainTree func(*process.Child) (treeHandle, error)
 	started    bool
-	cleanup    func()
+	cleanup    func() bool
 }
 
 func newRenderSession(options Options) *renderSession {
@@ -84,23 +84,33 @@ func (session *renderSession) start(child *process.Child) (bool, error) {
 }
 
 func (session *renderSession) terminal(cause error) error {
-	if session.cleanup != nil {
-		session.cleanup()
-		session.cleanup = nil
-	}
+	cleaned := session.cleanup == nil || session.cleanup()
 	var killErr error
 	if session.tree != nil {
 		killErr = session.tree.KillTree()
 	}
+	for attempts := 0; !cleaned && attempts < 100; attempts++ {
+		cleaned = session.cleanup()
+		if !cleaned {
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if cleaned {
+		session.cleanup = nil
+	}
 	return errors.Join(ErrTerminalResource, cause, killErr)
 }
-
 func (session *renderSession) close() {
+	if session.cleanup != nil && session.cleanup() {
+		session.cleanup = nil
+	}
 	if session.tree != nil {
 		_ = session.tree.Close()
 	}
+	if session.cleanup != nil && session.cleanup() {
+		session.cleanup = nil
+	}
 }
-
 func resourceFailure(ctx context.Context, budget *outputBudget, err error) error {
 	if _, exceeded := budget.status(); exceeded {
 		return ErrOutputLimit

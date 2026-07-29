@@ -83,6 +83,21 @@ func TestCreateProcessPassesStreamsAndArguments(t *testing.T) {
 	}
 }
 
+func TestWindowsRejectsExtraFilesBeforeProcessAttempt(t *testing.T) {
+	file, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	attempted := false
+	spec := helperSpec("exit", "0")
+	spec.ExtraFiles = []*os.File{file}
+	_, err = (Runner{Observe: func(ProcessEvent) { attempted = true }}).Start(context.Background(), spec)
+	if err == nil || attempted {
+		t.Fatalf("err=%v attempted=%v", err, attempted)
+	}
+}
+
 func TestWindowsForegroundUsesOwnedJobWithoutTTY(t *testing.T) {
 	spec := helperSpec("exit", "0")
 	spec.Containment = ContainmentForegroundTree

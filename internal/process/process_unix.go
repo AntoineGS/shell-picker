@@ -50,6 +50,11 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 	if err := validateSpec(ctx, spec); err != nil {
 		return nil, err
 	}
+	for _, file := range spec.ExtraFiles {
+		if file == nil {
+			return nil, errors.New("process: nil ExtraFiles entry")
+		}
+	}
 	if spec.Containment == ContainmentForegroundTree && spec.ForegroundTTY == nil {
 		return nil, errors.New("process: foreground containment requires a terminal")
 	}
@@ -69,6 +74,7 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 	}
 	cmd := exec.Command(path, spec.Args...)
 	cmd.Env, cmd.Dir = spec.Env, spec.Dir
+	cmd.ExtraFiles = append(cmd.ExtraFiles, spec.ExtraFiles...)
 	streams, err := prepareUnixStreams(spec)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -69,6 +70,203 @@ type fakeTreeHandle struct{ kills, closes int }
 
 func (handle *fakeTreeHandle) KillTree() error { handle.kills++; return nil }
 func (handle *fakeTreeHandle) Close() error    { handle.closes++; return nil }
+
+type orderedTreeHandle struct{ events *[]string }
+
+func (handle orderedTreeHandle) KillTree() error {
+	*handle.events = append(*handle.events, "kill")
+	return nil
+}
+func (orderedTreeHandle) Close() error { return nil }
+
+func TestTerminalRetriesBlockedCleanupAfterTreeKill(t *testing.T) {
+	events := []string{}
+	attempts := 0
+	session := &renderSession{tree: orderedTreeHandle{&events}}
+	session.cleanup = func() bool {
+		attempts++
+		events = append(events, fmt.Sprintf("cleanup-%d", attempts))
+		return attempts > 1
+	}
+	_ = session.terminal(ErrArtifactLimit)
+	if strings.Join(events, ",") != "cleanup-1,kill,cleanup-2" || session.cleanup != nil {
+		t.Fatalf("events=%v cleanup retained=%v", events, session.cleanup != nil)
+	}
+}
+
+func TestNewCacheRejectsComponentReplacementAfterCreationWalk(t *testing.T) {
+	base := t.TempDir()
+	components := []string{base, "anchor", "observed"}
+	for index := 0; index < 512; index++ {
+		components = append(components, fmt.Sprintf("d%03d", index))
+	}
+	root := filepath.Join(components...)
+	swapped := make(chan error, 1)
+	go func() {
+		observed := filepath.Join(base, "anchor", "observed")
+		for {
+			if _, err := os.Stat(observed); err == nil {
+				break
+			}
+			runtime.Gosched()
+		}
+		anchor := filepath.Join(base, "anchor")
+		err := os.Rename(anchor, anchor+"-detached")
+		if err == nil {
+			err = os.Mkdir(anchor, 0o700)
+		}
+		swapped <- err
+	}()
+	cache, err := NewCache(root, 1)
+	if swapErr := <-swapped; swapErr != nil {
+		t.Fatal(swapErr)
+	}
+	if err == nil || cache != nil {
+		t.Fatalf("detached cache=%+v err=%v", cache, err)
+	}
+}
+
+func TestPruneQuarantineDoesNotDeleteReplacement(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	key := strings.Repeat("7", 64)
+	path := mustPut(t, cache, key, "original")
+	source, err := openCacheSource(cache, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := source.identity
+	_ = source.Close()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("attacker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if quarantinePrune(cache, pruneItem{name: key, size: 8, identity: identity}) {
+		t.Fatal("prune deleted replacement")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "attacker" {
+		t.Fatalf("replacement=%q err=%v", data, err)
+	}
+	assertNoCacheTemps(t, cache.root)
+}
+
+func TestStagedArtifactRejectsReplacementAfterExclusiveCreation(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	stage, err := newConverterArtifact(cache, ".jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stage.Cleanup()
+	path := soleStagedArtifact(t, cache.root)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("attacker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := stage.OpenWritable()
+	if writer != nil {
+		_ = writer.Close()
+	}
+	if !errors.Is(err, ErrUnsafeCache) {
+		t.Fatalf("replacement writer error=%v", err)
+	}
+}
+
+func TestRendererReadsValidatedStageWhenPathIsReplaced(t *testing.T) {
+	tools := t.TempDir()
+	executable := filepath.Join(tools, "chafa")
+	if runtime.GOOS == "windows" {
+		executable += ".exe"
+	}
+	source := filepath.Join(t.TempDir(), "renderer.go")
+	program := `package main
+import("os";"time")
+func main(){ os.WriteFile(os.Getenv("READY"),[]byte(os.Args[len(os.Args)-1]),0600); for { if _,e:=os.Stat(os.Getenv("GO")); e==nil { break }; time.Sleep(time.Millisecond) }; b,e:=os.ReadFile(os.Args[len(os.Args)-1]); if e!=nil { panic(e) }; os.Stdout.Write(b) }`
+	if err := os.WriteFile(source, []byte(program), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command("go", "build", "-o", executable, source).CombinedOutput(); err != nil {
+		t.Fatalf("build renderer: %v: %s", err, output)
+	}
+	document := filepath.Join(t.TempDir(), "document.pdf")
+	if err := os.WriteFile(document, []byte("%PDF-1.7\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	candidate := resolved(document)
+	mustPut(t, cache, cache.Key(candidate, "pdf-pdftoppm-v1"), "safe")
+	ready, proceed := filepath.Join(t.TempDir(), "ready"), filepath.Join(t.TempDir(), "go")
+	var output bytes.Buffer
+	options := testOptions(&output)
+	options.Cache, options.Environment = cache, []string{"PATH=" + tools, "READY=" + ready, "GO=" + proceed}
+	done := make(chan error, 1)
+	go func() { done <- Render(context.Background(), candidate, options) }()
+	var argument []byte
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		argument, _ = os.ReadFile(ready)
+		if len(argument) != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("renderer did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stagePath := stagedArtifactPath(t, cache.root)
+	attackErr := os.Remove(stagePath)
+	if attackErr == nil {
+		attackErr = os.WriteFile(stagePath, []byte("attacker"), 0o600)
+	}
+	if runtime.GOOS == "windows" && attackErr == nil {
+		t.Fatal("Windows stage replacement succeeded")
+	}
+	if err := os.WriteFile(proceed, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "safe" {
+		t.Fatalf("renderer output=%q attack=%v", output.String(), attackErr)
+	}
+	if runtime.GOOS == "linux" && string(argument) != "/proc/self/fd/3" {
+		t.Fatalf("renderer path=%q", argument)
+	}
+}
+
+func soleStagedArtifact(t *testing.T, root string) string {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("stage entries=%v err=%v", entries, err)
+	}
+	children, err := os.ReadDir(filepath.Join(root, entries[0].Name()))
+	if err != nil || len(children) != 1 {
+		t.Fatalf("artifact entries=%v err=%v", children, err)
+	}
+	return filepath.Join(root, entries[0].Name(), children[0].Name())
+}
+func stagedArtifactPath(t *testing.T, root string) string {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), cacheTempPrefix) {
+			continue
+		}
+		children, err := os.ReadDir(filepath.Join(root, entry.Name()))
+		if err == nil && len(children) == 1 {
+			return filepath.Join(root, entry.Name(), children[0].Name())
+		}
+	}
+	t.Fatal("staged artifact not found")
+	return ""
+}
 
 type cancelWriter struct {
 	cancel context.CancelFunc

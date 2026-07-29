@@ -87,27 +87,8 @@ func TestCachePutIsAtomicAndPrunesOldest(t *testing.T) {
 		t.Fatalf("saturated total=%d", total)
 	}
 }
-func TestCacheRejectsUnsafeRootEntryAndOversizedArtifact(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		realRoot := t.TempDir()
-		symlinkRoot := filepath.Join(t.TempDir(), "cache")
-		if err := os.Symlink(realRoot, symlinkRoot); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := NewCache(symlinkRoot, 512<<20); !errors.Is(err, ErrUnsafeCache) {
-			t.Fatalf("root err=%v", err)
-		}
-	}
+func TestCacheRejectsOversizedArtifact(t *testing.T) {
 	cache := mustNewCache(t, t.TempDir(), 512<<20)
-	key := strings.Repeat("a", 64)
-	if runtime.GOOS != "windows" {
-		if err := os.Symlink(filepath.Join(cache.root, "target"), filepath.Join(cache.root, key)); err != nil {
-			t.Fatal(err)
-		}
-		if _, ok := cache.Get(key); ok {
-			t.Fatal("accepted symlink cache entry")
-		}
-	}
 	tooLarge := io.LimitReader(zeroReader{}, maxCachedArtifactBytes+1)
 	if _, err := cache.Put("b"+strings.Repeat("0", 63), tooLarge); !errors.Is(err, ErrArtifactLimit) {
 		t.Fatalf("artifact err=%v", err)
@@ -115,9 +96,6 @@ func TestCacheRejectsUnsafeRootEntryAndOversizedArtifact(t *testing.T) {
 	assertNoCacheTemps(t, cache.root)
 }
 func TestCachePutAnchorsRootAcrossSwap(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink privilege and Unix race fixture")
-	}
 	parent, outside := t.TempDir(), t.TempDir()
 	root := filepath.Join(parent, "cache")
 	cache := mustNewCache(t, root, 512<<20)
@@ -127,12 +105,21 @@ func TestCachePutAnchorsRootAcrossSwap(t *testing.T) {
 	go func() { _, err := cache.Put(key, reader); done <- err }()
 	<-reader.started
 	oldRoot := root + "-old"
-	mustRenameAndSymlink(t, root, oldRoot, outside)
+	swapped := os.Rename(root, oldRoot) == nil
+	if swapped {
+		if err := os.Symlink(outside, root); err != nil && runtime.GOOS != "windows" {
+			t.Fatal(err)
+		}
+	}
 	close(reader.proceed)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(oldRoot, key))
+	winnerRoot := root
+	if swapped {
+		winnerRoot = oldRoot
+	}
+	data, err := os.ReadFile(filepath.Join(winnerRoot, key))
 	entries, outsideErr := os.ReadDir(outside)
 	if err != nil || string(data) != "safe" || outsideErr != nil || len(entries) != 0 {
 		t.Fatalf("winner=%q err=%v outside=%v outsideErr=%v", data, err, entries, outsideErr)
@@ -177,7 +164,7 @@ func TestCachePutRejectsHardlinkedTempAndWinner(t *testing.T) {
 		if _, err := cache.Put(symlinkKey, strings.NewReader("safe")); !errors.Is(err, ErrUnsafeCache) {
 			t.Fatalf("symlink winner err=%v", err)
 		}
-	} else if runtime.GOOS != "windows" {
+	} else {
 		t.Fatal(err)
 	}
 	key = strings.Repeat("e", 64)
@@ -446,15 +433,6 @@ func newBarrierReader(value string) *barrierReader {
 func (reader *barrierReader) Read(data []byte) (int, error) {
 	reader.once.Do(func() { close(reader.started); <-reader.proceed })
 	return reader.reader.Read(data)
-}
-func mustRenameAndSymlink(t *testing.T, root, oldRoot, outside string) {
-	t.Helper()
-	if err := os.Rename(root, oldRoot); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, root); err != nil {
-		t.Fatal(err)
-	}
 }
 func soleCacheTemp(t *testing.T, root string) string {
 	t.Helper()

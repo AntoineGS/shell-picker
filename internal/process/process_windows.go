@@ -65,6 +65,14 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 	if err := validateSpec(ctx, spec); err != nil {
 		return nil, err
 	}
+	if len(spec.ExtraFiles) != 0 {
+		for _, file := range spec.ExtraFiles {
+			if file == nil {
+				return nil, errors.New("process: nil ExtraFiles entry")
+			}
+		}
+		return nil, errors.New("process: ExtraFiles unsupported on Windows")
+	}
 	observe(r.Observe, "attempt", spec.Path, 0)
 	path, err := exec.LookPath(spec.Path)
 	if err != nil {

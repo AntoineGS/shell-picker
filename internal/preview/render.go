@@ -105,7 +105,7 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 }
 
 func renderExternal(ctx context.Context, path string, category Category, options Options, stdout *budgetWriter,
-	stderr io.Writer, session *renderSession) (bool, error) {
+	stderr io.Writer, session *renderSession, extraFiles ...*os.File) (bool, error) {
 	for _, tool := range externalTools(category, path, options) {
 		executable := lookupTool(tool.name, options.Environment)
 		if executable == "" {
@@ -116,7 +116,9 @@ func renderExternal(ctx context.Context, path string, category Category, options
 		if category == CategoryZip || category == CategoryGzip || category == CategoryXz || category == CategoryTar || category == CategoryBzip {
 			processStdout = &lineLimitWriter{writer: stdout, remaining: options.Limits.MaxArchiveEntries}
 		}
-		child, err := options.Runner.Start(ctx, externalProcessSpec(executable, tool.arguments, options.Environment, processStdout, stderr))
+		spec := externalProcessSpec(executable, tool.arguments, options.Environment, processStdout, stderr)
+		spec.ExtraFiles = extraFiles
+		child, err := options.Runner.Start(ctx, spec)
 		if err != nil {
 			continue
 		}

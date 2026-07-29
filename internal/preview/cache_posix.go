@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build linux || darwin
 
 package preview
 
@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -20,7 +19,8 @@ import (
 type converterArtifact struct {
 	root, directory, held     *os.File
 	directoryName, name, path string
-	once                      sync.Once
+	identity                  fileIdentity
+	complete                  bool
 }
 
 func (source *cacheSource) Validate() error {
@@ -41,7 +41,19 @@ func ensureCacheRoot(path string) (fileIdentity, error) {
 		return fileIdentity{}, err
 	}
 	identity, identityErr := directoryIdentity(root)
-	return identity, errors.Join(err, identityErr, root.Close())
+	if err = errors.Join(err, identityErr, root.Close()); err != nil {
+		return fileIdentity{}, err
+	}
+	reopened, err := openCacheRoot(path, false)
+	if err != nil {
+		return fileIdentity{}, err
+	}
+	reopenedIdentity, identityErr := directoryIdentity(reopened)
+	err = errors.Join(identityErr, reopened.Close())
+	if err != nil || reopenedIdentity != identity {
+		return fileIdentity{}, ErrUnsafeCache
+	}
+	return identity, nil
 }
 func openCacheRoot(path string, create bool) (*os.File, error) {
 	fd, err := unix.Open(string(os.PathSeparator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -142,52 +154,6 @@ func cachePut(cache *Cache, key string, source io.Reader) error {
 	}
 	return err
 }
-func cachePrune(cache *Cache) error {
-	root, err := openCache(cache)
-	if err != nil {
-		return err
-	}
-	defer root.Close()
-	duplicate, err := unix.Dup(int(root.Fd()))
-	if err != nil {
-		return err
-	}
-	directory := os.NewFile(uintptr(duplicate), cache.root)
-	entries, err := directory.Readdir(-1)
-	_ = directory.Close()
-	if err != nil {
-		return err
-	}
-	items := make([]pruneItem, 0, len(entries))
-	var total int64
-	for _, entry := range entries {
-		if !validCacheKey(entry.Name()) {
-			continue
-		}
-		file, identity, size, openErr := openAcceptedAt(root, entry.Name(), fileIdentity{})
-		if openErr != nil {
-			continue
-		}
-		info, statErr := file.Stat()
-		_ = file.Close()
-		if statErr != nil {
-			continue
-		}
-		total = saturatedAdd(total, size)
-		items = append(items, pruneItem{entry.Name(), size, info.ModTime(), identity})
-	}
-	pruneOldest(cache.maxBytes, total, items, func(item pruneItem) bool {
-		file, _, _, openErr := openAcceptedAt(root, item.name, item.identity)
-		if openErr != nil {
-			return false
-		}
-		unlinkErr := unix.Unlinkat(int(root.Fd()), item.name, 0)
-		_, links, statErr := validateOpenFile(file, 0, item.identity)
-		_ = file.Close()
-		return unlinkErr == nil && statErr == nil && links == 0
-	})
-	return nil
-}
 func newConverterArtifact(cache *Cache, suffix string) (*converterArtifact, error) {
 	root, err := openCache(cache)
 	if err != nil {
@@ -206,12 +172,19 @@ func newConverterArtifact(cache *Cache, suffix string) (*converterArtifact, erro
 		_ = root.Close()
 		return nil, err
 	}
+	identity, _, err := validateOpenFile(file, 1, fileIdentity{})
+	if err != nil {
+		_ = file.Close()
+		_ = directory.Close()
+		_ = root.Close()
+		return nil, err
+	}
 	_ = file.Close()
 	path := filepath.Join(cache.root, directoryName, name)
 	if runtime.GOOS == "linux" {
 		path = fmt.Sprintf("/proc/%d/fd/%d/%s", os.Getpid(), directory.Fd(), name)
 	}
-	return &converterArtifact{root: root, directory: directory, directoryName: directoryName, name: name, path: path}, nil
+	return &converterArtifact{root: root, directory: directory, directoryName: directoryName, name: name, path: path, identity: identity}, nil
 }
 func (artifact *converterArtifact) Size() (int64, error) {
 	fd, err := unix.Openat(int(artifact.directory.Fd()), artifact.name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
@@ -230,17 +203,26 @@ func (artifact *converterArtifact) OpenAccepted() (io.ReadCloser, int64, error) 
 	file, _, size, err := openAcceptedAt(artifact.directory, artifact.name, fileIdentity{})
 	return file, size, err
 }
-func (artifact *converterArtifact) Cleanup() {
-	artifact.once.Do(func() {
-		if artifact.held != nil {
-			_ = artifact.held.Close()
-		}
-		_ = unix.Unlinkat(int(artifact.directory.Fd()), artifact.name, 0)
-		_ = artifact.directory.Close()
-		_ = unix.Unlinkat(int(artifact.root.Fd()), artifact.directoryName, unix.AT_REMOVEDIR)
-		_ = artifact.root.Close()
-	})
+func (artifact *converterArtifact) Cleanup() bool {
+	if artifact.complete {
+		return true
+	}
+	if artifact.held != nil {
+		_ = artifact.held.Close()
+		artifact.held = nil
+	}
+	if !cacheRemoved(unix.Unlinkat(int(artifact.directory.Fd()), artifact.name, 0)) {
+		return false
+	}
+	if !cacheRemoved(unix.Unlinkat(int(artifact.root.Fd()), artifact.directoryName, unix.AT_REMOVEDIR)) {
+		return false
+	}
+	_ = artifact.directory.Close()
+	_ = artifact.root.Close()
+	artifact.complete = true
+	return true
 }
+func cacheRemoved(err error) bool { return err == nil || errors.Is(err, syscall.ENOENT) }
 func openCacheSource(cache *Cache, key string) (*cacheSource, error) {
 	root, err := openCache(cache)
 	if err != nil {
@@ -254,16 +236,26 @@ func openCacheSource(cache *Cache, key string) (*cacheSource, error) {
 	return &cacheSource{source, identity}, nil
 }
 func (artifact *converterArtifact) OpenWritable() (syncWriteCloser, error) {
-	return openFileAt(artifact.directory, artifact.name, unix.O_WRONLY|unix.O_TRUNC, 0)
+	file, err := openFileAt(artifact.directory, artifact.name, unix.O_WRONLY, 0)
+	if err == nil {
+		_, _, err = validateOpenFile(file, 1, artifact.identity)
+	}
+	if err != nil && file != nil {
+		_ = file.Close()
+		file = nil
+	}
+	return file, err
 }
+func (artifact *converterArtifact) RenderFiles() []*os.File { return []*os.File{artifact.held} }
 func (artifact *converterArtifact) Validate() error {
-	file, _, _, err := openAcceptedAt(artifact.directory, artifact.name, fileIdentity{})
+	file, _, _, err := openAcceptedAt(artifact.directory, artifact.name, artifact.identity)
 	if err != nil {
 		return err
 	}
 	artifact.held = file
+	artifact.path = "/dev/fd/3"
 	if runtime.GOOS == "linux" {
-		artifact.path = fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), file.Fd())
+		artifact.path = "/proc/self/fd/3"
 	}
 	return nil
 }

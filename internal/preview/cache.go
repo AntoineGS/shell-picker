@@ -32,12 +32,6 @@ type Cache struct {
 }
 
 type fileIdentity struct{ first, second uint64 }
-type fileRenameInformation struct {
-	ReplaceIfExists uint32
-	RootDirectory   uintptr
-	FileNameLength  uint32
-	FileName        [1]uint16
-}
 
 type cacheSource struct {
 	file     *os.File
@@ -172,7 +166,11 @@ func renderCachedArtifact(ctx context.Context, candidate protocol.ResolvedCandid
 		return false, false, nil
 	}
 	session.cleanup = temp.Cleanup
-	defer func() { temp.Cleanup(); session.cleanup = nil }()
+	defer func() {
+		if temp.Cleanup() {
+			session.cleanup = nil
+		}
+	}()
 	child, err := options.Runner.Start(ctx, externalProcessSpec(executable,
 		richConverterArguments(category, string(candidate.Path), temp.Path()), options.Environment, stdout, stderr))
 	if err != nil {
@@ -221,11 +219,12 @@ func waitConverter(wait <-chan error, ticks <-chan time.Time, temp *converterArt
 			return err, nil
 		case <-ticks:
 			if size, err := temp.Size(); err == nil && size > maxCachedArtifactBytes {
-				temp.Cleanup()
+				_ = temp.Cleanup()
 				if session.tree != nil {
 					_ = session.tree.KillTree()
 				}
 				<-wait
+				_ = temp.Cleanup()
 				return nil, session.terminal(ErrArtifactLimit)
 			}
 		}
@@ -234,13 +233,17 @@ func waitConverter(wait <-chan error, ticks <-chan time.Time, temp *converterArt
 
 func renderStagedCache(ctx context.Context, cache *Cache, key string, options Options, stdout *budgetWriter,
 	stderr io.Writer, session *renderSession) (bool, bool, error) {
-	staged, cleanup, err := stageCacheArtifact(cache, key)
+	staged, err := stageCacheArtifact(cache, key)
 	if err != nil {
 		return false, true, nil
 	}
-	session.cleanup = cleanup
-	defer func() { cleanup(); session.cleanup = nil }()
-	rendered, err := renderExternal(ctx, staged, CategoryImage, options, stdout, stderr, session)
+	session.cleanup = staged.Cleanup
+	defer func() {
+		if staged.Cleanup() {
+			session.cleanup = nil
+		}
+	}()
+	rendered, err := renderExternal(ctx, staged.Path(), CategoryImage, options, stdout, stderr, session, staged.RenderFiles()...)
 	return rendered, true, err
 }
 
@@ -250,15 +253,15 @@ type syncWriteCloser interface {
 	Close() error
 }
 
-func stageCacheArtifact(cache *Cache, key string) (string, func(), error) {
+func stageCacheArtifact(cache *Cache, key string) (*converterArtifact, error) {
 	source, err := openCacheSource(cache, key)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	defer source.Close()
 	stage, err := newConverterArtifact(cache, ".jpg")
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	destination, err := stage.OpenWritable()
 	if err == nil {
@@ -281,10 +284,10 @@ func stageCacheArtifact(cache *Cache, key string) (string, func(), error) {
 		err = stage.Validate()
 	}
 	if err != nil {
-		stage.Cleanup()
-		return "", nil, err
+		_ = stage.Cleanup()
+		return nil, err
 	}
-	return stage.Path(), stage.Cleanup, nil
+	return stage, nil
 }
 
 func randomCacheName(prefix string) (string, error) {
