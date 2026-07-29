@@ -3,6 +3,7 @@ package preview
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
@@ -14,6 +15,21 @@ import (
 
 	"github.com/AntoineGS/shell-picker/internal/process"
 )
+
+func writeHashUint64(writer io.Writer, value uint64) {
+	var data [8]byte
+	binary.BigEndian.PutUint64(data[:], value)
+	_, _ = writer.Write(data[:])
+}
+
+func terminalQualified(environment []string) bool {
+	for _, entry := range environment {
+		if key, value, ok := strings.Cut(entry, "="); ok && key == "TERM" && strings.Contains(strings.ToLower(value), "kitty") {
+			return true
+		}
+	}
+	return false
+}
 
 var (
 	ErrOutputLimit      = errors.New("preview: output limit exceeded")
@@ -43,6 +59,7 @@ type renderSession struct {
 	tree       treeHandle
 	retainTree func(*process.Child) (treeHandle, error)
 	started    bool
+	cleanup    func()
 }
 
 func newRenderSession(options Options) *renderSession {
@@ -67,6 +84,10 @@ func (session *renderSession) start(child *process.Child) (bool, error) {
 }
 
 func (session *renderSession) terminal(cause error) error {
+	if session.cleanup != nil {
+		session.cleanup()
+		session.cleanup = nil
+	}
 	var killErr error
 	if session.tree != nil {
 		killErr = session.tree.KillTree()

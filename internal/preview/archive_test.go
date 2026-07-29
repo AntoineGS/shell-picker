@@ -1,14 +1,17 @@
 package preview
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +52,90 @@ func TestArchiveLimitsEntriesBytesAndDeadline(t *testing.T) {
 	options.Limits.Deadline = time.Nanosecond
 	if err := Render(context.Background(), resolved(path), options); err != context.DeadlineExceeded {
 		t.Fatalf("deadline err=%v", err)
+	}
+}
+
+func TestOptionalArchiveListingStopsAtOneHundredLines(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct shell process fixture is Unix-specific")
+	}
+	tools := t.TempDir()
+	script := "#!/bin/sh\ni=0; while [ $i -lt 150 ]; do printf 'entry-%03d\\n' $i; i=$((i+1)); done\n"
+	if err := os.WriteFile(filepath.Join(tools, "unzip"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "sample.zip")
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	entry, err := writer.Create("one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = entry.Write([]byte("one"))
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, archive.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	options := testOptions(&output)
+	options.Environment = []string{"PATH=" + tools}
+	if err := Render(context.Background(), resolved(path), options); err != nil {
+		t.Fatal(err)
+	}
+	if lines := bytes.Count(output.Bytes(), []byte("\n")); lines != 100 {
+		t.Fatalf("lines=%d output bytes=%d", lines, output.Len())
+	}
+}
+
+func TestNativeZipAndTarListingsContainSizesWithinOneHundredLines(t *testing.T) {
+	root := t.TempDir()
+	zipPath, tarPath := filepath.Join(root, "sample.zip"), filepath.Join(root, "sample.tar")
+	var zipped bytes.Buffer
+	zipWriter := zip.NewWriter(&zipped)
+	for index := 0; index < 100; index++ {
+		entry, err := zipWriter.Create(fmt.Sprintf("zip-%03d", index))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = entry.Write([]byte("abc"))
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zipPath, zipped.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tarWriter := tar.NewWriter(file)
+	for index := 0; index < 100; index++ {
+		name := fmt.Sprintf("tar-%03d", index)
+		if err := tarWriter.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: 3}); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = tarWriter.Write([]byte("abc"))
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		path   string
+		render func(context.Context, string, io.Writer, Limits) error
+	}{{zipPath, renderZip}, {tarPath, renderTar}} {
+		var output bytes.Buffer
+		if err := test.render(context.Background(), test.path, &output, DefaultLimits); err != nil {
+			t.Fatal(err)
+		}
+		if lines := bytes.Count(output.Bytes(), []byte("\n")); lines > 100 || !strings.Contains(output.String(), "3  ") {
+			t.Fatalf("path=%s lines=%d output prefix=%q", test.path, lines, output.String()[:min(output.Len(), 80)])
+		}
 	}
 }
 

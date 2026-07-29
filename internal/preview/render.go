@@ -3,7 +3,6 @@ package preview
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -28,6 +27,7 @@ type Options struct {
 	Limits         Limits
 	Stdout, Stderr io.Writer
 	OnDispatch     func(string, int, time.Duration)
+	Cache          *Cache
 	retainTree     func(*process.Child) (treeHandle, error)
 }
 
@@ -36,6 +36,7 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 		return ErrPathNotAbsolute
 	}
 	limits := normalizedLimits(options.Limits)
+	options.Limits = limits
 	renderCtx, cancel := context.WithTimeout(ctx, limits.Deadline)
 	defer cancel()
 	if err := renderCtx.Err(); err != nil {
@@ -72,8 +73,12 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 		options.OnDispatch("native", 0, 0)
 	}
 	rendered := false
+	richHandled := false
 	if !nativeOnly {
-		rendered, err = renderExternal(renderCtx, path, category, options, stdout, stderr, session)
+		rendered, richHandled, err = renderCachedArtifact(renderCtx, candidate, category, options, stdout, stderr, session)
+		if err == nil && !rendered && !richHandled {
+			rendered, err = renderExternal(renderCtx, path, category, options, stdout, stderr, session)
+		}
 		if err != nil {
 			return err
 		}
@@ -107,7 +112,11 @@ func renderExternal(ctx context.Context, path string, category Category, options
 			continue
 		}
 		before := stdout.meaningfulBytes()
-		child, err := options.Runner.Start(ctx, externalProcessSpec(executable, tool.arguments, options.Environment, stdout, stderr))
+		var processStdout io.Writer = stdout
+		if category == CategoryZip || category == CategoryGzip || category == CategoryXz || category == CategoryTar || category == CategoryBzip {
+			processStdout = &lineLimitWriter{writer: stdout, remaining: options.Limits.MaxArchiveEntries}
+		}
+		child, err := options.Runner.Start(ctx, externalProcessSpec(executable, tool.arguments, options.Environment, processStdout, stderr))
 		if err != nil {
 			continue
 		}
@@ -134,6 +143,17 @@ type directTool struct {
 	arguments []string
 }
 
+func richConverterArguments(category Category, path, artifact string) []string {
+	switch category {
+	case CategoryPDF:
+		return []string{"-singlefile", "-jpeg", path, strings.TrimSuffix(artifact, ".jpg")}
+	case CategoryVideo:
+		return []string{"-i", path, "-o", artifact, "-s", "1080", "-m"}
+	default:
+		return []string{"-y", "-i", path, "-an", "-c:v", "copy", artifact}
+	}
+}
+
 func externalTools(category Category, path string, options Options) []directTool {
 	switch category {
 	case CategoryDirectory:
@@ -155,25 +175,16 @@ func externalTools(category Category, path string, options Options) []directTool
 	case CategoryZip:
 		return []directTool{{"unzip", []string{"-l", "--", path}}}
 	case CategoryGzip:
-		return []directTool{{"gzip", []string{"--list", "--", path}}}
+		return []directTool{{"gzip", []string{"-l", "--", path}}}
 	case CategoryXz:
-		return []directTool{{"xz", []string{"--list", "--", path}}}
+		return []directTool{{"xz", []string{"-l", "--", path}}}
 	case CategoryTar:
-		return []directTool{{"tar", []string{"--list", "--file", path}}}
+		return []directTool{{"tar", []string{"tf", path}}}
 	case CategoryBzip:
-		return []directTool{{"bzip2", []string{"--test", "--verbose", "--", path}}}
+		return []directTool{{"tar", []string{"tf", path}}}
 	default:
 		return nil
 	}
-}
-
-func terminalQualified(environment []string) bool {
-	for _, entry := range environment {
-		if key, value, ok := strings.Cut(entry, "="); ok && key == "TERM" && strings.Contains(strings.ToLower(value), "kitty") {
-			return true
-		}
-	}
-	return false
 }
 
 func readPrefix(ctx context.Context, path string, info os.FileInfo, maximum int64) ([]byte, error) {
@@ -224,20 +235,6 @@ func renderNative(ctx context.Context, path string, info os.FileInfo, prefix []b
 	default:
 		return fmt.Errorf("preview: unsupported category %q", category)
 	}
-}
-
-func renderArchiveOrFallback(ctx context.Context, category Category, info os.FileInfo, output io.Writer, render func() error) error {
-	err := render()
-	if err == nil {
-		return nil
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ctxErr
-	}
-	if errors.Is(err, ErrOutputLimit) || errors.Is(err, ErrInputLimit) || errors.Is(err, ErrArchiveEntries) {
-		return err
-	}
-	return renderMetadata(category, info, output)
 }
 
 func renderDirectory(ctx context.Context, path string, output io.Writer, limits Limits) error {
@@ -327,6 +324,7 @@ func renderPDF(info os.FileInfo, prefix []byte, output io.Writer) error {
 	if _, err := fmt.Fprintf(output, "PDF document: %d bytes, modified %s\n", info.Size(), info.ModTime().Format(time.RFC3339)); err != nil {
 		return err
 	}
+	prefix = prefix[:min(len(prefix), 4<<10)]
 	var printable strings.Builder
 	for _, value := range prefix {
 		if value == '\n' || value == '\r' || value == '\t' || unicode.IsPrint(rune(value)) {

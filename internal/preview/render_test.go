@@ -286,10 +286,10 @@ func TestOptionalRendererPrecedenceAndArguments(t *testing.T) {
 		}},
 		{name: "audio metadata", fixture: "audio.mp3", tool: "exiftool", arguments: afterDoubleDash},
 		{name: "zip listing", fixture: "sample.zip", tool: "unzip", arguments: func(path string) []string { return []string{"-l", "--", path} }},
-		{name: "gzip listing", fixture: "sample.gz", tool: "gzip", arguments: func(path string) []string { return []string{"--list", "--", path} }},
-		{name: "xz listing", fixture: "sample.xz", tool: "xz", arguments: func(path string) []string { return []string{"--list", "--", path} }},
-		{name: "tar listing", fixture: "sample.tar", tool: "tar", arguments: func(path string) []string { return []string{"--list", "--file", path} }},
-		{name: "bzip check", fixture: "sample.bz2", tool: "bzip2", arguments: func(path string) []string { return []string{"--test", "--verbose", "--", path} }},
+		{name: "gzip listing", fixture: "sample.gz", tool: "gzip", arguments: func(path string) []string { return []string{"-l", "--", path} }},
+		{name: "xz listing", fixture: "sample.xz", tool: "xz", arguments: func(path string) []string { return []string{"-l", "--", path} }},
+		{name: "tar listing", fixture: "sample.tar", tool: "tar", arguments: func(path string) []string { return []string{"tf", path} }},
+		{name: "bzip listing", fixture: "sample.bz2", tool: "tar", arguments: func(path string) []string { return []string{"tf", path} }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -382,35 +382,6 @@ func TestOptionalFileHintCannotOverrideMagic(t *testing.T) {
 	})
 }
 
-func TestConverterCategoriesRemainNativeUntilTask15(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("direct executable fixtures are Unix-specific")
-	}
-	tools := t.TempDir()
-	installPreviewTool(t, tools, "pdftotext", filepath.Join(t.TempDir(), "pdf"), 0)
-	installPreviewTool(t, tools, "ffprobe", filepath.Join(t.TempDir(), "media"), 0)
-	fixtures := writeFixtures(t, t.TempDir())
-	for _, name := range []string{"document.pdf", "video.mp4"} {
-		t.Run(name, func(t *testing.T) {
-			var output bytes.Buffer
-			options := testOptions(&output)
-			options.Environment = []string{"PATH=" + tools}
-			starts := 0
-			options.Runner.Observe = func(event processpkg.ProcessEvent) {
-				if event.Phase == "start" {
-					starts++
-				}
-			}
-			if err := Render(context.Background(), resolved(fixtures[name]), options); err != nil {
-				t.Fatal(err)
-			}
-			if starts != 0 || !strings.Contains(output.String(), "modified") {
-				t.Fatalf("starts=%d output=%q", starts, output.String())
-			}
-		})
-	}
-}
-
 func TestZipAuthorityCannotBypassNativePreflight(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("direct executable fixtures are Unix-specific")
@@ -452,6 +423,22 @@ func TestFileHintedZipCannotBypassNativePreflight(t *testing.T) {
 	}
 	if _, err := os.Stat(unzipLog); !errors.Is(err, os.ErrNotExist) || !strings.Contains(output.String(), "zip file:") {
 		t.Fatalf("unzip stat=%v output=%q", err, output.String())
+	}
+}
+
+func TestPDFNativeFallbackPrintsOnlyFirstFourKiB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "document.pdf")
+	data := append([]byte("%PDF-"), bytes.Repeat([]byte("a"), 4091)...)
+	data = append(data, []byte("SECRET-AFTER-FOUR-KIB")...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := Render(context.Background(), resolved(path), testOptions(&output)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "SECRET-AFTER-FOUR-KIB") {
+		t.Fatalf("PDF fallback exceeded 4 KiB: %q", output.String()[len(output.String())-40:])
 	}
 }
 

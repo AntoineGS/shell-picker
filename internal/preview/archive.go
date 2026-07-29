@@ -13,6 +13,46 @@ import (
 	"os"
 )
 
+type lineLimitWriter struct {
+	writer    io.Writer
+	remaining int
+}
+
+func renderArchiveOrFallback(ctx context.Context, category Category, info os.FileInfo, output io.Writer, render func() error) error {
+	err := render()
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, ErrOutputLimit) || errors.Is(err, ErrInputLimit) || errors.Is(err, ErrArchiveEntries) {
+		return err
+	}
+	return renderMetadata(category, info, output)
+}
+
+func (writer *lineLimitWriter) Write(data []byte) (int, error) {
+	if writer.remaining <= 0 {
+		return 0, ErrArchiveEntries
+	}
+	allowed := len(data)
+	for index, value := range data {
+		if value == '\n' {
+			writer.remaining--
+			if writer.remaining == 0 {
+				allowed = index + 1
+				break
+			}
+		}
+	}
+	written, err := writer.writer.Write(data[:allowed])
+	if err == nil && allowed < len(data) {
+		err = ErrArchiveEntries
+	}
+	return written, err
+}
+
 func renderZip(ctx context.Context, path string, output io.Writer, limits Limits) error {
 	if err := preflightZip(path, limits.MaxArchiveEntries); err != nil {
 		return err
@@ -22,9 +62,6 @@ func renderZip(ctx context.Context, path string, output io.Writer, limits Limits
 		return err
 	}
 	defer reader.Close()
-	if _, err := fmt.Fprintln(output, "ZIP archive:"); err != nil {
-		return err
-	}
 	var decompressed int64
 	for index, entry := range reader.File {
 		if index >= limits.MaxArchiveEntries || decompressed >= limits.MaxArchiveDecompressedBytes {
@@ -33,7 +70,7 @@ func renderZip(ctx context.Context, path string, output io.Writer, limits Limits
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(output, "%4d  %s\n", index+1, escaped(entry.Name)); err != nil {
+		if _, err := fmt.Fprintf(output, "%4d  %10d  %s\n", index+1, entry.UncompressedSize64, escaped(entry.Name)); err != nil {
 			return err
 		}
 		stream, err := entry.Open()
@@ -218,7 +255,11 @@ func renderGzip(ctx context.Context, path string, output io.Writer, limits Limit
 	if name == "" {
 		name = "(unnamed stream)"
 	}
-	if _, err := fmt.Fprintf(output, "Gzip archive: %s\n", escaped(name)); err != nil {
+	info, statErr := file.Stat()
+	if statErr != nil {
+		return statErr
+	}
+	if _, err := fmt.Fprintf(output, "Gzip archive: %s, %d compressed bytes\n", escaped(name), info.Size()); err != nil {
 		return err
 	}
 	_, err = copyBounded(ctx, reader, limits.MaxArchiveDecompressedBytes)
@@ -235,9 +276,6 @@ func renderTar(ctx context.Context, path string, output io.Writer, limits Limits
 	}
 	defer file.Close()
 	reader := tar.NewReader(file)
-	if _, err := fmt.Fprintln(output, "Tar archive:"); err != nil {
-		return err
-	}
 	var decompressed int64
 	for entries := 0; entries < limits.MaxArchiveEntries && decompressed < limits.MaxArchiveDecompressedBytes; entries++ {
 		if err := ctx.Err(); err != nil {
@@ -250,7 +288,7 @@ func renderTar(ctx context.Context, path string, output io.Writer, limits Limits
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(output, "%4d  %s\n", entries+1, escaped(header.Name)); err != nil {
+		if _, err := fmt.Fprintf(output, "%4d  %10d  %s\n", entries+1, header.Size, escaped(header.Name)); err != nil {
 			return err
 		}
 		read, err := copyBounded(ctx, reader, limits.MaxArchiveDecompressedBytes-decompressed)
