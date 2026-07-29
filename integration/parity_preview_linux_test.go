@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -386,7 +387,16 @@ func writeParityPreviewFixture(t *testing.T, category string) string {
 
 func installParityTool(t *testing.T, directory, name string) {
 	t.Helper()
-	copyNushellExecutable(t, paritySelfExecutable(t), filepath.Join(directory, name))
+	// Do not copy the race-instrumented Go test binary: its startup alone can
+	// exceed the production preview deadline.  This deterministic POSIX tool
+	// records NUL-framed argv and implements the renderer contract directly.
+	body := "#!/bin/sh\nprintf '%s\\0' \"$PARITY_TEST_HELPER\" \"$$\" \"$@\" '' >> \"$PARITY_TEST_TOOL_LOG\"\n" +
+		"case \"$PARITY_TEST_HELPER\" in tool-fail) exit 7;; tool-hang) sleep 10 & c=$!; printf '%s\\0' tool-descendant \"$c\" '' >> \"$PARITY_TEST_TOOL_LOG\"; wait;; tool-overflow) yes overflow | head -c 8192;; tool-slow) sleep .3;; esac\n" +
+		"case \"$(basename \"$0\")\" in file) printf 'application/octet-stream\\n';; *) printf 'external preview\\n';; esac\n"
+	path := filepath.Join(directory, name)
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func readParityToolLogs(t *testing.T, path string) []parityToolLog {
@@ -399,6 +409,29 @@ func readParityToolLogs(t *testing.T, path string) []parityToolLog {
 		t.Fatal(err)
 	}
 	defer file.Close()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte{0}) {
+		frames := bytes.Split(raw, []byte{0})
+		var logs []parityToolLog
+		for len(frames) > 1 {
+			mode := string(frames[0])
+			pid, _ := strconv.Atoi(string(frames[1]))
+			frames = frames[2:]
+			var args []string
+			for len(frames) > 0 && len(frames[0]) > 0 {
+				args = append(args, string(frames[0]))
+				frames = frames[1:]
+			}
+			if len(frames) > 0 {
+				frames = frames[1:]
+			}
+			logs = append(logs, parityToolLog{Mode: mode, PID: pid, Args: args})
+		}
+		return logs
+	}
 	var logs []parityToolLog
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {

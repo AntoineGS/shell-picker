@@ -8,5 +8,5 @@
   },
   "relative": ["child-newline", "./-leading", "absolute-missing-newline"],
   "cp_order": ["current", "parent", "-leading", "child"],
-  "intentional_fixes": ["deterministic non-locale sort", "transactional state replacement", "full-record authorization", "strict callback/action grammar"]
+  "intentional_fixes": ["deterministic non-locale sort", "atomic transaction rollback semantic substitution for removed legacy failure phases", "full-record authorization", "strict callback/action grammar"]
 }
