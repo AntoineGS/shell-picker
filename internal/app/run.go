@@ -130,6 +130,8 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		err = fmt.Errorf("run picker: %w", launchErr)
 	} else if closeServerErr != nil {
 		err = closeServerErr
+	} else if cause := context.Cause(ctx); cause != nil {
+		err = cause
 	}
 
 	var outcome protocol.Outcome
@@ -149,11 +151,17 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	}
 	if cause := context.Cause(ctx); cause != nil {
 		cancelActor(cause)
+		if err == nil {
+			err = cause
+		}
 	}
 	actorErr := actor.Close()
 	actorOpen = false
 	if err == nil && actorErr != nil {
 		err = actorErr
+	}
+	if err == nil {
+		err = context.Cause(ctx)
 	}
 	if err != nil {
 		return protocol.Outcome{}, err
