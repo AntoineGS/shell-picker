@@ -47,9 +47,6 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() && info.Size() > limits.MaxArtifactBytes {
-		return ErrArtifactLimit
-	}
 	prefix, err := readPrefix(renderCtx, path, info, 64<<10)
 	if err != nil {
 		return err
@@ -67,6 +64,9 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 		if err != nil {
 			return err
 		}
+	}
+	if !info.IsDir() && info.Size() > limits.MaxArtifactBytes && !archiveCategory(category) {
+		return ErrArtifactLimit
 	}
 	nativeOnly := category == CategoryZip && preflightZip(path, limits.MaxArchiveEntries) != nil
 	if nativeOnly && !session.started && options.OnDispatch != nil {

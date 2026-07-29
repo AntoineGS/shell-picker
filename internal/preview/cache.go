@@ -2,14 +2,13 @@ package preview
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -24,69 +23,63 @@ const (
 )
 
 var ErrUnsafeCache = errors.New("preview: unsafe cache filesystem object")
+var cacheGetenv, cacheUserHome = os.Getenv, os.UserHomeDir
 
 type Cache struct {
-	root     string
-	maxBytes int64
+	root         string
+	maxBytes     int64
+	rootIdentity fileIdentity
 }
 
+type fileIdentity struct{ first, second uint64 }
+type fileRenameInformation struct {
+	ReplaceIfExists uint32
+	RootDirectory   uintptr
+	FileNameLength  uint32
+	FileName        [1]uint16
+}
+
+type cacheSource struct {
+	file     *os.File
+	identity fileIdentity
+}
+
+func (source *cacheSource) Read(data []byte) (int, error) { return source.file.Read(data) }
+func (source *cacheSource) Close() error                  { return source.file.Close() }
+func (artifact *converterArtifact) Path() string          { return artifact.path }
+
 func NewCache(root string, maximumBytes int64) (*Cache, error) {
+	var err error
 	if root == "" {
-		root = defaultCacheRoot()
+		root, err = defaultCacheRoot()
+		if err != nil {
+			return nil, err
+		}
+	}
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	rootIdentity, err := ensureCacheRoot(absolute)
+	if err != nil {
+		return nil, err
 	}
 	if maximumBytes <= 0 {
 		maximumBytes = defaultCacheBytes
 	}
-	absolute, err := filepath.Abs(root)
-	if err != nil {
-		return nil, fmt.Errorf("preview: resolve cache root: %w", err)
-	}
-	if err := ensureSafeCacheRoot(absolute); err != nil {
-		return nil, err
-	}
-	return &Cache{root: absolute, maxBytes: maximumBytes}, nil
+	return &Cache{root: absolute, maxBytes: maximumBytes, rootIdentity: rootIdentity}, nil
 }
 
-func defaultCacheRoot() string {
-	if local := os.Getenv("LOCALAPPDATA"); runtime.GOOS == "windows" && local != "" {
-		return filepath.Join(local, "shell-picker", "previews")
-	}
-	base := os.Getenv("XDG_CACHE_HOME")
+func defaultCacheRoot() (string, error) {
+	base := cacheGetenv(cacheEnvironmentVariable)
 	if base == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			base = filepath.Join(home, ".cache")
+		home, err := cacheUserHome()
+		if err != nil || home == "" {
+			return "", errors.New("preview: cache home unavailable")
 		}
+		base = filepath.Join(home, cacheHomeSuffix)
 	}
-	return filepath.Join(base, "shell-picker", "previews")
-}
-
-func ensureSafeCacheRoot(root string) error {
-	if err := inspectCacheRoot(root, true); err != nil {
-		return err
-	}
-	return inspectCacheRoot(root, false)
-}
-
-func inspectCacheRoot(root string, create bool) error {
-	volume := filepath.VolumeName(root)
-	current := volume + string(os.PathSeparator)
-	remainder := strings.TrimPrefix(root, current)
-	for _, component := range strings.Split(remainder, string(os.PathSeparator)) {
-		if component == "" {
-			continue
-		}
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if create && errors.Is(err, os.ErrNotExist) {
-			if err = os.Mkdir(current, 0o700); err == nil || errors.Is(err, os.ErrExist) {
-				info, err = os.Lstat(current)
-			}
-		}
-		if err != nil || !safeCacheObject(current, info, true) {
-			return ErrUnsafeCache
-		}
-	}
-	return nil
+	return filepath.Join(base, "shell-picker", "previews"), nil
 }
 
 func (cache *Cache) Key(candidate protocol.ResolvedCandidate, renderer string) string {
@@ -102,125 +95,40 @@ func (cache *Cache) Key(candidate protocol.ResolvedCandidate, renderer string) s
 }
 
 func (cache *Cache) Get(key string) (string, bool) {
-	if !validCacheKey(key) || inspectCacheRoot(cache.root, false) != nil {
+	if !validCacheKey(key) {
 		return "", false
 	}
-	path := filepath.Join(cache.root, key)
-	if _, err := validateCacheArtifact(path); err != nil {
+	source, err := openCacheSource(cache, key)
+	if errors.Is(err, os.ErrNotExist) {
 		return "", false
 	}
-	if err := refreshCacheTime(path); err != nil {
+	if err != nil {
 		return "", false
 	}
-	if _, err := validateCacheArtifact(path); err != nil {
-		return "", false
-	}
-	return path, true
+	defer source.Close()
+	err = source.Validate()
+	return filepath.Join(cache.root, key), err == nil
 }
 
-func (cache *Cache) Put(key string, source io.Reader) (path string, resultErr error) {
-	if !validCacheKey(key) || inspectCacheRoot(cache.root, false) != nil {
+func (cache *Cache) Put(key string, source io.Reader) (string, error) {
+	if !validCacheKey(key) {
 		return "", ErrUnsafeCache
 	}
-	temp, err := os.CreateTemp(cache.root, cacheTempPrefix)
-	if err != nil {
-		return "", fmt.Errorf("preview: create cache temporary: %w", err)
-	}
-	tempPath := temp.Name()
-	defer func() { _ = os.Remove(tempPath) }()
-	written, copyErr := io.Copy(temp, io.LimitReader(source, maxCachedArtifactBytes+1))
-	if copyErr == nil && written > maxCachedArtifactBytes {
-		copyErr = ErrArtifactLimit
-	}
-	if copyErr == nil {
-		copyErr = temp.Sync()
-	}
-	closeErr := temp.Close()
-	if copyErr != nil {
-		return "", copyErr
-	}
-	if closeErr != nil {
-		return "", closeErr
-	}
-	if _, err := validateCacheArtifact(tempPath); err != nil {
+	if err := cachePut(cache, key, source); err != nil {
 		return "", err
 	}
-	target := filepath.Join(cache.root, key)
-	if _, err := publishNoReplace(tempPath, target); err != nil {
-		return "", err
-	}
-	if _, err := validateCacheArtifact(target); err != nil {
-		return "", ErrUnsafeCache
-	}
-	if err := cache.Prune(); err != nil {
-		return "", err
-	}
-	return target, nil
+	_ = cachePrune(cache)
+	return filepath.Join(cache.root, key), nil
 }
 
-func validateCacheArtifact(path string) (os.FileInfo, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !safeCacheObject(path, info, false) {
-		return nil, ErrUnsafeCache
-	}
-	if info.Size() > maxCachedArtifactBytes {
-		return nil, ErrArtifactLimit
-	}
-	return info, nil
-}
-
-func (cache *Cache) Prune() error {
-	if err := inspectCacheRoot(cache.root, false); err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(cache.root)
-	if err != nil {
-		return err
-	}
-	type artifact struct {
-		path  string
-		size  int64
-		mtime time.Time
-	}
-	artifacts := make([]artifact, 0, len(entries))
-	var total int64
-	for _, entry := range entries {
-		if !validCacheKey(entry.Name()) {
-			continue
-		}
-		path := filepath.Join(cache.root, entry.Name())
-		info, err := os.Lstat(path)
-		if err != nil || !safeCacheObject(path, info, false) || info.Size() > maxCachedArtifactBytes {
-			continue
-		}
-		total += info.Size()
-		artifacts = append(artifacts, artifact{path: path, size: info.Size(), mtime: info.ModTime()})
-	}
-	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].mtime.Before(artifacts[j].mtime) })
-	for _, item := range artifacts {
-		if total <= cache.maxBytes {
-			break
-		}
-		if err := removeSafeCacheArtifact(item.path); err == nil || errors.Is(err, os.ErrNotExist) {
-			total -= item.size
-		}
-	}
-	return nil
-}
+func (cache *Cache) Prune() error { return cachePrune(cache) }
 
 func validCacheKey(key string) bool {
 	if len(key) != 64 {
 		return false
 	}
-	for _, value := range key {
-		if value < '0' || value > '9' && (value < 'a' || value > 'f') {
-			return false
-		}
-	}
-	return true
+	_, err := hex.DecodeString(key)
+	return err == nil && key == strings.ToLower(key)
 }
 
 type richConverter struct{ identity, tool, suffix string }
@@ -252,37 +160,21 @@ func renderCachedArtifact(ctx context.Context, candidate protocol.ResolvedCandid
 		}
 	}
 	key := cache.Key(candidate, converter.identity)
-	if artifact, hit := cache.Get(key); hit {
-		staged, cleanup, err := stageCacheArtifact(cache, artifact)
-		if err != nil {
-			return false, true, nil
-		}
-		session.cleanup = cleanup
-		defer func() { cleanup(); session.cleanup = nil }()
-		rendered, err := renderExternal(ctx, staged, CategoryImage, options, stdout, stderr, session)
-		return rendered, true, err
+	if _, hit := cache.Get(key); hit {
+		return renderStagedCache(ctx, cache, key, options, stdout, stderr, session)
 	}
 	executable := lookupTool(converter.tool, options.Environment)
 	if executable == "" {
 		return false, false, nil
 	}
-	directory, err := os.MkdirTemp(cache.root, cacheTempPrefix)
+	temp, err := newConverterArtifact(cache, converter.suffix)
 	if err != nil {
 		return false, false, nil
 	}
-	cleanup := func() { _ = os.RemoveAll(directory) }
-	session.cleanup = cleanup
-	defer func() { cleanup(); session.cleanup = nil }()
-	artifact := filepath.Join(directory, "artifact"+converter.suffix)
-	file, err := os.OpenFile(artifact, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return false, false, nil
-	}
-	if err = file.Close(); err != nil {
-		return false, false, nil
-	}
-	arguments := richConverterArguments(category, string(candidate.Path), artifact)
-	child, err := options.Runner.Start(ctx, externalProcessSpec(executable, arguments, options.Environment, stdout, stderr))
+	session.cleanup = temp.Cleanup
+	defer func() { temp.Cleanup(); session.cleanup = nil }()
+	child, err := options.Runner.Start(ctx, externalProcessSpec(executable,
+		richConverterArguments(category, string(candidate.Path), temp.Path()), options.Environment, stdout, stderr))
 	if err != nil {
 		return false, false, nil
 	}
@@ -294,26 +186,9 @@ func renderCachedArtifact(ctx context.Context, candidate protocol.ResolvedCandid
 	go func() { wait <- child.Wait() }()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	var waitErr error
-	for waitErr == nil {
-		select {
-		case waitErr = <-wait:
-			if waitErr == nil {
-				waitErr = io.EOF
-			}
-		case <-ticker.C:
-			if info, statErr := os.Lstat(artifact); statErr == nil && info.Size() > maxCachedArtifactBytes {
-				_ = os.RemoveAll(directory)
-				if session.tree != nil {
-					_ = session.tree.KillTree()
-				}
-				<-wait
-				return false, false, session.terminal(ErrArtifactLimit)
-			}
-		}
-	}
-	if errors.Is(waitErr, io.EOF) {
-		waitErr = nil
+	waitErr, terminalErr := waitConverter(wait, ticker.C, temp, session)
+	if terminalErr != nil {
+		return false, false, terminalErr
 	}
 	if retainErr != nil {
 		return false, false, session.terminal(retainErr)
@@ -321,17 +196,13 @@ func renderCachedArtifact(ctx context.Context, candidate protocol.ResolvedCandid
 	if resourceErr := resourceFailure(ctx, stdout.budget, waitErr); resourceErr != nil {
 		return false, false, session.terminal(resourceErr)
 	}
-	info, validationErr := validateCacheArtifact(artifact)
-	if errors.Is(validationErr, os.ErrNotExist) {
+	source, size, err := temp.OpenAccepted()
+	if errors.Is(err, os.ErrNotExist) || err == nil && size == 0 {
+		if source != nil {
+			_ = source.Close()
+		}
 		return false, false, nil
 	}
-	if validationErr != nil {
-		return false, false, session.terminal(validationErr)
-	}
-	if info.Size() == 0 {
-		return false, false, nil
-	}
-	source, err := openSafeCacheArtifact(artifact)
 	if err != nil {
 		return false, false, session.terminal(err)
 	}
@@ -340,6 +211,135 @@ func renderCachedArtifact(ctx context.Context, candidate protocol.ResolvedCandid
 	if putErr != nil || closeErr != nil {
 		return false, false, session.terminal(errors.Join(putErr, closeErr))
 	}
-	rendered, err := renderExternal(ctx, artifact, CategoryImage, options, stdout, stderr, session)
+	return renderStagedCache(ctx, cache, key, options, stdout, stderr, session)
+}
+
+func waitConverter(wait <-chan error, ticks <-chan time.Time, temp *converterArtifact, session *renderSession) (error, error) {
+	for {
+		select {
+		case err := <-wait:
+			return err, nil
+		case <-ticks:
+			if size, err := temp.Size(); err == nil && size > maxCachedArtifactBytes {
+				temp.Cleanup()
+				if session.tree != nil {
+					_ = session.tree.KillTree()
+				}
+				<-wait
+				return nil, session.terminal(ErrArtifactLimit)
+			}
+		}
+	}
+}
+
+func renderStagedCache(ctx context.Context, cache *Cache, key string, options Options, stdout *budgetWriter,
+	stderr io.Writer, session *renderSession) (bool, bool, error) {
+	staged, cleanup, err := stageCacheArtifact(cache, key)
+	if err != nil {
+		return false, true, nil
+	}
+	session.cleanup = cleanup
+	defer func() { cleanup(); session.cleanup = nil }()
+	rendered, err := renderExternal(ctx, staged, CategoryImage, options, stdout, stderr, session)
 	return rendered, true, err
+}
+
+type syncWriteCloser interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
+func stageCacheArtifact(cache *Cache, key string) (string, func(), error) {
+	source, err := openCacheSource(cache, key)
+	if err != nil {
+		return "", nil, err
+	}
+	defer source.Close()
+	stage, err := newConverterArtifact(cache, ".jpg")
+	if err != nil {
+		return "", nil, err
+	}
+	destination, err := stage.OpenWritable()
+	if err == nil {
+		var written int64
+		written, err = io.Copy(destination, io.LimitReader(source, maxCachedArtifactBytes+1))
+		if err == nil && written > maxCachedArtifactBytes {
+			err = ErrArtifactLimit
+		}
+	}
+	if err == nil {
+		err = destination.Sync()
+	}
+	if destination != nil {
+		err = errors.Join(err, destination.Close())
+	}
+	if err == nil {
+		err = source.Validate()
+	}
+	if err == nil {
+		err = stage.Validate()
+	}
+	if err != nil {
+		stage.Cleanup()
+		return "", nil, err
+	}
+	return stage.Path(), stage.Cleanup, nil
+}
+
+func randomCacheName(prefix string) (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return prefix + hex.EncodeToString(raw[:]), nil
+}
+
+func mapIdentity(published bool, identity fileIdentity) fileIdentity {
+	if published {
+		return identity
+	}
+	return fileIdentity{}
+}
+
+type cacheSyncWriter interface {
+	io.Writer
+	Sync() error
+}
+
+func copyCacheData(destination cacheSyncWriter, source io.Reader) error {
+	written, err := io.Copy(destination, io.LimitReader(source, maxCachedArtifactBytes+1))
+	if err == nil && written > maxCachedArtifactBytes {
+		err = ErrArtifactLimit
+	}
+	if err == nil {
+		err = destination.Sync()
+	}
+	return err
+}
+
+type pruneItem struct {
+	name     string
+	size     int64
+	modified time.Time
+	identity fileIdentity
+}
+
+func pruneOldest(maximum, total int64, items []pruneItem, remove func(pruneItem) bool) {
+	sort.Slice(items, func(i, j int) bool { return items[i].modified.Before(items[j].modified) })
+	for _, item := range items {
+		if total <= maximum {
+			break
+		}
+		if remove(item) {
+			total -= item.size
+		}
+	}
+}
+
+func saturatedAdd(total, size int64) int64 {
+	if size > int64(^uint64(0)>>1)-total {
+		return int64(^uint64(0) >> 1)
+	}
+	return total + size
 }

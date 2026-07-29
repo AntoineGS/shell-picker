@@ -18,6 +18,10 @@ type lineLimitWriter struct {
 	remaining int
 }
 
+func archiveCategory(category Category) bool {
+	return category == CategoryZip || category == CategoryGzip || category == CategoryXz || category == CategoryTar || category == CategoryBzip
+}
+
 func renderArchiveOrFallback(ctx context.Context, category Category, info os.FileInfo, output io.Writer, render func() error) error {
 	err := render()
 	if err == nil {

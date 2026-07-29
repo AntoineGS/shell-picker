@@ -89,6 +89,39 @@ func TestOptionalArchiveListingStopsAtOneHundredLines(t *testing.T) {
 	}
 }
 
+func TestExternalArchiveAuthorityMayReadSourceLargerThanInternalLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("direct shell process fixture is Unix-specific")
+	}
+	tools := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tools, "gzip"), []byte("#!/bin/sh\nprintf 'valid external listing\\n'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "large.gz")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("\x1f\x8b\x08\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(DefaultLimits.MaxArtifactBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	options := testOptions(&output)
+	options.Environment = []string{"PATH=" + tools}
+	if err := Render(context.Background(), resolved(path), options); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "valid external listing\n" {
+		t.Fatalf("output=%q", output.String())
+	}
+}
+
 func TestNativeZipAndTarListingsContainSizesWithinOneHundredLines(t *testing.T) {
 	root := t.TempDir()
 	zipPath, tarPath := filepath.Join(root, "sample.zip"), filepath.Join(root, "sample.tar")

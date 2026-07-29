@@ -51,7 +51,15 @@ func TestCacheKeyUsesExactIdentityFields(t *testing.T) {
 		t.Fatalf("key=%q want=%x", keys[0], want)
 	}
 }
-
+func TestNewCacheDefaultFailsWithoutCacheVariableOrHome(t *testing.T) {
+	oldGetenv, oldHome := cacheGetenv, cacheUserHome
+	cacheGetenv = func(string) string { return "" }
+	cacheUserHome = func() (string, error) { return "", errors.New("missing") }
+	t.Cleanup(func() { cacheGetenv, cacheUserHome = oldGetenv, oldHome })
+	if _, err := NewCache("", 1); err == nil {
+		t.Fatal("NewCache accepted missing default root")
+	}
+}
 func TestCachePutIsAtomicAndPrunesOldest(t *testing.T) {
 	cache := mustNewCache(t, t.TempDir(), 12)
 	old := strings.Repeat("a", 64)
@@ -74,8 +82,11 @@ func TestCachePutIsAtomicAndPrunesOldest(t *testing.T) {
 		t.Fatalf("data=%q err=%v", data, err)
 	}
 	assertNoCacheTemps(t, cache.root)
+	maximum := int64(^uint64(0) >> 1)
+	if total := saturatedAdd(maximum-1, 8); total != maximum {
+		t.Fatalf("saturated total=%d", total)
+	}
 }
-
 func TestCacheRejectsUnsafeRootEntryAndOversizedArtifact(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		realRoot := t.TempDir()
@@ -103,113 +114,118 @@ func TestCacheRejectsUnsafeRootEntryAndOversizedArtifact(t *testing.T) {
 	}
 	assertNoCacheTemps(t, cache.root)
 }
-
-func TestCacheTwoWritersPublishSameKeyWithoutOverwrite(t *testing.T) {
-	cache := mustNewCache(t, t.TempDir(), 512<<20)
-	key := strings.Repeat("c", 64)
-	temps := []string{makeCacheTemp(t, cache, "first"), makeCacheTemp(t, cache, "second")}
-	start := make(chan struct{})
-	results := make(chan bool, 2)
-	errorsSeen := make(chan error, 2)
-	var ready sync.WaitGroup
-	ready.Add(2)
-	for _, temp := range temps {
-		go func(path string) {
-			ready.Done()
-			<-start
-			published, err := publishNoReplace(path, filepath.Join(cache.root, key))
-			results <- published
-			errorsSeen <- err
-		}(temp)
+func TestCachePutAnchorsRootAcrossSwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink privilege and Unix race fixture")
 	}
-	ready.Wait()
-	close(start)
-	publishers := 0
-	for range temps {
-		if <-results {
-			publishers++
+	parent, outside := t.TempDir(), t.TempDir()
+	root := filepath.Join(parent, "cache")
+	cache := mustNewCache(t, root, 512<<20)
+	reader := newBarrierReader("safe")
+	done := make(chan error, 1)
+	key := strings.Repeat("c", 64)
+	go func() { _, err := cache.Put(key, reader); done <- err }()
+	<-reader.started
+	oldRoot := root + "-old"
+	mustRenameAndSymlink(t, root, oldRoot, outside)
+	close(reader.proceed)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(oldRoot, key))
+	entries, outsideErr := os.ReadDir(outside)
+	if err != nil || string(data) != "safe" || outsideErr != nil || len(entries) != 0 {
+		t.Fatalf("winner=%q err=%v outside=%v outsideErr=%v", data, err, entries, outsideErr)
+	}
+}
+func TestCacheOperationsRejectOrdinaryDirectoryRootReplacement(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "cache")
+	cache := mustNewCache(t, root, 512<<20)
+	if err := errors.Join(os.Rename(root, root+"-original"), os.Mkdir(root, 0o700)); err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("9", 64)
+	if _, err := cache.Put(key, strings.NewReader("unsafe")); !errors.Is(err, ErrUnsafeCache) {
+		t.Fatalf("Put error=%v", err)
+	}
+	if _, ok := cache.Get(key); ok {
+		t.Fatal("Get accepted replacement cache root")
+	}
+	if err := cache.Prune(); !errors.Is(err, ErrUnsafeCache) {
+		t.Fatalf("Prune error=%v", err)
+	}
+	if entries, err := os.ReadDir(root); err != nil || len(entries) != 0 {
+		t.Fatalf("replacement entries=%v err=%v", entries, err)
+	}
+}
+func TestCachePutRejectsHardlinkedTempAndWinner(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	key := strings.Repeat("d", 64)
+	attacker := filepath.Join(t.TempDir(), "attacker")
+	if err := os.WriteFile(attacker, []byte("bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(attacker, filepath.Join(cache.root, key)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cache.Put(key, strings.NewReader("safe")); !errors.Is(err, ErrUnsafeCache) {
+		t.Fatalf("winner err=%v", err)
+	}
+	symlinkKey := strings.Repeat("b", 64)
+	if err := os.Symlink(attacker, filepath.Join(cache.root, symlinkKey)); err == nil {
+		if _, err := cache.Put(symlinkKey, strings.NewReader("safe")); !errors.Is(err, ErrUnsafeCache) {
+			t.Fatalf("symlink winner err=%v", err)
 		}
-		if err := <-errorsSeen; err != nil {
+	} else if runtime.GOOS != "windows" {
+		t.Fatal(err)
+	}
+	key = strings.Repeat("e", 64)
+	reader := newBarrierReader("safe")
+	done := make(chan error, 1)
+	go func() { _, err := cache.Put(key, reader); done <- err }()
+	<-reader.started
+	temp := soleCacheTemp(t, cache.root)
+	if err := os.Link(temp, filepath.Join(cache.root, "attacker-link")); err != nil {
+		t.Fatal(err)
+	}
+	close(reader.proceed)
+	if err := <-done; !errors.Is(err, ErrUnsafeCache) {
+		t.Fatalf("temp err=%v", err)
+	}
+}
+func TestCacheConcurrentProductionPutHasImmutableSingleLinkWinner(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	key := strings.Repeat("f", 64)
+	readers := []*barrierReader{newBarrierReader("first"), newBarrierReader("second")}
+	errs := make(chan error, 2)
+	for _, reader := range readers {
+		go func(r io.Reader) { _, err := cache.Put(key, r); errs <- err }(reader)
+	}
+	for _, reader := range readers {
+		<-reader.started
+	}
+	for _, reader := range readers {
+		close(reader.proceed)
+	}
+	for range readers {
+		if err := <-errs; err != nil {
 			t.Fatal(err)
 		}
-	}
-	if publishers != 1 {
-		t.Fatalf("publishers=%d", publishers)
 	}
 	data, err := os.ReadFile(filepath.Join(cache.root, key))
 	if err != nil || string(data) != "first" && string(data) != "second" {
 		t.Fatalf("winner=%q err=%v", data, err)
 	}
-	assertNoCacheTemps(t, cache.root)
-}
-
-func TestCacheLoserRejectsSymlinkPublicationAttack(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation requires privileges on Windows")
-	}
-	cache := mustNewCache(t, t.TempDir(), 512<<20)
-	key := strings.Repeat("d", 64)
-	target := filepath.Join(cache.root, key)
-	if err := os.Symlink(filepath.Join(cache.root, "attacker"), target); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cache.Put(key, strings.NewReader("safe")); !errors.Is(err, ErrUnsafeCache) {
-		t.Fatalf("attack err=%v", err)
-	}
-	info, err := os.Lstat(target)
-	if err != nil || info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("target changed: mode=%v err=%v", info.Mode(), err)
+	probe := filepath.Join(cache.root, "winner-hardlink")
+	if err := os.Link(filepath.Join(cache.root, key), probe); err == nil {
+		if _, ok := cache.Get(key); ok {
+			t.Fatal("Get accepted winner after link count changed")
+		}
+		_ = os.Remove(probe)
 	}
 	assertNoCacheTemps(t, cache.root)
 }
-
-func TestCachedArtifactStagingDoesNotFollowSwappedEntry(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation requires privileges on Windows")
-	}
-	cache := mustNewCache(t, t.TempDir(), 512<<20)
-	key := strings.Repeat("e", 64)
-	path := mustPut(t, cache, key, "safe")
-	attacker := filepath.Join(t.TempDir(), "attacker")
-	if err := os.WriteFile(attacker, []byte("unsafe"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(attacker, path); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := stageCacheArtifact(cache, path); !errors.Is(err, ErrUnsafeCache) {
-		t.Fatalf("stage err=%v", err)
-	}
-}
-
-func TestCacheOperationsRejectRootSwappedToSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation requires privileges on Windows")
-	}
-	parent, outside := t.TempDir(), t.TempDir()
-	root := filepath.Join(parent, "cache")
-	cache := mustNewCache(t, root, 512<<20)
-	if err := os.Rename(root, root+"-old"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, root); err != nil {
-		t.Fatal(err)
-	}
-	key := strings.Repeat("f", 64)
-	if _, err := cache.Put(key, strings.NewReader("unsafe")); !errors.Is(err, ErrUnsafeCache) {
-		t.Fatalf("put err=%v", err)
-	}
-	if _, ok := cache.Get(key); ok {
-		t.Fatal("Get followed swapped cache root")
-	}
-	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
-		t.Fatalf("outside entries=%v err=%v", entries, err)
-	}
-}
-
 func TestPDFConverterPublishesCacheAndCacheHitSkipsConverter(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("direct shell process fixture is Unix-specific")
@@ -263,6 +279,14 @@ func TestPDFConverterPublishesCacheAndCacheHitSkipsConverter(t *testing.T) {
 			if len(lines) != 4 || lines[0] != "-singlefile" || lines[1] != "-jpeg" || lines[2] != path || !filepath.IsAbs(lines[3]) {
 				t.Fatalf("converter arguments=%q", lines)
 			}
+			renderCall, err := os.ReadFile(rendererLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			renderArguments := strings.Split(strings.TrimSpace(string(renderCall)), "\n")
+			if renderArguments[len(renderArguments)-1] == lines[3]+".jpg" {
+				t.Fatalf("renderer received original converter artifact: %q", renderArguments)
+			}
 			if err := os.Remove(filepath.Join(tools, "pdftoppm")); err != nil {
 				t.Fatal(err)
 			}
@@ -270,7 +294,6 @@ func TestPDFConverterPublishesCacheAndCacheHitSkipsConverter(t *testing.T) {
 	}
 	assertNoCacheTemps(t, cache.root)
 }
-
 func TestConverterFinalValidationRejectsOversizedArtifact(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("direct shell process fixture is Unix-specific")
@@ -304,7 +327,6 @@ func TestConverterFinalValidationRejectsOversizedArtifact(t *testing.T) {
 	}
 	assertNoCacheTemps(t, cache.root)
 }
-
 func TestVideoAndAudioConvertersUseExactArguments(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("direct shell process fixture is Unix-specific")
@@ -350,7 +372,6 @@ func TestVideoAndAudioConvertersUseExactArguments(t *testing.T) {
 		})
 	}
 }
-
 func TestAudioRichChainNeverStartsMoreThanThreeChildren(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("direct shell process fixture is Unix-specific")
@@ -381,7 +402,6 @@ func TestAudioRichChainNeverStartsMoreThanThreeChildren(t *testing.T) {
 		t.Fatalf("starts=%d output=%q", starts, output.String())
 	}
 }
-
 func TestMissingConverterArtifactFallsThroughAfterWait(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("direct shell process fixture is Unix-specific")
@@ -410,12 +430,46 @@ func TestMissingConverterArtifactFallsThroughAfterWait(t *testing.T) {
 type zeroReader struct{}
 
 func (zeroReader) Read(data []byte) (int, error) {
-	for index := range data {
-		data[index] = 0
-	}
+	clear(data)
 	return len(data), nil
 }
 
+type barrierReader struct {
+	reader           *strings.Reader
+	started, proceed chan struct{}
+	once             sync.Once
+}
+
+func newBarrierReader(value string) *barrierReader {
+	return &barrierReader{reader: strings.NewReader(value), started: make(chan struct{}), proceed: make(chan struct{})}
+}
+func (reader *barrierReader) Read(data []byte) (int, error) {
+	reader.once.Do(func() { close(reader.started); <-reader.proceed })
+	return reader.reader.Read(data)
+}
+func mustRenameAndSymlink(t *testing.T, root, oldRoot, outside string) {
+	t.Helper()
+	if err := os.Rename(root, oldRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+}
+func soleCacheTemp(t *testing.T, root string) string {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), cacheTempPrefix) {
+			return filepath.Join(root, entry.Name())
+		}
+	}
+	t.Fatal("cache temp not found")
+	return ""
+}
 func mustNewCache(t *testing.T, root string, maximum int64) *Cache {
 	t.Helper()
 	cache, err := NewCache(root, maximum)
@@ -424,7 +478,6 @@ func mustNewCache(t *testing.T, root string, maximum int64) *Cache {
 	}
 	return cache
 }
-
 func mustPut(t *testing.T, cache *Cache, key, value string) string {
 	t.Helper()
 	path, err := cache.Put(key, strings.NewReader(value))
@@ -433,25 +486,6 @@ func mustPut(t *testing.T, cache *Cache, key, value string) string {
 	}
 	return path
 }
-
-func makeCacheTemp(t *testing.T, cache *Cache, value string) string {
-	t.Helper()
-	file, err := os.CreateTemp(cache.root, cacheTempPrefix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Chmod(0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.WriteString(value); err != nil {
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return file.Name()
-}
-
 func assertNoCacheTemps(t *testing.T, root string) {
 	t.Helper()
 	entries, err := os.ReadDir(root)
