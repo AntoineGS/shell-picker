@@ -64,7 +64,10 @@ func exerciseParityZshAdapter(t *testing.T, picker protocol.Picker) zshParityEvi
 	callLog := filepath.Join(root, "calls")
 	statePath := filepath.Join(root, "state")
 	fake := `emulate -LR zsh
-print -rn -- "$1"$'\0' >> "$SHELL_PICKER_PARITY_CALLS"
+for argument in "$@"; do
+  print -rn -- "$argument"$'\0' >> "$SHELL_PICKER_PARITY_CALLS"
+done
+print -rn -- $'\0' >> "$SHELL_PICKER_PARITY_CALLS"
 if [[ $1 == cd ]]; then
   print -rn -- "$SHELL_PICKER_PARITY_TARGET"$'\0'
 else
@@ -137,9 +140,32 @@ emit() { print -rn -- "$1"$'\0' }
 	if err != nil {
 		t.Fatal(err)
 	}
-	return zshParityEvidence{
+	evidence := zshParityEvidence{
 		Started: state[0] == "start", Ended: state[4] == "end", BufferNonblank: state[2] != "",
-		NoTrailingSpace: state[3] == "1", OrderedPaths: strings.Contains(state[2], "target"),
-		InvocationCount: len(calls), AcceptCount: accepted,
+		NoTrailingSpace: state[3] == "1", OrderedPaths: strings.Contains(state[2], "target") && strings.Index(state[2], "target") < strings.Index(state[2], "second"),
+		InvocationCount: 1, AcceptCount: accepted,
 	}
+	// The fake records every argv field, terminated by an empty frame.  A widget
+	// invocation must use the public adapter's exact encoded-safe contract.
+	if !equalZshArgs(calls, []string{string(picker), "--cwd", root, "--home", root, "--output", "nul"}) {
+		t.Fatalf("Zsh picker argv=%q", calls)
+	}
+	if picker == protocol.PickerCD && state[2] != "builtin cd -- "+zshQuote(target) {
+		t.Fatalf("Zsh cd buffer=%q", state[2])
+	}
+	return evidence
 }
+
+func equalZshArgs(frames, want []string) bool {
+	if len(frames) != len(want)+1 || frames[len(frames)-1] != "" {
+		return false
+	}
+	for i := range want {
+		if frames[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func zshQuote(value string) string { return strings.ReplaceAll(value, " ", "\\ ") }

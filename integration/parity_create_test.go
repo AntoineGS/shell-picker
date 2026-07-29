@@ -20,6 +20,8 @@ type createGolden struct {
 	ExistingQuery string   `json:"existing_query"`
 	Invalid       []string `json:"invalid_queries"`
 	ErrorPrefix   string   `json:"error_prefix"`
+	ValidPrompt   string   `json:"valid_prompt"`
+	InvalidPrompt string   `json:"invalid_prompt"`
 }
 
 func runCreateSemantic(t *testing.T, row parityRow) {
@@ -89,21 +91,20 @@ func runCreateSemantic(t *testing.T, row parityRow) {
 		local := len(records) >= 2 && records[0].Kind == protocol.KindLocal && bytes.Equal(records[0].Path, result.Snapshot.State().Location.Path)
 		assertParityText(t, row, map[bool]string{true: "local"}[local])
 	case "prompt":
+		actual := result.Snapshot.State().Prompt
+		location := pathutil.PromptDisplay(location)
 		if valid {
-			prefix := "[N] " + protocol.EscapeDisplay(query)
-			matched := strings.HasPrefix(result.Snapshot.State().Prompt, "[N] ") && strings.Contains(result.Snapshot.State().Prompt, string(query))
-			got := ""
-			if matched {
-				got = prefix + string(filepath.Separator) + " "
+			want := strings.ReplaceAll(strings.ReplaceAll(golden.ValidPrompt, "{location}", location), "{query}", protocol.EscapeDisplay(query))
+			if actual != want {
+				t.Fatalf("create %s prompt=%q, want %q", row.Case, actual, want)
 			}
-			assertParityText(t, row, got)
+			assertParityText(t, row, row.ExpectedText)
 		} else {
-			matched := strings.HasPrefix(result.Snapshot.State().Prompt, golden.ErrorPrefix+" ")
-			got := ""
-			if matched {
-				got = "[A!] current-directory/ "
+			want := strings.ReplaceAll(golden.InvalidPrompt, "{location}", location)
+			if actual != want {
+				t.Fatalf("create %s prompt=%q, want %q", row.Case, actual, want)
 			}
-			assertParityText(t, row, got)
+			assertParityText(t, row, row.ExpectedText)
 		}
 	case "normal-keymap-activated":
 		assertParityText(t, row, boolText(result.Effect.Rebind == protocol.ModeNormal))

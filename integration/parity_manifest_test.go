@@ -165,7 +165,7 @@ func TestParityManifestCoverage(t *testing.T) {
 		"operations.json":    "bbe8213644a4203a1b6544680a55d4ae9d790e686db265e5e4978f09d1c36b76",
 		"slash.json":         "a4353f35d905f7d173408edb7ddd769ef71559d5e3252a195fbe8432900c23eb",
 		"modal.json":         "9559da329e3417cc260b347c93508b35d0a817d393768683ae315ec1bf136699",
-		"create.json":        "78e47c42a84d2ca34377516efbde9f747dbeba21e5a83409f6612dc297b238de",
+		"create.json":        "33a2e4d0f67637d2ab7d38b96861794e43ae56d66eaea3bc5d8938d6148df4d2",
 		"preview.json":       "fc8586501996c635152c07f3138794ec24398ec0a042bd63883e0ef010894921",
 		"zsh-adapter.json":   "a396d1dbfc358ad7defa890dadcc53b17765cdb996dc643c3d2daf5ad2c5c68c",
 		"windows-paths.json": "dcc60dfa9f10daae4e15032488df044e8cc1ef96faafff6f520769743added43",

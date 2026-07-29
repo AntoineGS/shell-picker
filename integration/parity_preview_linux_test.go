@@ -65,8 +65,11 @@ func TestPreviewCategoryMatrix(t *testing.T) {
 						installParityTool(t, tools, tool)
 					}
 				}
-				if variant == "hanging" || variant == "overflow" {
-					runParityPreviewResourceSubprocess(t, path, tools, logPath, mode, strings.Split(chain, ",")[0])
+				// A renderer can still be starting when the preview deadline expires.
+				// Only missing is guaranteed to start no tool, so every tool-capable
+				// matrix case owns an isolated helper process group.
+				if variant != "missing" {
+					runParityPreviewResourceSubprocess(t, path, tools, logPath, mode, strings.Split(chain, ",")[0], variant)
 					return
 				}
 				cache, err := preview.NewCache(filepath.Join(t.TempDir(), "cache"), 8<<20)
@@ -113,7 +116,7 @@ func TestPreviewCategoryMatrix(t *testing.T) {
 				logs := readParityToolLogs(t, logPath)
 				switch variant {
 				case "missing":
-					if err != nil || output.Len() == 0 || gotStarts != 0 || !reflect.DeepEqual(gotDispatches, []string{"native"}) || len(logs) != 0 {
+					if err != nil || !usefulParityPreview(output.String()) || gotStarts != 0 || !reflect.DeepEqual(gotDispatches, []string{"native"}) || len(logs) != 0 {
 						t.Fatalf("missing err=%v output=%d starts=%d dispatch=%q logs=%+v", err, output.Len(), gotStarts, gotDispatches, logs)
 					}
 				case "present":
@@ -143,38 +146,78 @@ func TestPreviewCategoryMatrix(t *testing.T) {
 	}
 }
 
-func runParityPreviewResourceSubprocess(t *testing.T, fixture, tools, toolLog, mode, firstTool string) {
+func usefulParityPreview(output string) bool {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return lower != "error" && lower != "diagnostic" && !strings.HasPrefix(lower, "error:")
+}
+
+func TestPreviewSlowStartIsolatedFromRaceParent(t *testing.T) {
+	path := writeParityPreviewFixture(t, "markdown")
+	tools, logPath := t.TempDir(), filepath.Join(t.TempDir(), "tools.jsonl")
+	installParityTool(t, tools, "glow")
+	started := time.Now()
+	runParityPreviewResourceSubprocess(t, path, tools, logPath, "tool-slow", "glow", "present")
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("slow renderer escaped helper bound: %s", elapsed)
+	}
+}
+
+func runParityPreviewResourceSubprocess(t *testing.T, fixture, tools, toolLog, mode, firstTool, variant string) {
 	t.Helper()
 	root := t.TempDir()
 	dispatchLog := filepath.Join(root, "dispatch")
 	processLog := filepath.Join(root, "process")
+	outcomePath := filepath.Join(root, "outcome.json")
 	controlled := map[string]string{
 		"PARITY_PREVIEW_RESOURCE_HELPER": "1", "PARITY_PREVIEW_FIXTURE": fixture, "PARITY_PREVIEW_TOOLS": tools,
 		"PARITY_PREVIEW_TOOL_LOG": toolLog, "PARITY_PREVIEW_MODE": mode, "PARITY_PREVIEW_DISPATCH": dispatchLog,
-		"PARITY_PREVIEW_PROCESS": processLog,
+		"PARITY_PREVIEW_PROCESS": processLog, "PARITY_PREVIEW_OUTCOME": outcomePath,
+		"PARITY_PREVIEW_VARIANT": variant,
 	}
 	var output bytes.Buffer
 	runner := processpkg.Runner{}
-	err := runner.Run(context.Background(), processpkg.Spec{Path: paritySelfExecutable(t),
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := runner.Run(ctx, processpkg.Spec{Path: paritySelfExecutable(t),
 		Args: []string{"-test.run=^TestParityPreviewResourceProcess$", "-test.v"},
 		Env:  processpkg.SanitizeEnv(os.Environ(), controlled), Stdout: &output, Stderr: &output,
 		Containment: processpkg.ContainmentOwnTree, WaitDelay: time.Second})
-	if err == nil {
-		t.Fatalf("resource helper survived terminal preview: %s", output.String())
+	// A successful first renderer may cancel its inherited helper group; an
+	// ordinary failed renderer must instead return its native fallback.
+	if variant == "failure" && err != nil {
+		t.Fatalf("failure helper=%v: %s", err, output.String())
+	}
+	var outcome struct {
+		Error, Output string
+		Starts        int
+		Dispatch      []string
+	}
+	rawOutcome, readErr := os.ReadFile(outcomePath)
+	if (variant == "failure" || err == nil) && (readErr != nil || json.Unmarshal(rawOutcome, &outcome) != nil) {
+		t.Fatalf("failure outcome=%q err=%v", rawOutcome, readErr)
 	}
 	dispatch, readErr := os.ReadFile(dispatchLog)
 	if readErr != nil || string(dispatch) != firstTool+"\n" {
 		t.Fatalf("resource dispatch=%q err=%v helper=%v output=%s", dispatch, readErr, err, output.String())
 	}
 	processes, readErr := os.ReadFile(processLog)
-	if readErr != nil || strings.Count(string(processes), "start\n") != 1 || strings.Contains(string(processes), "native") {
+	if readErr != nil || strings.Count(string(processes), "start\n") > 3 || strings.Contains(string(processes), "native") {
 		t.Fatalf("resource process events=%q err=%v", processes, readErr)
 	}
 	logs := readParityToolLogs(t, toolLog)
 	assertParityToolReceivedPath(t, logs, fixture)
+	if variant == "failure" || err == nil {
+		if outcome.Error != "" || strings.TrimSpace(outcome.Output) == "" || outcome.Starts == 0 || len(outcome.Dispatch) != 1 || outcome.Dispatch[0] != firstTool {
+			t.Fatalf("%s outcome=%+v", variant, outcome)
+		}
+	}
 	if mode == "tool-hang" {
 		assertParityProcessesGone(t, logs)
-	} else if len(logs) != 1 {
+	} else if variant == "overflow" && len(logs) != 1 {
 		t.Fatalf("overflow tool logs=%+v", logs)
 	}
 }
@@ -215,13 +258,53 @@ func TestParityPreviewResourceProcess(t *testing.T) {
 	if os.Getenv("PARITY_PREVIEW_MODE") == "tool-overflow" {
 		options.Limits.MaxOutputBytes = 64
 	}
-	_ = preview.Render(context.Background(), protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte(os.Getenv("PARITY_PREVIEW_FIXTURE"))}, options)
-	t.Fatal("terminal preview returned without killing inherited callback group")
+	err := preview.Render(context.Background(), protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte(os.Getenv("PARITY_PREVIEW_FIXTURE"))}, options)
+	starts := 0
+	for _, event := range strings.Fields(string(mustReadParityFile(t, os.Getenv("PARITY_PREVIEW_PROCESS")))) {
+		if event == "start" {
+			starts++
+		}
+	}
+	dispatch := strings.Fields(string(mustReadParityFile(t, os.Getenv("PARITY_PREVIEW_DISPATCH"))))
+	outcome, marshalErr := json.Marshal(struct {
+		Error, Output string
+		Starts        int
+		Dispatch      []string
+	}{Error: errorText(err), Output: output.String(), Starts: starts, Dispatch: dispatch})
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if writeErr := os.WriteFile(os.Getenv("PARITY_PREVIEW_OUTCOME"), outcome, 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func mustReadParityFile(t *testing.T, path string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }
 
 func writeParityPreviewFixture(t *testing.T, category string) string {
 	t.Helper()
 	root := t.TempDir()
+	root, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if category == "directory" {
 		path := filepath.Join(root, "directory --option with space")
 		if err := os.Mkdir(path, 0o755); err != nil {

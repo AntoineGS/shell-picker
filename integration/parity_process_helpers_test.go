@@ -27,7 +27,7 @@ func runParityHelper() int {
 	case "zoxide-malformed":
 		_, _ = io.WriteString(os.Stdout, "relative\n")
 		return 0
-	case "tool-success", "tool-fail", "tool-hang", "tool-overflow", "tool-descendant":
+	case "tool-success", "tool-fail", "tool-hang", "tool-overflow", "tool-descendant", "tool-slow":
 		logParityToolProcess(mode)
 		if mode == "tool-fail" {
 			return 7
@@ -48,6 +48,9 @@ func runParityHelper() int {
 		if mode == "tool-overflow" {
 			_, _ = os.Stdout.Write(bytes.Repeat([]byte("overflow"), 1024))
 			return 0
+		}
+		if mode == "tool-slow" {
+			time.Sleep(300 * time.Millisecond)
 		}
 		tool := filepath.Base(os.Args[0])
 		switch tool {

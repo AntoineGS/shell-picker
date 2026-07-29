@@ -119,7 +119,17 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 		wire, err := protocol.ParseRecord(first.Wire().Bytes())
 		decoded, decodeErr := protocol.DecodePath(wire.Payload)
 		assertParityText(t, row, boolText(err == nil && decodeErr == nil && bytes.Equal(decoded, first.Path)))
-	case "field-three-parsed", "payload-decoded", "nul-aware-read", "no-command-substitution-decode", "zsh-quoted-command", "exactly-one-target":
+	case "field-three-parsed":
+		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first)))
+	case "payload-decoded":
+		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first)))
+	case "nul-aware-read":
+		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first)))
+	case "no-command-substitution-decode":
+		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first)))
+	case "zsh-quoted-command":
+		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first) && evidence.BufferNonblank))
+	case "exactly-one-target":
 		valid := validateZshCDSelection(t, snapshot, first)
 		assertParityText(t, row, boolText(valid))
 	case "destination-count":
@@ -164,7 +174,31 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 		assertParityText(t, row, boolText(strings.Contains(joined, "--bind=space:toggle")))
 	case "normal-space-preserves-marks":
 		assertParityText(t, row, boolText(!strings.Contains(joined, "--bind=space:clear-multi")))
-	case "enter-key-first", "all-records-collected", "exactly-two-tabs", "full-record-count-map", "counts-keyed-by-full-record", "nested-matching-excluded", "all-records-match", "all-payloads-collected", "atomic-relative-decode", "nul-aware-relative-read", "decode-cardinality", "zsh-quote-each-path", "single-space-join":
+	case "enter-key-first":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "all-records-collected":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "exactly-two-tabs":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "full-record-count-map":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "counts-keyed-by-full-record":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "nested-matching-excluded":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "all-records-match":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "all-payloads-collected":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "atomic-relative-decode":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "nul-aware-relative-read":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "decode-cardinality":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+	case "zsh-quote-each-path":
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && evidence.OrderedPaths))
+	case "single-space-join":
 		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
 	case "restored-by-full-record":
 		goldenRecords := loadWireGolden(t, "cp-order.bin")
@@ -172,6 +206,8 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 	case "multiplicity-preserved":
 		outcome, err := session.ValidateCP(snapshot, [][]byte{first.Wire().Bytes(), first.Wire().Bytes()}, []byte(root))
 		assertParityText(t, row, boolText(err == nil && len(outcome.Paths) == 2 && bytes.Equal(outcome.Paths[0], outcome.Paths[1])))
+	case "no-trailing-space":
+		assertParityText(t, row, boolText(evidence.NoTrailingSpace))
 	case "rejected":
 		unknown := newParityRecord(protocol.KindFile, "unknown", []byte(filepath.Join(root, "unknown")))
 		_, err := session.ValidateCP(snapshot, [][]byte{unknown.Wire().Bytes()}, []byte(root))

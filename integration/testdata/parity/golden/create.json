@@ -3,5 +3,7 @@
   "existing_query": "existing-target",
   "invalid_queries": ["", "absolute", "../escape", "nested/../../escape", "existing-file"],
   "error_prefix": "[A!]",
+  "valid_prompt": "[N] {location}{query}/ ",
+  "invalid_prompt": "[A!] {location} ",
   "intentional_fixes": ["safe Add traversal/rollback", "transactional state replacement"]
 }

@@ -325,14 +325,14 @@ func runSlashSemantic(t *testing.T, row parityRow) {
 	action := parityEffectAction(t, result.Effect)
 	switch row.Check {
 	case "directory-state":
-		label := golden.EmptyQueryTarget
+		want := pathutil.Root()
 		if strings.Contains(row.Case, "exact-parent") {
-			label = golden.ExactParentTarget
+			want = pathutil.Filesystem([]byte(root))
 		}
-		if strings.Contains(row.Case, "parent-at-root") {
-			label = platformParityRootLabel()
+		if !sameParityLocation(result.Snapshot.State().Location, want) {
+			t.Fatalf("slash %s location=%+v, want %+v", row.Case, result.Snapshot.State().Location, want)
 		}
-		assertParityText(t, row, label)
+		assertParityText(t, row, row.ExpectedText)
 	case "actions-contain-reload-sync":
 		assertParityText(t, row, boolText(strings.Contains(action, "reload-sync(")))
 	case "actions-contain-clear-query":
@@ -352,6 +352,10 @@ func runSlashSemantic(t *testing.T, row parityRow) {
 	default:
 		t.Fatalf("unhandled slash check %q", row.Check)
 	}
+}
+
+func sameParityLocation(got, want pathutil.Location) bool {
+	return got.Kind == want.Kind && bytes.Equal(got.Path, want.Path)
 }
 
 func runModeSemantic(t *testing.T, row parityRow) {
