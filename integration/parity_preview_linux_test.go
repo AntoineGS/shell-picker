@@ -5,12 +5,12 @@ package integration
 import (
 	"archive/tar"
 	"archive/zip"
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -59,6 +59,8 @@ type previewResourceOutcome struct {
 type previewProcessStats struct {
 	Starts, Exits, MaxLive int
 }
+
+const parityOverflowPayload = "01234567890123456789012345678901234567890123456789012345678901234567890123456789"
 
 func TestPreviewCategoryMatrix(t *testing.T) {
 	golden := loadParityGolden[previewGolden](t, "preview.json")
@@ -187,11 +189,11 @@ func runParityPreviewResourceSubprocess(t *testing.T, category, fixture, tools, 
 		t.Fatalf("resource dispatch=%q err=%v helper=%v output=%s", dispatch, readErr, err, output.String())
 	}
 	logs := readParityToolLogs(t, toolLog)
-	assertParityToolInvocation(t, category, mode, firstTool, logs, fixture)
 	terminal := variant == "hanging" || variant == "overflow" || variant == "timeout"
 	if terminal {
 		var exitErr *processpkg.ExitError
-		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 137 || errors.Is(err, context.DeadlineExceeded) || elapsed >= time.Second {
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 137 || errors.Is(err, context.DeadlineExceeded) ||
+			elapsed < 100*time.Millisecond || elapsed > 500*time.Millisecond {
 			t.Fatalf("%s helper err=%v elapsed=%s output=%s", variant, err, elapsed, output.String())
 		}
 		if raw, outcomeErr := os.ReadFile(outcomePath); !errors.Is(outcomeErr, os.ErrNotExist) {
@@ -203,12 +205,18 @@ func runParityPreviewResourceSubprocess(t *testing.T, category, fixture, tools, 
 			t.Fatalf("%s terminal marker=%q, want %q", variant, marker, wantMarker)
 		}
 		rendererRecords := readPreviewProcessJournal(t, rendererLog)
-		if len(rendererRecords) != 1 || rendererRecords[0].Phase != "start" || len(logs) == 0 || rendererRecords[0].PID != logs[0].PID {
-			t.Fatalf("%s renderer journal=%+v logs=%+v", variant, rendererRecords, logs)
-		}
+		assertParityToolEvidence(t, category, mode, firstTool, logs, fixture, rendererRecords, true)
 		captured := mustReadParityFile(t, capturePath)
-		if variant == "overflow" && len(captured) > 64 {
-			t.Fatalf("overflow captured bytes=%d, want at most 64", len(captured))
+		switch variant {
+		case "hanging", "timeout":
+			if len(captured) != 0 {
+				t.Fatalf("%s captured renderer/native/diagnostic output %q", variant, captured)
+			}
+		case "overflow":
+			want := []byte(parityOverflowPayload[:64])
+			if !bytes.Equal(captured, want) {
+				t.Fatalf("overflow captured=%q (%d bytes), want exact payload prefix %q", captured, len(captured), want)
+			}
 		}
 		assertParityProcessesGone(t, logs)
 		return
@@ -225,6 +233,7 @@ func runParityPreviewResourceSubprocess(t *testing.T, category, fixture, tools, 
 	if outcome.Error != "" || stats.Starts == 0 || stats.MaxLive != 1 || len(outcome.Dispatch) != 1 || outcome.Dispatch[0] != firstTool {
 		t.Fatalf("%s outcome=%+v stats=%+v", variant, outcome, stats)
 	}
+	assertParityToolEvidence(t, category, mode, firstTool, logs, fixture, outcome.Processes, false)
 	if variant == "present" && time.Duration(outcome.RenderNanos) >= 125*time.Millisecond {
 		t.Fatalf("present render clustered at deadline: %s", time.Duration(outcome.RenderNanos))
 	}
@@ -493,9 +502,10 @@ case "$PARITY_TEST_HELPER" in
     wait
     ;;
   tool-overflow)
+    /bin/sleep 0.11
     payload=01234567890123456789012345678901234567890123456789012345678901234567890123456789
-    printf '%s' "$payload"
     printf 'tool-overflow:emitted=%s\n' "${#payload}" > "$PARITY_TEST_TERMINAL"
+    case "$name" in file) printf '%s' "$payload" >&2 ;; *) printf '%s' "$payload" ;; esac
     /bin/sleep 10
     ;;
   tool-slow)
@@ -529,89 +539,212 @@ esac
 	}
 }
 
+func TestParityToolLogParserRejectsMutations(t *testing.T) {
+	valid := []byte("tool-success\x00123\x00glow\x00--width\x0079\x00/absolute/fixture.md\x00\x00")
+	tests := []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "truncated-last-terminator", raw: valid[:len(valid)-1]},
+		{name: "malformed-later-record", raw: append(append([]byte(nil), valid...),
+			[]byte("tool-success\x00not-a-pid\x00bat\x00--\x00/absolute/fixture.md\x00\x00")...)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if logs, err := parseParityToolLogs(test.raw); err == nil {
+				t.Fatalf("mutation parsed as %+v", logs)
+			}
+		})
+	}
+}
+
 func readParityToolLogs(t *testing.T, path string) []parityToolLog {
 	t.Helper()
-	file, err := os.Open(path)
+	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
-	raw, err := os.ReadFile(path)
+	logs, err := parseParityToolLogs(raw)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(raw, []byte{0}) {
-		frames := bytes.Split(raw, []byte{0})
-		var logs []parityToolLog
-		for len(frames) > 1 {
-			mode := string(frames[0])
-			pid, _ := strconv.Atoi(string(frames[1]))
-			name := string(frames[2])
-			frames = frames[3:]
-			var args []string
-			for len(frames) > 0 && len(frames[0]) > 0 {
-				args = append(args, string(frames[0]))
-				frames = frames[1:]
-			}
-			if len(frames) > 0 {
-				frames = frames[1:]
-			}
-			logs = append(logs, parityToolLog{Mode: mode, PID: pid, Name: name, Args: args})
-		}
-		return logs
-	}
-	var logs []parityToolLog
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		var log parityToolLog
-		if err := json.Unmarshal(scanner.Bytes(), &log); err != nil {
-			t.Fatal(err)
-		}
-		logs = append(logs, log)
-	}
-	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
 	}
 	return logs
 }
 
-func assertParityToolInvocation(t *testing.T, category, mode, tool string, logs []parityToolLog, path string) {
+func parseParityToolLogs(raw []byte) ([]parityToolLog, error) {
+	if len(raw) == 0 || raw[len(raw)-1] != 0 {
+		return nil, errors.New("tool log is empty or does not end in NUL")
+	}
+	frames := bytes.Split(raw, []byte{0})
+	last := len(frames) - 1
+	logs := make([]parityToolLog, 0)
+	for index := 0; index < last; {
+		if index+3 >= last {
+			return nil, fmt.Errorf("tool log record %d is incomplete", len(logs)+1)
+		}
+		mode, pidText, name := string(frames[index]), string(frames[index+1]), string(frames[index+2])
+		if mode == "" || name == "" {
+			return nil, fmt.Errorf("tool log record %d has an empty mode or tool name", len(logs)+1)
+		}
+		pid, err := strconv.Atoi(pidText)
+		if err != nil || pid <= 0 || strconv.Itoa(pid) != pidText {
+			return nil, fmt.Errorf("tool log record %d has invalid PID %q", len(logs)+1, pidText)
+		}
+		index += 3
+		var args []string
+		for index < last && len(frames[index]) != 0 {
+			args = append(args, string(frames[index]))
+			index++
+		}
+		if index >= last {
+			return nil, fmt.Errorf("tool log record %d has no empty-frame terminator", len(logs)+1)
+		}
+		index++
+		logs = append(logs, parityToolLog{Mode: mode, PID: pid, Name: name, Args: args})
+	}
+	return logs, nil
+}
+
+func assertParityToolEvidence(t *testing.T, category, mode, firstTool string, logs []parityToolLog, fixture string,
+	processes []previewProcessRecord, terminal bool) {
 	t.Helper()
-	if len(logs) == 0 || logs[0].Mode != mode || logs[0].Name != tool || logs[0].PID <= 0 {
-		t.Fatalf("first tool mode/name/PID=%+v, want %s/%s/positive", logs, mode, tool)
+	var primary, descendants []parityToolLog
+	for _, log := range logs {
+		if log.Mode == "tool-descendant" {
+			descendants = append(descendants, log)
+			continue
+		}
+		if log.Mode != mode {
+			t.Fatalf("tool mode=%q, want %q: %+v", log.Mode, mode, logs)
+		}
+		primary = append(primary, log)
 	}
-	args := logs[0].Args
+	wantNames := expectedParityToolNames(category, mode, firstTool)
+	gotNames := make([]string, len(primary))
+	for index, log := range primary {
+		gotNames[index] = log.Name
+		assertParityToolArguments(t, category, mode, log, fixture, index > 0)
+	}
+	if !reflect.DeepEqual(gotNames, wantNames) || len(primary) == 0 || primary[0].Name != firstTool {
+		t.Fatalf("%s/%s primary tools=%q, want %q (first %q)", category, mode, gotNames, wantNames, firstTool)
+	}
+	if mode == "tool-hang" {
+		if len(descendants) != 1 || descendants[0].Name != "sleep" || len(descendants[0].Args) != 0 || descendants[0].PID == primary[0].PID {
+			t.Fatalf("hanging descendant log=%+v primary=%+v", descendants, primary)
+		}
+	} else if len(descendants) != 0 {
+		t.Fatalf("unexpected descendant logs=%+v", descendants)
+	}
+	var starts, exits []int
+	for _, process := range processes {
+		switch process.Phase {
+		case "start":
+			starts = append(starts, process.PID)
+		case "exit":
+			exits = append(exits, process.PID)
+		}
+	}
+	primaryPIDs := make([]int, len(primary))
+	for index, log := range primary {
+		primaryPIDs[index] = log.PID
+	}
+	if !reflect.DeepEqual(primaryPIDs, starts) {
+		t.Fatalf("primary tool PIDs=%v, process starts=%v logs=%+v processes=%+v", primaryPIDs, starts, primary, processes)
+	}
+	if terminal {
+		if len(starts) != 1 || len(exits) != 0 {
+			t.Fatalf("terminal process sequence starts/exits=%v/%v", starts, exits)
+		}
+	} else if !reflect.DeepEqual(exits, starts) {
+		t.Fatalf("process exits=%v, want starts=%v", exits, starts)
+	}
+}
+
+func expectedParityToolNames(category, mode, firstTool string) []string {
+	if mode == "tool-hang" || mode == "tool-overflow" || mode == "tool-slow" {
+		return []string{firstTool}
+	}
+	present := map[string][]string{
+		"directory": {"eza"}, "markdown": {"glow"}, "text": {"bat"}, "image": {"kitten"},
+		"pdf": {"pdftoppm", "kitten"}, "video": {"ffmpegthumbnailer", "kitten"}, "audio": {"ffmpeg", "kitten"},
+		"zip": {"unzip"}, "gzip": {"gzip"}, "xz": {"xz"}, "tar": {"tar"}, "bzip": {"tar"}, "binary": {"file"},
+	}
+	failure := map[string][]string{
+		"directory": {"eza"}, "markdown": {"glow"}, "text": {"bat"}, "image": {"kitten", "chafa"},
+		"pdf": {"pdftoppm"}, "video": {"ffmpegthumbnailer"}, "audio": {"ffmpeg", "exiftool"},
+		"zip": {"unzip"}, "gzip": {"gzip"}, "xz": {"xz"}, "tar": {"tar"}, "bzip": {"tar"}, "binary": {"file"},
+	}
+	if mode == "tool-success" {
+		return present[category]
+	}
+	if mode == "tool-fail" {
+		return failure[category]
+	}
+	return nil
+}
+
+func assertParityToolArguments(t *testing.T, category, mode string, log parityToolLog, fixture string, later bool) {
+	t.Helper()
+	if !filepath.IsAbs(fixture) {
+		t.Fatalf("fixture is not absolute: %q", fixture)
+	}
+	if category != "directory" && !strings.HasPrefix(filepath.Base(fixture), "--option") {
+		t.Fatalf("fixture does not retain leading-option basename: %q", fixture)
+	}
+	source := fixture
+	if category == "pdf" || category == "video" || category == "audio" {
+		if log.Name == "kitten" || log.Name == "chafa" {
+			if mode != "tool-success" || !later {
+				t.Fatalf("%s renderer lacks successful converter predecessor: %+v", category, log)
+			}
+			source = "/proc/self/fd/3"
+		}
+	}
 	want := map[string][]string{
-		"directory": {"--color=always", "--icons=always", "--group-directories-first", "--", path},
-		"markdown":  {"--width", "79", path},
-		"text":      {"--color=always", "--style=plain", "--paging=never", "--", path},
-		"image":     {"icat", "--clear", "--transfer-mode=memory", "--place", "80x24@0x0", "--", path},
-		"zip":       {"-l", "--", path},
-		"gzip":      {"-l", "--", path},
-		"xz":        {"-l", "--", path},
-		"tar":       {"tf", path},
-		"bzip":      {"tf", path},
-		"binary":    {"--brief", "--mime-type", "--", path},
-	}[category]
-	switch category {
-	case "pdf":
-		if len(args) == 4 && filepath.IsAbs(args[3]) {
-			want = []string{"-singlefile", "-jpeg", path, args[3]}
+		"eza":      {"--color=always", "--icons=always", "--group-directories-first", "--", fixture},
+		"glow":     {"--width", "79", fixture},
+		"bat":      {"--color=always", "--style=plain", "--paging=never", "--", fixture},
+		"kitten":   {"icat", "--clear", "--transfer-mode=memory", "--place", "80x24@0x0", "--", source},
+		"chafa":    {"--size", "80x24", "--", source},
+		"exiftool": {"--", fixture},
+		"unzip":    {"-l", "--", fixture},
+		"gzip":     {"-l", "--", fixture},
+		"xz":       {"-l", "--", fixture},
+		"tar":      {"tf", fixture},
+		"file":     {"--brief", "--mime-type", "--", fixture},
+	}[log.Name]
+	switch log.Name {
+	case "pdftoppm":
+		if len(log.Args) != 4 || !filepath.IsAbs(log.Args[3]) || log.Args[3] == fixture {
+			t.Fatalf("pdftoppm artifact argv=%q", log.Args)
 		}
-	case "video":
-		if len(args) == 7 && filepath.IsAbs(args[3]) {
-			want = []string{"-i", path, "-o", args[3], "-s", "1080", "-m"}
+		want = []string{"-singlefile", "-jpeg", fixture, log.Args[3]}
+	case "ffmpegthumbnailer":
+		if len(log.Args) != 7 || !filepath.IsAbs(log.Args[3]) || filepath.Ext(log.Args[3]) != ".jpg" {
+			t.Fatalf("ffmpegthumbnailer artifact argv=%q", log.Args)
 		}
-	case "audio":
-		if len(args) == 7 && filepath.IsAbs(args[6]) {
-			want = []string{"-y", "-i", path, "-an", "-c:v", "copy", args[6]}
+		want = []string{"-i", fixture, "-o", log.Args[3], "-s", "1080", "-m"}
+	case "ffmpeg":
+		if len(log.Args) != 7 || !filepath.IsAbs(log.Args[6]) || filepath.Ext(log.Args[6]) != ".jpg" {
+			t.Fatalf("ffmpeg artifact argv=%q", log.Args)
 		}
+		want = []string{"-y", "-i", fixture, "-an", "-c:v", "copy", log.Args[6]}
 	}
-	if !reflect.DeepEqual(args, want) || !filepath.IsAbs(path) || !strings.HasPrefix(filepath.Base(path), "--option") && category != "directory" {
-		t.Fatalf("%s first tool argv=%q, want %q for absolute leading-option fixture %q", category, args, want, path)
+	if want == nil {
+		t.Fatalf("unknown parity preview tool %q", log.Name)
+	}
+	if !reflect.DeepEqual(log.Args, want) {
+		t.Fatalf("%s/%s argv=%q, want %q", category, log.Name, log.Args, want)
+	}
+	for _, argument := range log.Args {
+		if argument == fixture || argument == source && source != fixture || strings.HasPrefix(argument, "/proc/") {
+			if !filepath.IsAbs(argument) {
+				t.Fatalf("%s path operand is not absolute: %q", log.Name, argument)
+			}
+		}
 	}
 }
 
