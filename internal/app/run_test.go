@@ -253,6 +253,17 @@ func TestRunPickerRejectsInvalidOptionsBeforeLaunch(t *testing.T) {
 	}
 }
 
+func TestSessionBuilderConfiguresIncomingDependencyInPlace(t *testing.T) {
+	fixture := newPickerFixture(t, protocol.PickerCD)
+	builder, err := sessionBuilder(fixture.options, &fixture.dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builder != &fixture.dependencies.CandidateBuilder {
+		t.Fatal("sessionBuilder returned another Builder copy")
+	}
+}
+
 func TestRunPickerMissingZoxideAttemptsWithoutStarting(t *testing.T) {
 	fixture := newPickerFixture(t, protocol.PickerCD)
 	counts := newProcessCounts()
@@ -333,8 +344,9 @@ func callbackClient(t *testing.T, config fzf.Config) *sessionipc.Client {
 }
 
 type processCounts struct {
-	mu                              sync.Mutex
-	attempts, starts, live, maxLive int
+	mu                      sync.Mutex
+	attempts, starts, exits int
+	live, maxLive           int
 }
 
 func newProcessCounts() *processCounts { return &processCounts{} }
@@ -352,7 +364,14 @@ func (counts *processCounts) observe(event process.ProcessEvent) {
 		}
 	case "exit":
 		counts.live--
+		counts.exits++
 	}
+}
+
+func (counts *processCounts) lifecycleValues() (attempts, starts, maxLive, exits, live int) {
+	counts.mu.Lock()
+	defer counts.mu.Unlock()
+	return counts.attempts, counts.starts, counts.maxLive, counts.exits, counts.live
 }
 func (counts *processCounts) values() (int, int, int) {
 	counts.mu.Lock()

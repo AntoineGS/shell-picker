@@ -22,6 +22,22 @@ func TestClientClosesOverlimitBodyWithoutReusableTransport(t *testing.T) {
 	}
 }
 
+func TestClientCloseIdleConnectionsIsRepeatable(t *testing.T) {
+	accepted, client, closeServer := startRogueResponseServer(t, http.StatusOK, "application/json", `{"effect":{}}`, ' ', 64)
+	defer closeServer()
+	if _, err := client.Event(context.Background(), eventRequest()); err != nil {
+		t.Fatal(err)
+	}
+	client.CloseIdleConnections()
+	client.CloseIdleConnections()
+	if _, err := client.Event(context.Background(), eventRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Load() != 2 {
+		t.Fatalf("connections=%d want=2", accepted.Load())
+	}
+}
+
 func TestClientBoundsEveryResponseClassAtLimitAndLimitPlusOne(t *testing.T) {
 	tests := []struct {
 		name        string

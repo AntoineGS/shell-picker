@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/callback"
@@ -57,16 +56,19 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		defer terminal.Close()
 	}
 
-	builder, err := sessionBuilder(options, dependencies)
+	builder, err := sessionBuilder(options, &dependencies)
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
-	sessionCtx, cancelSession := context.WithCancelCause(context.WithoutCancel(ctx))
-	defer cancelSession(nil)
-	actor := session.New(sessionCtx, builder.Build)
+	actorCtx, cancelActor := context.WithCancelCause(context.WithoutCancel(ctx))
+	defer cancelActor(nil)
+	actor := session.New(actorCtx, builder.Build)
 	actorOpen := true
 	defer func() {
 		if actorOpen {
+			if cause := context.Cause(ctx); cause != nil {
+				cancelActor(cause)
+			}
 			_ = actor.Close()
 		}
 	}()
@@ -98,7 +100,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	copy(metrics.traceID[:], traceID)
 	metrics.recordTransition(initial)
 	backend := &pickerBackend{actor: actor, metrics: metrics}
-	server, err := sessionipc.Listen(sessionCtx, token, backend)
+	server, err := sessionipc.Listen(ctx, token, backend)
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
@@ -145,6 +147,9 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 			}
 		}
 	}
+	if cause := context.Cause(ctx); cause != nil {
+		cancelActor(cause)
+	}
 	actorErr := actor.Close()
 	actorOpen = false
 	if err == nil && actorErr != nil {
@@ -187,8 +192,7 @@ func validatePickerOptions(ctx context.Context, options PickerOptions) error {
 	return context.Cause(ctx)
 }
 
-func sessionBuilder(options PickerOptions, dependencies Dependencies) (*candidate.Builder, error) {
-	builder := dependencies.CandidateBuilder
+func sessionBuilder(options PickerOptions, dependencies *Dependencies) (*candidate.Builder, error) {
 	path := dependencies.ZoxidePath
 	if path == "" {
 		path = "zoxide"
@@ -202,11 +206,11 @@ func sessionBuilder(options PickerOptions, dependencies Dependencies) (*candidat
 		if err != nil {
 			return nil, err
 		}
-		builder.ConfigureCached(cache)
+		dependencies.CandidateBuilder.ConfigureCached(cache)
 	} else {
-		builder.ConfigureFresh(newCache)
+		dependencies.CandidateBuilder.ConfigureFresh(newCache)
 	}
-	return &builder, nil
+	return &dependencies.CandidateBuilder, nil
 }
 
 func frameCandidateRecords(records []candidate.Record) []byte {
@@ -267,67 +271,19 @@ func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte
 	if cause := context.Cause(ctx); cause != nil {
 		return protocol.ResolvedCandidate{}, cause
 	}
-	backend.metrics.recordPreview(time.Since(started))
+	backend.metrics.recordPreviewResolve(time.Since(started))
 	return protocol.ResolvedCandidate{Kind: record.Kind, Path: append([]byte(nil), record.Path...), Size: info.Size(),
 		ModTimeUnixNano: info.ModTime().UnixNano(), Mode: uint32(info.Mode())}, nil
 }
 
-func (backend *pickerBackend) RecordPreview(ctx context.Context, _ sessionipc.PreviewRequest) error {
+func (backend *pickerBackend) RecordPreview(ctx context.Context, request sessionipc.PreviewRequest) error {
 	if cause := context.Cause(ctx); cause != nil {
 		return cause
 	}
-	backend.metrics.recordPreview(0)
-	return nil
-}
-
-type pickerMetrics struct {
-	mu                       sync.Mutex
-	traceID                  [16]byte
-	events, loads, previews  uint64
-	callbackIPC, loadLatency time.Duration
-	queueWait, transform     time.Duration
-	sources                  candidate.SourceMetrics
-}
-
-func (metrics *pickerMetrics) recordTransition(result session.TransitionResult) {
-	metrics.mu.Lock()
-	defer metrics.mu.Unlock()
-	metrics.events = boundedIncrement(metrics.events)
-	metrics.queueWait += result.Metrics.QueueWait
-	metrics.transform += result.Metrics.TransformDuration
-	metrics.sources.LocalDuration += result.Metrics.Sources.LocalDuration
-	metrics.sources.ZoxideDuration += result.Metrics.Sources.ZoxideDuration
-	metrics.sources.ZoxideOutcome = result.Metrics.Sources.ZoxideOutcome
-	metrics.sources.ZoxideAttempts += result.Metrics.Sources.ZoxideAttempts
-	metrics.sources.ZoxideStarts += result.Metrics.Sources.ZoxideStarts
-	if result.Metrics.Sources.ZoxideMaxLive > metrics.sources.ZoxideMaxLive {
-		metrics.sources.ZoxideMaxLive = result.Metrics.Sources.ZoxideMaxLive
+	started := time.Now()
+	if err := backend.metrics.recordPreview(request); err != nil {
+		return err
 	}
-}
-
-func (metrics *pickerMetrics) recordCallback(duration time.Duration) {
-	metrics.mu.Lock()
-	metrics.callbackIPC += duration
-	metrics.mu.Unlock()
-}
-
-func (metrics *pickerMetrics) recordLoad(duration time.Duration) {
-	metrics.mu.Lock()
-	metrics.loads = boundedIncrement(metrics.loads)
-	metrics.loadLatency += duration
-	metrics.mu.Unlock()
-}
-
-func (metrics *pickerMetrics) recordPreview(duration time.Duration) {
-	metrics.mu.Lock()
-	metrics.previews = boundedIncrement(metrics.previews)
-	metrics.callbackIPC += duration
-	metrics.mu.Unlock()
-}
-
-func boundedIncrement(value uint64) uint64 {
-	if value < 1_000_000 {
-		return value + 1
-	}
-	return value
+	backend.metrics.recordCallback(time.Since(started))
+	return context.Cause(ctx)
 }

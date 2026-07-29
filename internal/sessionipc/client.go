@@ -152,17 +152,18 @@ func (client *Client) readResponse(response *http.Response, limit int64) ([]byte
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		client.closeIdleConnections()
+		client.CloseIdleConnections()
 		return nil, ErrInternal
 	}
 	if int64(len(body)) > limit {
-		client.closeIdleConnections()
+		client.CloseIdleConnections()
 		return nil, ErrInternal
 	}
 	return body, nil
 }
 
-func (client *Client) closeIdleConnections() {
+// CloseIdleConnections closes reusable IPC transport connections and is safe to call repeatedly.
+func (client *Client) CloseIdleConnections() {
 	if client.transport != nil {
 		client.transport.CloseIdleConnections()
 		return

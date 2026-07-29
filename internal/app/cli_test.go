@@ -187,6 +187,6 @@ func TestPickerCLIProcessHelper(t *testing.T) {
 		}
 	}
 	code := runPickerCLI(context.Background(), os.Args[separator:], Streams{Out: os.Stdout, Err: os.Stderr},
-		filepath.Join(cwd, "shell-picker"), dependencies)
+		filepath.Join(cwd, "shell-picker"), &dependencies)
 	os.Exit(code)
 }

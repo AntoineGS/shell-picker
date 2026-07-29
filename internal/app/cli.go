@@ -37,18 +37,19 @@ func Main(ctx context.Context, args []string, streams Streams, build string) int
 		fmt.Fprintln(streams.Err, "shell-picker: executable unavailable")
 		return 1
 	}
-	return runPickerCLI(ctx, args, streams, executable, Dependencies{
+	dependencies := &Dependencies{
 		ProcessRunner: process.Runner{}, Environment: os.Environ(), TTYErr: streams.Err,
-	})
+	}
+	return runPickerCLI(ctx, args, streams, executable, dependencies)
 }
 
-func runPickerCLI(ctx context.Context, args []string, streams Streams, executable string, dependencies Dependencies) int {
+func runPickerCLI(ctx context.Context, args []string, streams Streams, executable string, dependencies *Dependencies) int {
 	options, err := parsePickerArgs(args, executable)
 	if err != nil {
 		fmt.Fprintln(streams.Err, "usage: shell-picker cd|cp --cwd PATH --home PATH [--output nul|nuon] [--fzf PATH] [--zoxide-policy cached|fresh] [--zoxide-timeout DURATION]")
 		return 2
 	}
-	outcome, err := RunPicker(ctx, options, dependencies)
+	outcome, err := RunPicker(ctx, options, *dependencies)
 	if err != nil {
 		fmt.Fprintln(streams.Err, "shell-picker: picker failed")
 		return 1
@@ -132,6 +133,7 @@ func callbackMain(ctx context.Context, args []string, streams Streams) int {
 		fmt.Fprintln(streams.Err, "callback connection unavailable")
 		return 1
 	}
+	defer client.CloseIdleConnections()
 	dependencies := callback.Dependencies{Client: client, LookupEnv: os.Getenv, Stdout: streams.Out, Stderr: streams.Err}
 	dependencies.Preview = func(renderCtx context.Context, candidate protocol.ResolvedCandidate, stdout, stderr io.Writer) error {
 		runner := process.Runner{Observe: func(event process.ProcessEvent) {
