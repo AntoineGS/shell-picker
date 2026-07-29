@@ -80,7 +80,7 @@ func preflightZip(path string, maximumEntries int) error {
 	centralSize := uint64(binary.LittleEndian.Uint32(eocd[12:16]))
 	centralOffset := uint64(binary.LittleEndian.Uint32(eocd[16:20]))
 	directoryEndOffset := info.Size() - tailSize + int64(eocdIndex)
-	if entries == 0xffff || centralSize == 0xffffffff || centralOffset == 0xffffffff {
+	if entries == 0xffff || centralSize == 0xffff || centralOffset == 0xffffffff {
 		if directoryEndOffset < 20 {
 			return zip.ErrFormat
 		}

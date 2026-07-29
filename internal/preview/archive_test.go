@@ -188,3 +188,71 @@ func shiftedZipWithRawOffsetDecoy(t *testing.T, entries int) []byte {
 	binary.LittleEndian.PutUint32(zipData[eocd+16:eocd+20], 0)
 	return append(decoy, zipData...)
 }
+
+func TestZipPreflightMatchesGoDirectorySizeZIP64Sentinel(t *testing.T) {
+	data := zip64DirectorySizeSentinelWithDecoy(t, DefaultLimits.MaxArchiveEntries+1)
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("archive/zip: %v", err)
+	}
+	if len(reader.File) != DefaultLimits.MaxArchiveEntries+1 {
+		t.Fatalf("archive/zip files=%d", len(reader.File))
+	}
+	path := filepath.Join(t.TempDir(), "directory-size-sentinel.zip")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preflightZip(path, DefaultLimits.MaxArchiveEntries); !errors.Is(err, ErrArchiveEntries) {
+		t.Fatalf("preflight error=%v", err)
+	}
+}
+
+func zip64DirectorySizeSentinelWithDecoy(t *testing.T, entries int) []byte {
+	t.Helper()
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	for index := 0; index < entries; index++ {
+		if _, err := writer.Create(fmt.Sprintf("real-entry-%03d", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := archive.Bytes()
+	eocd := bytes.LastIndex(data, []byte{'P', 'K', 0x05, 0x06})
+	if eocd < 0 {
+		t.Fatal("missing EOCD")
+	}
+	centralSize := binary.LittleEndian.Uint32(data[eocd+12 : eocd+16])
+	centralOffset := binary.LittleEndian.Uint32(data[eocd+16 : eocd+20])
+	result := append([]byte(nil), data[:eocd]...)
+	padding := make([]byte, 65_459)
+	copy(padding[:4], []byte{'P', 'K', 0x01, 0x02})
+	binary.LittleEndian.PutUint32(padding[20:24], 0xffffffff)
+	binary.LittleEndian.PutUint16(padding[30:32], 4)
+	binary.LittleEndian.PutUint16(padding[46:48], 0x0001)
+	result = append(result, padding...)
+	zip64Offset := uint64(len(result))
+	zip64End := make([]byte, 56)
+	copy(zip64End[:4], []byte{'P', 'K', 0x06, 0x06})
+	binary.LittleEndian.PutUint64(zip64End[4:12], 44)
+	binary.LittleEndian.PutUint16(zip64End[12:14], 45)
+	binary.LittleEndian.PutUint16(zip64End[14:16], 45)
+	binary.LittleEndian.PutUint64(zip64End[24:32], uint64(entries))
+	binary.LittleEndian.PutUint64(zip64End[32:40], uint64(entries))
+	binary.LittleEndian.PutUint64(zip64End[40:48], uint64(centralSize))
+	binary.LittleEndian.PutUint64(zip64End[48:56], uint64(centralOffset))
+	result = append(result, zip64End...)
+	locator := make([]byte, 20)
+	copy(locator[:4], []byte{'P', 'K', 0x06, 0x07})
+	binary.LittleEndian.PutUint64(locator[8:16], zip64Offset)
+	binary.LittleEndian.PutUint32(locator[16:20], 1)
+	result = append(result, locator...)
+	legacyEnd := make([]byte, 22)
+	copy(legacyEnd[:4], []byte{'P', 'K', 0x05, 0x06})
+	binary.LittleEndian.PutUint16(legacyEnd[8:10], 1)
+	binary.LittleEndian.PutUint16(legacyEnd[10:12], 1)
+	binary.LittleEndian.PutUint32(legacyEnd[12:16], 0xffff)
+	return append(result, legacyEnd...)
+}
