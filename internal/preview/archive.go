@@ -3,8 +3,10 @@ package preview
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +14,9 @@ import (
 )
 
 func renderZip(ctx context.Context, path string, output io.Writer, limits Limits) error {
+	if err := preflightZip(path, limits.MaxArchiveEntries); err != nil {
+		return err
+	}
 	reader, err := zip.OpenReader(path)
 	if err != nil {
 		return err
@@ -44,6 +49,96 @@ func renderZip(ctx context.Context, path string, output io.Writer, limits Limits
 		if closeErr != nil {
 			return closeErr
 		}
+	}
+	return nil
+}
+
+func preflightZip(path string, maximumEntries int) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	tailSize := min(info.Size(), int64(65_557))
+	tail := make([]byte, tailSize)
+	if _, err := file.ReadAt(tail, info.Size()-tailSize); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	eocdIndex := bytes.LastIndex(tail, []byte{'P', 'K', 0x05, 0x06})
+	if eocdIndex < 0 || len(tail)-eocdIndex < 22 {
+		return zip.ErrFormat
+	}
+	eocd := tail[eocdIndex:]
+	if eocdIndex+22+int(binary.LittleEndian.Uint16(eocd[20:22])) != len(tail) {
+		return zip.ErrFormat
+	}
+	entries := uint64(binary.LittleEndian.Uint16(eocd[10:12]))
+	centralSize := uint64(binary.LittleEndian.Uint32(eocd[12:16]))
+	centralOffset := uint64(binary.LittleEndian.Uint32(eocd[16:20]))
+	if entries == 0xffff || centralSize == 0xffffffff || centralOffset == 0xffffffff {
+		absoluteEOCD := info.Size() - tailSize + int64(eocdIndex)
+		if absoluteEOCD < 20 {
+			return zip.ErrFormat
+		}
+		locator := make([]byte, 20)
+		if _, err := file.ReadAt(locator, absoluteEOCD-20); err != nil {
+			return err
+		}
+		if !bytes.Equal(locator[:4], []byte{'P', 'K', 0x06, 0x07}) {
+			return zip.ErrFormat
+		}
+		zip64Offset := int64(binary.LittleEndian.Uint64(locator[8:16]))
+		record := make([]byte, 56)
+		if _, err := file.ReadAt(record, zip64Offset); err != nil {
+			return err
+		}
+		if !bytes.Equal(record[:4], []byte{'P', 'K', 0x06, 0x06}) {
+			return zip.ErrFormat
+		}
+		entries = binary.LittleEndian.Uint64(record[32:40])
+		centralSize = binary.LittleEndian.Uint64(record[40:48])
+		centralOffset = binary.LittleEndian.Uint64(record[48:56])
+	}
+	if entries > uint64(maximumEntries) {
+		return ErrArchiveEntries
+	}
+	return scanZipCentralDirectory(file, info.Size(), centralOffset, centralSize, entries, maximumEntries)
+}
+
+func scanZipCentralDirectory(file *os.File, fileSize int64, offset, size, declaredEntries uint64, maximumEntries int) error {
+	if offset > uint64(fileSize) || size > uint64(fileSize)-offset {
+		return zip.ErrFormat
+	}
+	cursor, end := int64(offset), int64(offset+size)
+	var entries uint64
+	header := make([]byte, 46)
+	for cursor < end {
+		if end-cursor < int64(len(header)) {
+			return zip.ErrFormat
+		}
+		if _, err := file.ReadAt(header, cursor); err != nil {
+			return err
+		}
+		if !bytes.Equal(header[:4], []byte{'P', 'K', 0x01, 0x02}) {
+			return zip.ErrFormat
+		}
+		entries++
+		if entries > uint64(maximumEntries) {
+			return ErrArchiveEntries
+		}
+		variable := int64(binary.LittleEndian.Uint16(header[28:30])) +
+			int64(binary.LittleEndian.Uint16(header[30:32])) + int64(binary.LittleEndian.Uint16(header[32:34]))
+		cursor += int64(len(header)) + variable
+		if cursor > end {
+			return zip.ErrFormat
+		}
+	}
+	if entries != declaredEntries {
+		return zip.ErrFormat
 	}
 	return nil
 }

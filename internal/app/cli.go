@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/callback"
@@ -42,6 +44,10 @@ func callbackMain(ctx context.Context, args []string, streams Streams) int {
 		fmt.Fprintln(streams.Err, "invalid callback command")
 		return 2
 	}
+	if err := callback.ValidateLocal(command, os.Getenv); err != nil {
+		fmt.Fprintln(streams.Err, "invalid callback command")
+		return 2
+	}
 	client, err := sessionipc.NewClientFromEnv(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(streams.Err, "callback connection unavailable")
@@ -53,7 +59,7 @@ func callbackMain(ctx context.Context, args []string, streams Streams) int {
 			callback.ObservePreviewProcess(renderCtx, event)
 		}}
 		return preview.Render(renderCtx, candidate, preview.Options{Columns: 80, Lines: 40,
-			Environment: process.SanitizeEnv(os.Environ(), nil), Runner: runner, Limits: preview.DefaultLimits,
+			Environment: previewEnvironment(os.Environ()), Runner: runner, Limits: preview.DefaultLimits,
 			Stdout: stdout, Stderr: stderr, OnDispatch: func(renderer string, pid int, duration time.Duration) {
 				callback.ObservePreviewDispatch(renderCtx, renderer, pid, duration)
 			}})
@@ -67,4 +73,26 @@ func callbackMain(ctx context.Context, args []string, streams Streams) int {
 		return 1
 	}
 	return 0
+}
+
+func previewEnvironment(inherited []string) []string {
+	allowed := map[string]bool{
+		"PATH": true, "LANG": true, "LANGUAGE": true, "LC_ALL": true, "LC_CTYPE": true,
+		"LC_MESSAGES": true, "LC_COLLATE": true, "LC_MONETARY": true, "LC_NUMERIC": true,
+		"LC_TIME": true, "LC_PAPER": true, "LC_NAME": true, "LC_ADDRESS": true,
+		"LC_TELEPHONE": true, "LC_MEASUREMENT": true, "LC_IDENTIFICATION": true,
+		"TERM": true, "COLORTERM": true, "NO_COLOR": true,
+	}
+	environment := make([]string, 0, len(allowed))
+	for _, entry := range inherited {
+		key, _, ok := strings.Cut(entry, "=")
+		lookup := key
+		if runtime.GOOS == "windows" {
+			lookup = strings.ToUpper(key)
+		}
+		if ok && allowed[lookup] {
+			environment = append(environment, entry)
+		}
+	}
+	return process.SanitizeEnv(environment, nil)
 }

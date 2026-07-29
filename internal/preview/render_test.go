@@ -126,6 +126,44 @@ func TestPreviewUsesContainedOptionalRendererWhenPresent(t *testing.T) {
 	}
 }
 
+func TestPreviewLongPermittedTextLineEmitsUsefulFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "long.txt")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 2<<20)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := Render(context.Background(), resolved(path), testOptions(&output)); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() == 0 || !bytes.HasPrefix(output.Bytes(), []byte("     1  ")) {
+		t.Fatalf("output bytes=%d prefix=%q", output.Len(), output.Bytes()[:min(output.Len(), 16)])
+	}
+}
+
+func TestPreviewExternalStreamsStaySeparateUnderOneBudget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-specific")
+	}
+	tools := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tools, "bat"), []byte("#!/bin/sh\nprintf stdout\nprintf stderr >&2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "plain.txt")
+	if err := os.WriteFile(path, []byte("native\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	options := testOptions(&stdout)
+	options.Stderr = &stderr
+	options.Environment = []string{"PATH=" + tools}
+	if err := Render(context.Background(), resolved(path), options); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "stdout" || stderr.String() != "stderr" {
+		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
 func testOptions(output *bytes.Buffer) Options {
 	return Options{Columns: 80, Lines: 40, Environment: []string{"PATH="}, Runner: processpkg.Runner{},
 		Limits: DefaultLimits, Stdout: output, Stderr: output}

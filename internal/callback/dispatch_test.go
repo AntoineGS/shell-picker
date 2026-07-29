@@ -27,6 +27,21 @@ type fakeClient struct {
 	recordErr error
 }
 
+type shortWriter struct {
+	data    []byte
+	maximum int
+}
+
+func (writer *shortWriter) Write(data []byte) (int, error) {
+	if len(data) > writer.maximum {
+		data = data[:writer.maximum]
+	}
+	writer.data = append(writer.data, data...)
+	return len(data), nil
+}
+
+func (writer *shortWriter) String() string { return string(writer.data) }
+
 func (client *fakeClient) Event(_ context.Context, request sessionipc.EventRequest) (sessionipc.EventResponse, error) {
 	client.events = append(client.events, request)
 	return sessionipc.EventResponse{Effect: client.effect}, client.err
@@ -77,6 +92,17 @@ func TestDispatchRejectsWrongEventKeyBeforeIPC(t *testing.T) {
 	}
 }
 
+func TestLocalEventValidationReadsOnlyFZFKey(t *testing.T) {
+	var keys []string
+	err := ValidateLocal(mustParse(t, "e:en"), func(key string) string {
+		keys = append(keys, key)
+		return "wrong"
+	})
+	if !errors.Is(err, ErrKey) || !reflect.DeepEqual(keys, []string{"FZF_KEY"}) {
+		t.Fatalf("err=%v keys=%q", err, keys)
+	}
+}
+
 func TestLoadWritesExactOctets(t *testing.T) {
 	client := &fakeClient{load: []byte{'a', 0, '\n', 0xff}}
 	var stdout bytes.Buffer
@@ -87,6 +113,39 @@ func TestLoadWritesExactOctets(t *testing.T) {
 	if !bytes.Equal(stdout.Bytes(), client.load) || !reflect.DeepEqual(client.loads, []sessionipc.LoadRequest{{Generation: 42}}) {
 		t.Fatalf("output=%v loads=%+v", stdout.Bytes(), client.loads)
 	}
+}
+
+func TestEventAndLoadWriteAllOrReturnShortWrite(t *testing.T) {
+	t.Run("partial progress completes", func(t *testing.T) {
+		client := &fakeClient{effect: protocol.Effect{Search: "off"}, load: []byte("load-data")}
+		for _, command := range []string{"e:en", "l:1"} {
+			writer := &shortWriter{maximum: 1}
+			deps := Dependencies{Client: client, LookupEnv: func(key string) string {
+				if key == "FZF_KEY" {
+					return "enter"
+				}
+				return ""
+			}, Stdout: writer, Stderr: io.Discard}
+			if err := Dispatch(context.Background(), mustParse(t, command), deps); err != nil {
+				t.Fatalf("Dispatch(%q): %v", command, err)
+			}
+			want := "disable-search"
+			if command == "l:1" {
+				want = "load-data"
+			}
+			if writer.String() != want {
+				t.Fatalf("Dispatch(%q) wrote %q want %q", command, writer.String(), want)
+			}
+		}
+	})
+	t.Run("zero progress fails", func(t *testing.T) {
+		client := &fakeClient{load: []byte("load-data")}
+		writer := &shortWriter{maximum: 0}
+		deps := Dependencies{Client: client, LookupEnv: func(string) string { return "" }, Stdout: writer, Stderr: io.Discard}
+		if err := Dispatch(context.Background(), mustParse(t, "l:1"), deps); !errors.Is(err, io.ErrShortWrite) {
+			t.Fatalf("err=%v", err)
+		}
+	})
 }
 
 func TestPreviewResolvesAuthoritativePathAndRecordsBoundedTelemetry(t *testing.T) {

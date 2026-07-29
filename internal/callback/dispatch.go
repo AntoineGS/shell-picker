@@ -36,6 +36,9 @@ func Dispatch(ctx context.Context, command Command, dependencies Dependencies) e
 	if ctx == nil || dependencies.Client == nil || dependencies.LookupEnv == nil || dependencies.Stdout == nil {
 		return errors.New("callback: incomplete dependencies")
 	}
+	if err := ValidateLocal(command, dependencies.LookupEnv); err != nil {
+		return err
+	}
 	switch command.Kind {
 	case KindEvent:
 		return dispatchEvent(ctx, command, dependencies)
@@ -48,11 +51,25 @@ func Dispatch(ctx context.Context, command Command, dependencies Dependencies) e
 	}
 }
 
+func ValidateLocal(command Command, lookupEnv func(string) string) error {
+	if lookupEnv == nil {
+		return errors.New("callback: nil environment reader")
+	}
+	switch command.Kind {
+	case KindEvent:
+		if !validKey(command.Opcode, lookupEnv("FZF_KEY")) {
+			return ErrKey
+		}
+	case KindLoad, KindPreview:
+		return nil
+	default:
+		return ErrGrammar
+	}
+	return nil
+}
+
 func dispatchEvent(ctx context.Context, command Command, dependencies Dependencies) error {
 	key := dependencies.LookupEnv("FZF_KEY")
-	if !validKey(command.Opcode, key) {
-		return ErrKey
-	}
 	response, err := dependencies.Client.Event(ctx, sessionipc.EventRequest{
 		Opcode: command.Opcode, Key: key,
 		QueryBase64:       base64.StdEncoding.EncodeToString([]byte(dependencies.LookupEnv("FZF_QUERY"))),
@@ -68,8 +85,7 @@ func dispatchEvent(ctx context.Context, command Command, dependencies Dependenci
 	if err != nil {
 		return err
 	}
-	_, err = io.WriteString(dependencies.Stdout, action)
-	return err
+	return writeAll(dependencies.Stdout, []byte(action))
 }
 
 func dispatchLoad(ctx context.Context, command Command, dependencies Dependencies) error {
@@ -77,8 +93,24 @@ func dispatchLoad(ctx context.Context, command Command, dependencies Dependencie
 	if err != nil {
 		return err
 	}
-	_, err = dependencies.Stdout.Write(data)
-	return err
+	return writeAll(dependencies.Stdout, data)
+}
+
+func writeAll(destination io.Writer, data []byte) error {
+	for len(data) > 0 {
+		written, err := destination.Write(data)
+		if written < 0 || written > len(data) {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+	}
+	return nil
 }
 
 func dispatchPreview(ctx context.Context, dependencies Dependencies) error {

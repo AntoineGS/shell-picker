@@ -3,6 +3,7 @@ package preview
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -56,30 +57,31 @@ func Render(ctx context.Context, candidate protocol.ResolvedCandidate, options O
 	if err != nil {
 		return err
 	}
-	output := newCountingWriter(options.Stdout, limits.MaxOutputBytes)
-	output.onLimit = cancel
+	budget := newOutputBudget(limits.MaxOutputBytes, cancel)
+	stdout, stderr := budget.writer(options.Stdout), budget.writer(options.Stderr)
 	started := time.Now()
-	used, externalErr := renderExternal(renderCtx, path, category, options, output)
-	if output.exceeded {
+	used, externalErr := renderExternal(renderCtx, path, category, options, stdout, stderr)
+	written, exceeded := budget.status()
+	if exceeded {
 		return ErrOutputLimit
 	}
 	if err := renderCtx.Err(); err != nil {
 		return err
 	}
-	if used && externalErr == nil && output.written > 0 {
+	if used && externalErr == nil && written > 0 {
 		return nil
 	}
 	if options.OnDispatch != nil {
 		options.OnDispatch("native", 0, 0)
 	}
-	err = renderNative(renderCtx, path, info, prefix, category, output, limits)
+	err = renderNative(renderCtx, path, info, prefix, category, stdout, limits)
 	if options.OnDispatch != nil {
 		options.OnDispatch("native", 0, time.Since(started))
 	}
 	return err
 }
 
-func renderExternal(ctx context.Context, path string, category Category, options Options, output *countingWriter) (bool, error) {
+func renderExternal(ctx context.Context, path string, category Category, options Options, stdout, stderr io.Writer) (bool, error) {
 	tool, arguments := externalTool(category, path)
 	if tool == "" {
 		return false, nil
@@ -89,8 +91,7 @@ func renderExternal(ctx context.Context, path string, category Category, options
 		return false, nil
 	}
 	started := time.Now()
-	child, err := options.Runner.Start(ctx, process.Spec{Path: executable, Args: arguments, Env: options.Environment,
-		Stdout: output, Stderr: output, Containment: process.ContainmentInheritTree, WaitDelay: time.Second})
+	child, err := options.Runner.Start(ctx, externalProcessSpec(executable, arguments, options.Environment, stdout, stderr))
 	if err != nil {
 		return false, err
 	}
@@ -102,6 +103,11 @@ func renderExternal(ctx context.Context, path string, category Category, options
 		options.OnDispatch(tool, child.PID(), time.Since(started))
 	}
 	return true, err
+}
+
+func externalProcessSpec(executable string, arguments, environment []string, stdout, stderr io.Writer) process.Spec {
+	return process.Spec{Path: executable, Args: arguments, Env: environment, Stdout: stdout, Stderr: stderr,
+		Containment: process.ContainmentInheritTree, WaitDelay: time.Second}
 }
 
 func externalTool(category Category, path string) (string, []string) {
@@ -180,16 +186,36 @@ func renderNative(ctx context.Context, path string, info os.FileInfo, prefix []b
 	case CategoryVideo, CategoryAudio:
 		return renderMetadata(category, info, output)
 	case CategoryZip:
-		return renderZip(ctx, path, output, limits)
+		return renderArchiveOrFallback(ctx, CategoryZip, info, output, func() error {
+			return renderZip(ctx, path, output, limits)
+		})
 	case CategoryGzip:
-		return renderGzip(ctx, path, output, limits)
+		return renderArchiveOrFallback(ctx, CategoryGzip, info, output, func() error {
+			return renderGzip(ctx, path, output, limits)
+		})
 	case CategoryTar:
-		return renderTar(ctx, path, output, limits)
+		return renderArchiveOrFallback(ctx, CategoryTar, info, output, func() error {
+			return renderTar(ctx, path, output, limits)
+		})
 	case CategoryXz, CategoryBzip, CategoryBinary:
 		return renderMetadata(category, info, output)
 	default:
 		return fmt.Errorf("preview: unsupported category %q", category)
 	}
+}
+
+func renderArchiveOrFallback(ctx context.Context, category Category, info os.FileInfo, output io.Writer, render func() error) error {
+	err := render()
+	if err == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if errors.Is(err, ErrOutputLimit) || errors.Is(err, ErrInputLimit) || errors.Is(err, ErrArchiveEntries) {
+		return err
+	}
+	return renderMetadata(category, info, output)
 }
 
 func renderDirectory(ctx context.Context, path string, output io.Writer, limits Limits) error {
@@ -226,7 +252,7 @@ func renderText(ctx context.Context, path string, output io.Writer, limits Limit
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(io.LimitReader(file, limits.MaxInternalInputBytes))
-	scanner.Buffer(make([]byte, 64<<10), int(min(limits.MaxInternalInputBytes, 1<<20)))
+	scanner.Buffer(make([]byte, min(limits.MaxInternalInputBytes, int64(64<<10))), int(limits.MaxInternalInputBytes))
 	lines := 0
 	for scanner.Scan() && lines < limits.MaxInternalLines {
 		if err := ctx.Err(); err != nil {

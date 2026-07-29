@@ -3,6 +3,7 @@ package preview
 import (
 	"errors"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -10,6 +11,7 @@ var (
 	ErrOutputLimit     = errors.New("preview: output limit exceeded")
 	ErrInputLimit      = errors.New("preview: input limit exceeded")
 	ErrArtifactLimit   = errors.New("preview: artifact limit exceeded")
+	ErrArchiveEntries  = errors.New("preview: archive entry limit exceeded")
 	ErrPathNotAbsolute = errors.New("preview: path is not an absolute filesystem candidate")
 )
 
@@ -55,48 +57,80 @@ func normalizedLimits(limits Limits) Limits {
 }
 
 type countingWriter struct {
-	destination io.Writer
-	remaining   int64
-	written     int64
-	exceeded    bool
-	onLimit     func()
+	writer *budgetWriter
 }
 
 func newCountingWriter(destination io.Writer, maximum int64) *countingWriter {
-	if destination == nil {
-		destination = io.Discard
-	}
-	return &countingWriter{destination: destination, remaining: maximum}
+	budget := newOutputBudget(maximum, nil)
+	return &countingWriter{writer: budget.writer(destination)}
 }
 
 func (writer *countingWriter) Write(data []byte) (int, error) {
-	if int64(len(data)) <= writer.remaining {
-		n, err := writer.destination.Write(data)
-		writer.remaining -= int64(n)
-		writer.written += int64(n)
-		return n, err
-	}
-	if writer.remaining <= 0 {
-		writer.limitReached()
-		return 0, ErrOutputLimit
-	}
-	allowed := int(writer.remaining)
-	n, err := writer.destination.Write(data[:allowed])
-	writer.remaining -= int64(n)
-	writer.written += int64(n)
-	if err != nil {
-		return n, err
-	}
-	writer.limitReached()
-	return n, ErrOutputLimit
+	return writer.writer.Write(data)
 }
 
-func (writer *countingWriter) limitReached() {
-	if writer.exceeded {
+type outputBudget struct {
+	mu        sync.Mutex
+	remaining int64
+	written   int64
+	exceeded  bool
+	onLimit   func()
+}
+
+type budgetWriter struct {
+	budget      *outputBudget
+	destination io.Writer
+}
+
+func newOutputBudget(maximum int64, onLimit func()) *outputBudget {
+	return &outputBudget{remaining: maximum, onLimit: onLimit}
+}
+
+func (budget *outputBudget) writer(destination io.Writer) *budgetWriter {
+	if destination == nil {
+		destination = io.Discard
+	}
+	return &budgetWriter{budget: budget, destination: destination}
+}
+
+func (writer *budgetWriter) Write(data []byte) (int, error) {
+	budget := writer.budget
+	budget.mu.Lock()
+	defer budget.mu.Unlock()
+	if budget.remaining <= 0 {
+		budget.limitReachedLocked()
+		return 0, ErrOutputLimit
+	}
+	allowed := len(data)
+	limited := int64(allowed) > budget.remaining
+	if limited {
+		allowed = int(budget.remaining)
+	}
+	written, err := writer.destination.Write(data[:allowed])
+	budget.remaining -= int64(written)
+	budget.written += int64(written)
+	if err != nil {
+		return written, err
+	}
+	if limited && written == allowed {
+		budget.limitReachedLocked()
+		return written, ErrOutputLimit
+	}
+	return written, nil
+}
+
+func (budget *outputBudget) limitReachedLocked() {
+	if budget.exceeded {
 		return
 	}
-	writer.exceeded = true
-	if writer.onLimit != nil {
-		writer.onLimit()
+	budget.exceeded = true
+	if budget.onLimit != nil {
+		budget.onLimit()
 	}
+}
+
+func (budget *outputBudget) status() (int64, bool) {
+	budget.mu.Lock()
+	defer budget.mu.Unlock()
+	return budget.written, budget.exceeded
 }
