@@ -39,7 +39,25 @@ type previewGolden struct {
 type parityToolLog struct {
 	Mode string   `json:"mode"`
 	PID  int      `json:"pid"`
+	Name string   `json:"name"`
 	Args []string `json:"args"`
+}
+
+type previewProcessRecord struct {
+	Phase string `json:"phase"`
+	PID   int    `json:"pid"`
+}
+
+type previewResourceOutcome struct {
+	Error       string                 `json:"error"`
+	Output      string                 `json:"output"`
+	Dispatch    []string               `json:"dispatch"`
+	Processes   []previewProcessRecord `json:"processes"`
+	RenderNanos int64                  `json:"render_nanos"`
+}
+
+type previewProcessStats struct {
+	Starts, Exits, MaxLive int
 }
 
 func TestPreviewCategoryMatrix(t *testing.T) {
@@ -70,7 +88,7 @@ func TestPreviewCategoryMatrix(t *testing.T) {
 				// Only missing is guaranteed to start no tool, so every tool-capable
 				// matrix case owns an isolated helper process group.
 				if variant != "missing" {
-					runParityPreviewResourceSubprocess(t, path, tools, logPath, mode, strings.Split(chain, ",")[0], variant)
+					runParityPreviewResourceSubprocess(t, category, path, tools, logPath, mode, strings.Split(chain, ",")[0], variant)
 					return
 				}
 				cache, err := preview.NewCache(filepath.Join(t.TempDir(), "cache"), 8<<20)
@@ -79,7 +97,7 @@ func TestPreviewCategoryMatrix(t *testing.T) {
 				}
 				var output bytes.Buffer
 				var mu sync.Mutex
-				live, maxLive, starts := 0, 0, 0
+				processes := []previewProcessRecord{}
 				dispatches := []string{}
 				options := preview.Options{
 					Columns: 80, Lines: 24, Stdout: &output, Stderr: &output, Cache: cache,
@@ -89,15 +107,8 @@ func TestPreviewCategoryMatrix(t *testing.T) {
 					Runner: processpkg.Runner{Observe: func(event processpkg.ProcessEvent) {
 						mu.Lock()
 						defer mu.Unlock()
-						switch event.Phase {
-						case "start":
-							starts++
-							live++
-							if live > maxLive {
-								maxLive = live
-							}
-						case "exit":
-							live--
+						if event.Phase == "start" || event.Phase == "exit" {
+							processes = append(processes, previewProcessRecord{Phase: event.Phase, PID: event.PID})
 						}
 					}},
 					OnDispatch: func(name string, _ int, _ time.Duration) {
@@ -108,52 +119,21 @@ func TestPreviewCategoryMatrix(t *testing.T) {
 				}
 				err = preview.Render(context.Background(), protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte(path)}, options)
 				mu.Lock()
-				gotStarts, gotMaxLive, gotLive := starts, maxLive, live
+				gotProcesses := append([]previewProcessRecord(nil), processes...)
 				gotDispatches := append([]string(nil), dispatches...)
 				mu.Unlock()
-				if gotLive != 0 || gotMaxLive > golden.MaximumLiveChildren || gotStarts > golden.MaximumSequentialChildren {
-					t.Fatalf("children starts/live/max=%d/%d/%d", gotStarts, gotLive, gotMaxLive)
-				}
+				stats := assertPreviewProcessJournal(t, gotProcesses, false, golden)
 				logs := readParityToolLogs(t, logPath)
 				switch variant {
 				case "missing":
-					if err != nil || !usefulParityPreview(output.String()) || gotStarts != 0 || !reflect.DeepEqual(gotDispatches, []string{"native"}) || len(logs) != 0 {
-						t.Fatalf("missing err=%v output=%d starts=%d dispatch=%q logs=%+v", err, output.Len(), gotStarts, gotDispatches, logs)
-					}
-				case "present":
-					if err != nil || output.Len() == 0 || gotStarts == 0 || len(gotDispatches) != 1 || gotDispatches[0] != strings.Split(chain, ",")[0] {
-						t.Fatalf("present err=%v output=%d starts=%d dispatch=%q", err, output.Len(), gotStarts, gotDispatches)
-					}
-					assertParityToolReceivedPath(t, logs, path)
-				case "failure":
-					if err != nil || output.Len() == 0 || gotStarts == 0 || len(gotDispatches) != 1 || gotDispatches[0] != strings.Split(chain, ",")[0] {
-						t.Fatalf("failure fallback err=%v output=%d starts=%d dispatch=%q", err, output.Len(), gotStarts, gotDispatches)
-					}
-					assertParityToolReceivedPath(t, logs, path)
-				case "hanging":
-					if !errors.Is(err, preview.ErrTerminalResource) || !errors.Is(err, context.DeadlineExceeded) || gotStarts != 1 ||
-						len(gotDispatches) != 1 || gotDispatches[0] == "native" {
-						t.Fatalf("hanging err=%v starts=%d dispatch=%q", err, gotStarts, gotDispatches)
-					}
-					assertParityProcessesGone(t, logs)
-				case "overflow":
-					if !errors.Is(err, preview.ErrTerminalResource) || !errors.Is(err, preview.ErrOutputLimit) || gotStarts != 1 ||
-						len(gotDispatches) != 1 || gotDispatches[0] == "native" || output.Len() > int(options.Limits.MaxOutputBytes) {
-						t.Fatalf("overflow err=%v output=%d starts=%d dispatch=%q", err, output.Len(), gotStarts, gotDispatches)
+					if err != nil || stats.Starts != 0 || stats.MaxLive != 0 || !reflect.DeepEqual(gotDispatches, []string{"native"}) || len(logs) != 0 {
+						t.Fatalf("missing err=%v output=%q stats=%+v dispatch=%q logs=%+v", err, output.String(), stats, gotDispatches, logs)
 					}
 				}
+				assertParityCategoryPreview(t, category, output.String(), false)
 			})
 		}
 	}
-}
-
-func usefulParityPreview(output string) bool {
-	trimmed := strings.TrimSpace(output)
-	if trimmed == "" {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	return lower != "error" && lower != "diagnostic" && !strings.HasPrefix(lower, "error:")
 }
 
 func TestPreviewSlowStartIsolatedFromRaceParent(t *testing.T) {
@@ -161,66 +141,94 @@ func TestPreviewSlowStartIsolatedFromRaceParent(t *testing.T) {
 	tools, logPath := t.TempDir(), filepath.Join(t.TempDir(), "tools.jsonl")
 	installParityTool(t, tools, "glow")
 	started := time.Now()
-	runParityPreviewResourceSubprocess(t, path, tools, logPath, "tool-slow", "glow", "present")
+	runParityPreviewResourceSubprocess(t, "markdown", path, tools, logPath, "tool-slow", "glow", "timeout")
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("slow renderer escaped helper bound: %s", elapsed)
 	}
 }
 
-func runParityPreviewResourceSubprocess(t *testing.T, fixture, tools, toolLog, mode, firstTool, variant string) {
+func runParityPreviewResourceSubprocess(t *testing.T, category, fixture, tools, toolLog, mode, firstTool, variant string) {
 	t.Helper()
 	root := t.TempDir()
 	dispatchLog := filepath.Join(root, "dispatch")
-	processLog := filepath.Join(root, "process")
+	rendererLog := filepath.Join(root, "renderer-process")
+	helperLog := filepath.Join(root, "helper-process")
+	terminalLog := filepath.Join(root, "terminal")
+	capturePath := filepath.Join(root, "capture")
 	outcomePath := filepath.Join(root, "outcome.json")
 	controlled := map[string]string{
 		"PARITY_PREVIEW_RESOURCE_HELPER": "1", "PARITY_PREVIEW_FIXTURE": fixture, "PARITY_PREVIEW_TOOLS": tools,
 		"PARITY_PREVIEW_TOOL_LOG": toolLog, "PARITY_PREVIEW_MODE": mode, "PARITY_PREVIEW_DISPATCH": dispatchLog,
-		"PARITY_PREVIEW_PROCESS": processLog, "PARITY_PREVIEW_OUTCOME": outcomePath,
-		"PARITY_PREVIEW_VARIANT": variant,
+		"PARITY_PREVIEW_PROCESS": rendererLog, "PARITY_PREVIEW_OUTCOME": outcomePath, "PARITY_PREVIEW_CATEGORY": category,
+		"PARITY_PREVIEW_TERMINAL": terminalLog, "PARITY_PREVIEW_CAPTURE": capturePath,
 	}
 	var output bytes.Buffer
-	runner := processpkg.Runner{}
+	runner := processpkg.Runner{Observe: func(event processpkg.ProcessEvent) {
+		if event.Phase == "start" || event.Phase == "exit" {
+			appendPreviewProcessRecord(t, helperLog, event.Phase, event.PID)
+		}
+	}}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
+	started := time.Now()
 	err := runner.Run(ctx, processpkg.Spec{Path: paritySelfExecutable(t),
 		Args: []string{"-test.run=^TestParityPreviewResourceProcess$", "-test.v"},
 		Env:  processpkg.SanitizeEnv(os.Environ(), controlled), Stdout: &output, Stderr: &output,
-		Containment: processpkg.ContainmentOwnTree, WaitDelay: time.Second})
-	// A successful first renderer may cancel its inherited helper group; an
-	// ordinary failed renderer must instead return its native fallback.
-	if variant == "failure" && err != nil {
-		t.Fatalf("failure helper=%v: %s", err, output.String())
-	}
-	var outcome struct {
-		Error, Output string
-		Starts        int
-		Dispatch      []string
-	}
-	rawOutcome, readErr := os.ReadFile(outcomePath)
-	if (variant == "failure" || err == nil) && (readErr != nil || json.Unmarshal(rawOutcome, &outcome) != nil) {
-		t.Fatalf("failure outcome=%q err=%v", rawOutcome, readErr)
+		Containment: processpkg.ContainmentOwnTree, WaitDelay: 100 * time.Millisecond})
+	elapsed := time.Since(started)
+	helperStats := assertPreviewProcessJournal(t, readPreviewProcessJournal(t, helperLog), true, previewGolden{
+		MaximumLiveChildren: 1, MaximumSequentialChildren: 1,
+	})
+	if helperStats.Starts != 1 || helperStats.Exits != 1 || helperStats.MaxLive != 1 {
+		t.Fatalf("helper process stats=%+v", helperStats)
 	}
 	dispatch, readErr := os.ReadFile(dispatchLog)
 	if readErr != nil || string(dispatch) != firstTool+"\n" {
 		t.Fatalf("resource dispatch=%q err=%v helper=%v output=%s", dispatch, readErr, err, output.String())
 	}
-	processes, readErr := os.ReadFile(processLog)
-	if readErr != nil || strings.Count(string(processes), "start\n") > 3 || strings.Contains(string(processes), "native") {
-		t.Fatalf("resource process events=%q err=%v", processes, readErr)
-	}
 	logs := readParityToolLogs(t, toolLog)
-	assertParityToolReceivedPath(t, logs, fixture)
-	if variant == "failure" || err == nil {
-		if outcome.Error != "" || strings.TrimSpace(outcome.Output) == "" || outcome.Starts == 0 || len(outcome.Dispatch) != 1 || outcome.Dispatch[0] != firstTool {
-			t.Fatalf("%s outcome=%+v", variant, outcome)
+	assertParityToolInvocation(t, category, mode, firstTool, logs, fixture)
+	terminal := variant == "hanging" || variant == "overflow" || variant == "timeout"
+	if terminal {
+		var exitErr *processpkg.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 137 || errors.Is(err, context.DeadlineExceeded) || elapsed >= time.Second {
+			t.Fatalf("%s helper err=%v elapsed=%s output=%s", variant, err, elapsed, output.String())
 		}
-	}
-	if mode == "tool-hang" {
+		if raw, outcomeErr := os.ReadFile(outcomePath); !errors.Is(outcomeErr, os.ErrNotExist) {
+			t.Fatalf("%s unexpectedly wrote final outcome %q err=%v", variant, raw, outcomeErr)
+		}
+		marker := strings.TrimSpace(string(mustReadParityFile(t, terminalLog)))
+		wantMarker := map[string]string{"hanging": "tool-hang", "overflow": "tool-overflow:emitted=80", "timeout": "tool-slow"}[variant]
+		if marker != wantMarker {
+			t.Fatalf("%s terminal marker=%q, want %q", variant, marker, wantMarker)
+		}
+		rendererRecords := readPreviewProcessJournal(t, rendererLog)
+		if len(rendererRecords) != 1 || rendererRecords[0].Phase != "start" || len(logs) == 0 || rendererRecords[0].PID != logs[0].PID {
+			t.Fatalf("%s renderer journal=%+v logs=%+v", variant, rendererRecords, logs)
+		}
+		captured := mustReadParityFile(t, capturePath)
+		if variant == "overflow" && len(captured) > 64 {
+			t.Fatalf("overflow captured bytes=%d, want at most 64", len(captured))
+		}
 		assertParityProcessesGone(t, logs)
-	} else if variant == "overflow" && len(logs) != 1 {
-		t.Fatalf("overflow tool logs=%+v", logs)
+		return
 	}
+	if err != nil {
+		t.Fatalf("%s helper=%v: %s", variant, err, output.String())
+	}
+	var outcome previewResourceOutcome
+	rawOutcome, readErr := os.ReadFile(outcomePath)
+	if readErr != nil || json.Unmarshal(rawOutcome, &outcome) != nil {
+		t.Fatalf("%s outcome=%q err=%v", variant, rawOutcome, readErr)
+	}
+	stats := assertPreviewProcessJournal(t, outcome.Processes, true, previewGolden{MaximumLiveChildren: 1, MaximumSequentialChildren: 3})
+	if outcome.Error != "" || stats.Starts == 0 || stats.MaxLive != 1 || len(outcome.Dispatch) != 1 || outcome.Dispatch[0] != firstTool {
+		t.Fatalf("%s outcome=%+v stats=%+v", variant, outcome, stats)
+	}
+	if variant == "present" && time.Duration(outcome.RenderNanos) >= 125*time.Millisecond {
+		t.Fatalf("present render clustered at deadline: %s", time.Duration(outcome.RenderNanos))
+	}
+	assertParityCategoryPreview(t, category, outcome.Output, variant == "present")
 }
 
 func TestParityPreviewResourceProcess(t *testing.T) {
@@ -240,16 +248,21 @@ func TestParityPreviewResourceProcess(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var output bytes.Buffer
+	output, err := os.OpenFile(os.Getenv("PARITY_PREVIEW_CAPTURE"), os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer output.Close()
 	options := preview.Options{
-		Columns: 80, Lines: 24, Stdout: &output, Stderr: &output,
+		Columns: 80, Lines: 24, Stdout: output, Stderr: output,
 		Environment: []string{"PATH=" + os.Getenv("PARITY_PREVIEW_TOOLS"), "TERM=xterm-kitty",
-			parityHelperEnvironment + "=" + os.Getenv("PARITY_PREVIEW_MODE"), "PARITY_TEST_TOOL_LOG=" + os.Getenv("PARITY_PREVIEW_TOOL_LOG")},
+			parityHelperEnvironment + "=" + os.Getenv("PARITY_PREVIEW_MODE"), "PARITY_TEST_TOOL_LOG=" + os.Getenv("PARITY_PREVIEW_TOOL_LOG"),
+			"PARITY_TEST_CATEGORY=" + os.Getenv("PARITY_PREVIEW_CATEGORY"), "PARITY_TEST_TERMINAL=" + os.Getenv("PARITY_PREVIEW_TERMINAL")},
 		Limits: preview.Limits{Deadline: 150 * time.Millisecond, MaxOutputBytes: 256, MaxInternalInputBytes: 1 << 20,
 			MaxInternalLines: 100, MaxArchiveEntries: 100, MaxArchiveDecompressedBytes: 1 << 20, MaxArtifactBytes: 4 << 20},
 		Runner: processpkg.Runner{Observe: func(event processpkg.ProcessEvent) {
 			if event.Phase == "start" || event.Phase == "exit" {
-				appendMarker(os.Getenv("PARITY_PREVIEW_PROCESS"), event.Phase)
+				appendPreviewProcessRecord(t, os.Getenv("PARITY_PREVIEW_PROCESS"), event.Phase, event.PID)
 			}
 		}},
 		OnDispatch: func(name string, _ int, _ time.Duration) {
@@ -259,25 +272,100 @@ func TestParityPreviewResourceProcess(t *testing.T) {
 	if os.Getenv("PARITY_PREVIEW_MODE") == "tool-overflow" {
 		options.Limits.MaxOutputBytes = 64
 	}
-	err := preview.Render(context.Background(), protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte(os.Getenv("PARITY_PREVIEW_FIXTURE"))}, options)
-	starts := 0
-	for _, event := range strings.Fields(string(mustReadParityFile(t, os.Getenv("PARITY_PREVIEW_PROCESS")))) {
-		if event == "start" {
-			starts++
-		}
+	started := time.Now()
+	err = preview.Render(context.Background(), protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte(os.Getenv("PARITY_PREVIEW_FIXTURE"))}, options)
+	renderElapsed := time.Since(started)
+	if syncErr := output.Sync(); syncErr != nil {
+		t.Fatal(syncErr)
+	}
+	rawOutput, readErr := os.ReadFile(os.Getenv("PARITY_PREVIEW_CAPTURE"))
+	if readErr != nil {
+		t.Fatal(readErr)
 	}
 	dispatch := strings.Fields(string(mustReadParityFile(t, os.Getenv("PARITY_PREVIEW_DISPATCH"))))
-	outcome, marshalErr := json.Marshal(struct {
-		Error, Output string
-		Starts        int
-		Dispatch      []string
-	}{Error: errorText(err), Output: output.String(), Starts: starts, Dispatch: dispatch})
+	outcome, marshalErr := json.Marshal(previewResourceOutcome{Error: errorText(err), Output: string(rawOutput), Dispatch: dispatch,
+		Processes: readPreviewProcessJournal(t, os.Getenv("PARITY_PREVIEW_PROCESS")), RenderNanos: renderElapsed.Nanoseconds()})
 	if marshalErr != nil {
 		t.Fatal(marshalErr)
 	}
 	if writeErr := os.WriteFile(os.Getenv("PARITY_PREVIEW_OUTCOME"), outcome, 0o600); writeErr != nil {
 		t.Fatal(writeErr)
 	}
+}
+
+func appendPreviewProcessRecord(t *testing.T, path, phase string, pid int) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(phase + " " + strconv.Itoa(pid) + "\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readPreviewProcessJournal(t *testing.T, path string) []previewProcessRecord {
+	t.Helper()
+	raw := mustReadParityFile(t, path)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return nil
+	}
+	records := make([]previewProcessRecord, 0, len(lines))
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			t.Fatalf("invalid process journal line %q", line)
+		}
+		pid, err := strconv.Atoi(fields[1])
+		if err != nil || pid <= 0 || fields[0] != "start" && fields[0] != "exit" {
+			t.Fatalf("invalid process journal line %q", line)
+		}
+		records = append(records, previewProcessRecord{Phase: fields[0], PID: pid})
+	}
+	return records
+}
+
+func assertPreviewProcessJournal(t *testing.T, records []previewProcessRecord, requireStart bool, golden previewGolden) previewProcessStats {
+	t.Helper()
+	live := make(map[int]bool)
+	seen := make(map[int]bool)
+	stats := previewProcessStats{}
+	for _, record := range records {
+		switch record.Phase {
+		case "start":
+			if seen[record.PID] {
+				t.Fatalf("duplicate process start PID %d in %+v", record.PID, records)
+			}
+			seen[record.PID] = true
+			live[record.PID] = true
+			stats.Starts++
+			stats.MaxLive = max(stats.MaxLive, len(live))
+			if len(live) > golden.MaximumLiveChildren {
+				t.Fatalf("process live=%d exceeds %d: %+v", len(live), golden.MaximumLiveChildren, records)
+			}
+		case "exit":
+			if !live[record.PID] {
+				t.Fatalf("process exit without live PID %d in %+v", record.PID, records)
+			}
+			delete(live, record.PID)
+			stats.Exits++
+		}
+	}
+	if requireStart && stats.Starts == 0 {
+		t.Fatalf("process journal has zero starts: %+v", records)
+	}
+	if stats.Starts > golden.MaximumSequentialChildren {
+		t.Fatalf("process starts=%d exceeds %d: %+v", stats.Starts, golden.MaximumSequentialChildren, records)
+	}
+	if len(live) != 0 {
+		t.Fatalf("process journal has terminal survivors %v: %+v", live, records)
+	}
+	return stats
 }
 
 func errorText(err error) string {
@@ -309,6 +397,9 @@ func writeParityPreviewFixture(t *testing.T, category string) string {
 	if category == "directory" {
 		path := filepath.Join(root, "directory --option with space")
 		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "directory-entry.txt"), []byte("entry\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		return path
@@ -390,9 +481,48 @@ func installParityTool(t *testing.T, directory, name string) {
 	// Do not copy the race-instrumented Go test binary: its startup alone can
 	// exceed the production preview deadline.  This deterministic POSIX tool
 	// records NUL-framed argv and implements the renderer contract directly.
-	body := "#!/bin/sh\nprintf '%s\\0' \"$PARITY_TEST_HELPER\" \"$$\" \"$@\" '' >> \"$PARITY_TEST_TOOL_LOG\"\n" +
-		"case \"$PARITY_TEST_HELPER\" in tool-fail) exit 7;; tool-hang) sleep 10 & c=$!; printf '%s\\0' tool-descendant \"$c\" '' >> \"$PARITY_TEST_TOOL_LOG\"; wait;; tool-overflow) yes overflow | head -c 8192;; tool-slow) sleep .3;; esac\n" +
-		"case \"$(basename \"$0\")\" in file) printf 'application/octet-stream\\n';; *) printf 'external preview\\n';; esac\n"
+	body := `#!/bin/sh
+name=${0##*/}
+printf '%s\0' "$PARITY_TEST_HELPER" "$$" "$name" "$@" '' >> "$PARITY_TEST_TOOL_LOG"
+case "$PARITY_TEST_HELPER" in
+  tool-fail) exit 7 ;;
+  tool-hang)
+    printf '%s\n' tool-hang > "$PARITY_TEST_TERMINAL"
+    /bin/sleep 10 & child=$!
+    printf '%s\0' tool-descendant "$child" sleep '' >> "$PARITY_TEST_TOOL_LOG"
+    wait
+    ;;
+  tool-overflow)
+    payload=01234567890123456789012345678901234567890123456789012345678901234567890123456789
+    printf '%s' "$payload"
+    printf 'tool-overflow:emitted=%s\n' "${#payload}" > "$PARITY_TEST_TERMINAL"
+    /bin/sleep 10
+    ;;
+  tool-slow)
+    printf '%s\n' tool-slow > "$PARITY_TEST_TERMINAL"
+    /bin/sleep 0.3
+    ;;
+esac
+case "$name" in
+  pdftoppm) printf 'parity-artifact\n' > "$4.jpg" ;;
+  ffmpegthumbnailer)
+    output=
+    next=
+    for argument in "$@"; do
+      case "$next" in yes) output=$argument; break ;; esac
+      case "$argument" in -o) next=yes ;; esac
+    done
+    case "$output" in '') exit 123 ;; *) printf 'parity-artifact\n' > "$output" ;; esac
+    ;;
+  ffmpeg)
+    output=
+    for argument in "$@"; do output=$argument; done
+    case "$output" in '') exit 123 ;; *) printf 'parity-artifact\n' > "$output" ;; esac
+    ;;
+  file) printf 'application/octet-stream\n' ;;
+  *) printf 'parity-%s-preview\n' "$PARITY_TEST_CATEGORY" ;;
+esac
+`
 	path := filepath.Join(directory, name)
 	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
@@ -419,7 +549,8 @@ func readParityToolLogs(t *testing.T, path string) []parityToolLog {
 		for len(frames) > 1 {
 			mode := string(frames[0])
 			pid, _ := strconv.Atoi(string(frames[1]))
-			frames = frames[2:]
+			name := string(frames[2])
+			frames = frames[3:]
 			var args []string
 			for len(frames) > 0 && len(frames[0]) > 0 {
 				args = append(args, string(frames[0]))
@@ -428,7 +559,7 @@ func readParityToolLogs(t *testing.T, path string) []parityToolLog {
 			if len(frames) > 0 {
 				frames = frames[1:]
 			}
-			logs = append(logs, parityToolLog{Mode: mode, PID: pid, Args: args})
+			logs = append(logs, parityToolLog{Mode: mode, PID: pid, Name: name, Args: args})
 		}
 		return logs
 	}
@@ -447,21 +578,77 @@ func readParityToolLogs(t *testing.T, path string) []parityToolLog {
 	return logs
 }
 
-func assertParityToolReceivedPath(t *testing.T, logs []parityToolLog, path string) {
+func assertParityToolInvocation(t *testing.T, category, mode, tool string, logs []parityToolLog, path string) {
 	t.Helper()
-	for _, log := range logs {
-		for _, argument := range log.Args[1:] {
-			if argument == path {
-				return
-			}
+	if len(logs) == 0 || logs[0].Mode != mode || logs[0].Name != tool || logs[0].PID <= 0 {
+		t.Fatalf("first tool mode/name/PID=%+v, want %s/%s/positive", logs, mode, tool)
+	}
+	args := logs[0].Args
+	want := map[string][]string{
+		"directory": {"--color=always", "--icons=always", "--group-directories-first", "--", path},
+		"markdown":  {"--width", "79", path},
+		"text":      {"--color=always", "--style=plain", "--paging=never", "--", path},
+		"image":     {"icat", "--clear", "--transfer-mode=memory", "--place", "80x24@0x0", "--", path},
+		"zip":       {"-l", "--", path},
+		"gzip":      {"-l", "--", path},
+		"xz":        {"-l", "--", path},
+		"tar":       {"tf", path},
+		"bzip":      {"tf", path},
+		"binary":    {"--brief", "--mime-type", "--", path},
+	}[category]
+	switch category {
+	case "pdf":
+		if len(args) == 4 && filepath.IsAbs(args[3]) {
+			want = []string{"-singlefile", "-jpeg", path, args[3]}
+		}
+	case "video":
+		if len(args) == 7 && filepath.IsAbs(args[3]) {
+			want = []string{"-i", path, "-o", args[3], "-s", "1080", "-m"}
+		}
+	case "audio":
+		if len(args) == 7 && filepath.IsAbs(args[6]) {
+			want = []string{"-y", "-i", path, "-an", "-c:v", "copy", args[6]}
 		}
 	}
-	t.Fatalf("no tool received exact absolute path %q: %+v", path, logs)
+	if !reflect.DeepEqual(args, want) || !filepath.IsAbs(path) || !strings.HasPrefix(filepath.Base(path), "--option") && category != "directory" {
+		t.Fatalf("%s first tool argv=%q, want %q for absolute leading-option fixture %q", category, args, want, path)
+	}
+}
+
+func assertParityCategoryPreview(t *testing.T, category, output string, external bool) {
+	t.Helper()
+	if external && category != "binary" {
+		want := "parity-" + category + "-preview\n"
+		if output != want {
+			t.Fatalf("%s external preview=%q, want %q", category, output, want)
+		}
+		return
+	}
+	want := map[string][]string{
+		"directory": {"Directory:", "directory-entry.txt"},
+		"markdown":  {"# markdown"},
+		"text":      {"plain text"},
+		"image":     {"image file:"},
+		"pdf":       {"PDF document:", "%PDF-1.7"},
+		"video":     {"video file:"},
+		"audio":     {"audio file:"},
+		"zip":       {"entry.txt"},
+		"gzip":      {"Gzip archive:"},
+		"xz":        {"xz file:"},
+		"tar":       {"entry.txt"},
+		"bzip":      {"bzip file:"},
+		"binary":    {"binary file:"},
+	}[category]
+	for _, marker := range want {
+		if !strings.Contains(output, marker) {
+			t.Fatalf("%s native preview %q lacks fixture marker %q", category, output, marker)
+		}
+	}
 }
 
 func assertParityProcessesGone(t *testing.T, logs []parityToolLog) {
 	t.Helper()
-	if len(logs) < 2 {
+	if len(logs) == 0 || logs[0].Mode == "tool-hang" && len(logs) < 2 {
 		t.Fatalf("hanging renderer did not start a descendant: %+v", logs)
 	}
 	deadline := time.NewTimer(2 * time.Second)

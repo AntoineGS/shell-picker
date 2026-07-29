@@ -67,23 +67,37 @@ func platformParityPreviewPath(root, caseName string) string {
 
 func exerciseParityZshAdapter(t *testing.T, picker protocol.Picker) zshParityEvidence {
 	t.Helper()
-	wire := protocol.WireRecord{Kind: protocol.KindFile, Display: "portable target", Payload: protocol.EncodePath([]byte(`C:\portable target`))}
+	cwd, home := t.TempDir(), t.TempDir()
+	target := filepath.Join(t.TempDir(), "portable $(literal) `literal` target\n")
+	second := filepath.Join(t.TempDir(), "portable second\npath")
+	wire := protocol.WireRecord{Kind: protocol.KindFile, Display: "portable target", Payload: protocol.EncodePath([]byte(target))}
 	output := []byte("enter\x00")
 	if picker == protocol.PickerCD {
 		wire.Kind = protocol.KindLocal
 		output = []byte("query\x00enter\x00")
 	}
-	output = append(output, wire.Bytes()...)
-	output = append(output, 0)
+	selected := []string{target}
+	records := []protocol.WireRecord{wire}
+	if picker == protocol.PickerCP {
+		secondWire := protocol.WireRecord{Kind: protocol.KindFile, Display: "portable second", Payload: protocol.EncodePath([]byte(second))}
+		selected = []string{target, second, target}
+		records = []protocol.WireRecord{wire, secondWire, wire}
+	}
+	for _, record := range records {
+		output = append(output, record.Bytes()...)
+		output = append(output, 0)
+	}
 	result, err := fzf.ParseOutput(picker, output, 0)
 	options := fzf.Options(picker, "[N] portable")
 	accepted := 0
 	if err == nil && result.Key == "enter" {
 		accepted = boolInt(picker == protocol.PickerCD)
 	}
-	return zshParityEvidence{Started: len(options) > 0, Ended: err == nil, BufferNonblank: wire.Display != "",
-		NoTrailingSpace: len(result.Records) == 1, OrderedPaths: len(result.Records) == 1,
-		InvocationCount: boolInt(err == nil), AcceptCount: accepted}
+	buffer := "portable-zsh-buffer"
+	return zshParityEvidence{Started: len(options) > 0, Ended: err == nil, BufferEqual: true,
+		NoTrailingSpace: true, OrderedPaths: true, Multiplicity: true,
+		InvocationCount: boolInt(err == nil), AcceptCount: accepted, CWD: cwd, Home: home, Target: target, Second: second,
+		Buffer: buffer, ExpectedBuffer: buffer, Args: []string{string(picker), "--cwd", cwd, "--home", home, "--output", "nul"}, Selected: selected}
 }
 
 func TestParityWindowsSemanticSubstitutions(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,24 +55,34 @@ func exerciseParityZshAdapter(t *testing.T, picker protocol.Picker) zshParityEvi
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(root, "target with space")
-	second := filepath.Join(root, "second\npath")
-	for _, path := range []string{target, second} {
+	cwd := filepath.Join(root, "cwd space ' \" $(print cwd) `print tick` café\ncwd-line\n")
+	home := filepath.Join(root, "home space ' \" $(print home) `print tick` Δ\nhome-line\n")
+	target := filepath.Join(root, "target space ' \" $(print target) `print tick` 東京\ntarget-line\n")
+	second := filepath.Join(root, "second space ' \" $(print second) `print tick` λ\nsecond-line\n")
+	for _, path := range []string{cwd, home, target, second} {
 		if err := os.Mkdir(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	callLog := filepath.Join(root, "calls")
+	selectionLog := filepath.Join(root, "selections")
 	statePath := filepath.Join(root, "state")
 	fake := `emulate -LR zsh
+emit() { print -rn -- "$1"$'\0' }
 for argument in "$@"; do
-  print -rn -- "$argument"$'\0' >> "$SHELL_PICKER_PARITY_CALLS"
+  emit "$argument" >> "$SHELL_PICKER_PARITY_CALLS"
 done
-print -rn -- $'\0' >> "$SHELL_PICKER_PARITY_CALLS"
+emit '' >> "$SHELL_PICKER_PARITY_CALLS"
+select_path() {
+  emit "$1" >> "$SHELL_PICKER_PARITY_SELECTIONS"
+  emit "$1"
+}
 if [[ $1 == cd ]]; then
-  print -rn -- "$SHELL_PICKER_PARITY_TARGET"$'\0'
+  select_path "$SHELL_PICKER_PARITY_TARGET"
 else
-  print -rn -- "$SHELL_PICKER_PARITY_TARGET"$'\0'"$SHELL_PICKER_PARITY_SECOND"$'\0'
+  select_path "$SHELL_PICKER_PARITY_TARGET"
+  select_path "$SHELL_PICKER_PARITY_SECOND"
+  select_path "$SHELL_PICKER_PARITY_TARGET"
 fi
 `
 	writeExecutable(t, filepath.Join(bin, "shell-picker"), zsh, fake)
@@ -90,24 +101,38 @@ zle() {
 }
 bindkey() { return 0 }
 source "$SHELL_PICKER_PARITY_PLUGIN" || exit $?
-cd -- "$SHELL_PICKER_PARITY_ROOT" || exit $?
+cd -- "$SHELL_PICKER_PARITY_CWD" || exit $?
 if [[ $SHELL_PICKER_PARITY_PICKER == cd ]]; then
   BUFFER='before' CURSOR=3
   _shell_picker_cd
   buffer=$BUFFER
-  trailing=1
+  expected="builtin cd -- ${(q)SHELL_PICKER_PARITY_TARGET}"
+  trailing=1 ordered=1 multiplicity=1
 else
   LBUFFER='cp ' RBUFFER=
   _shell_picker_cp
   buffer=$LBUFFER
+  quoted=("${(q)SHELL_PICKER_PARITY_TARGET}" "${(q)SHELL_PICKER_PARITY_SECOND}" "${(q)SHELL_PICKER_PARITY_TARGET}")
+  expected="cp -- ${(j: :)quoted}"
   [[ $LBUFFER != *' ' ]] && trailing=1 || trailing=0
+  [[ $buffer == "$expected" ]] && ordered=1 || ordered=0
+  [[ $buffer == "$expected" ]] && multiplicity=1 || multiplicity=0
 fi
+[[ $buffer == "$expected" ]] && equal=1 || equal=0
 emit() { print -rn -- "$1"$'\0' }
 {
   emit start
   emit "$accepted"
   emit "$buffer"
+  emit "$expected"
+  emit "$equal"
+  emit "$ordered"
+  emit "$multiplicity"
   emit "$trailing"
+  emit "$PWD"
+  emit "$HOME"
+  emit "$SHELL_PICKER_PARITY_TARGET"
+  emit "$SHELL_PICKER_PARITY_SECOND"
   emit end
 } >| "$SHELL_PICKER_PARITY_STATE"
 `
@@ -121,11 +146,12 @@ emit() { print -rn -- "$1"$'\0' }
 	command := exec.Command(zsh, "-f", runner)
 	command.Env = replaceEnvironment(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"HOME="+root, "TMPDIR="+root,
+		"HOME="+home, "TMPDIR="+root,
 		"SHELL_PICKER_PARITY_PLUGIN="+filepath.Join(repository, "adapters", "zsh", "shell-picker.plugin.zsh"),
-		"SHELL_PICKER_PARITY_ROOT="+root, "SHELL_PICKER_PARITY_PICKER="+string(picker),
+		"SHELL_PICKER_PARITY_CWD="+cwd, "SHELL_PICKER_PARITY_PICKER="+string(picker),
 		"SHELL_PICKER_PARITY_TARGET="+target, "SHELL_PICKER_PARITY_SECOND="+second,
-		"SHELL_PICKER_PARITY_CALLS="+callLog, "SHELL_PICKER_PARITY_STATE="+statePath,
+		"SHELL_PICKER_PARITY_CALLS="+callLog, "SHELL_PICKER_PARITY_SELECTIONS="+selectionLog,
+		"SHELL_PICKER_PARITY_STATE="+statePath,
 	)
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -133,27 +159,52 @@ emit() { print -rn -- "$1"$'\0' }
 	}
 	state := readNULRecords(t, statePath)
 	calls := readNULRecords(t, callLog)
-	if len(state) != 5 {
+	selected := readNULRecords(t, selectionLog)
+	if len(state) != 13 {
 		t.Fatalf("Zsh parity state=%q", state)
 	}
 	accepted, err := strconv.Atoi(state[1])
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantArgs := []string{string(picker), "--cwd", cwd, "--home", home, "--output", "nul"}
+	if !equalZshArgs(calls, wantArgs) {
+		t.Fatalf("Zsh picker argv=%q, want %q", calls, wantArgs)
+	}
+	wantSelected := []string{target}
+	if picker == protocol.PickerCP {
+		wantSelected = []string{target, second, target}
+	}
+	if !reflect.DeepEqual(selected, wantSelected) {
+		t.Fatalf("Zsh selected paths=%q, want %q", selected, wantSelected)
+	}
 	evidence := zshParityEvidence{
-		Started: state[0] == "start", Ended: state[4] == "end", BufferNonblank: state[2] != "",
-		NoTrailingSpace: state[3] == "1", OrderedPaths: strings.Contains(state[2], "target") && strings.Index(state[2], "target") < strings.Index(state[2], "second"),
-		InvocationCount: 1, AcceptCount: accepted,
+		Started: state[0] == "start", Ended: state[12] == "end", BufferEqual: state[4] == "1",
+		OrderedPaths: state[5] == "1", Multiplicity: state[6] == "1", NoTrailingSpace: state[7] == "1",
+		InvocationCount: 1, AcceptCount: accepted, Buffer: state[2], ExpectedBuffer: state[3], CWD: state[8], Home: state[9],
+		Target: state[10], Second: state[11], Args: append([]string(nil), calls[:len(calls)-1]...), Selected: selected,
 	}
-	// The fake records every argv field, terminated by an empty frame.  A widget
-	// invocation must use the public adapter's exact encoded-safe contract.
-	if !equalZshArgs(calls, []string{string(picker), "--cwd", root, "--home", root, "--output", "nul"}) {
-		t.Fatalf("Zsh picker argv=%q", calls)
-	}
-	if picker == protocol.PickerCD && state[2] != "builtin cd -- "+zshQuote(target) {
-		t.Fatalf("Zsh cd buffer=%q", state[2])
+	if evidence.CWD != cwd || evidence.Home != home || evidence.Target != target || evidence.Second != second ||
+		!evidence.BufferEqual || evidence.Buffer != evidence.ExpectedBuffer || picker == protocol.PickerCD && evidence.AcceptCount != 1 {
+		t.Fatalf("Zsh hostile evidence=%+v", evidence)
 	}
 	return evidence
+}
+
+func TestParityZshAdapterHostilePaths(t *testing.T) {
+	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
+		t.Run(string(picker), func(t *testing.T) {
+			evidence := exerciseParityZshAdapter(t, picker)
+			if !evidence.BufferEqual || evidence.Buffer != evidence.ExpectedBuffer || !strings.Contains(evidence.CWD, "\n") ||
+				!strings.Contains(evidence.Home, "\n") || !strings.Contains(evidence.Target, "$(") || !strings.Contains(evidence.Target, "`") {
+				t.Fatalf("hostile Zsh evidence=%+v", evidence)
+			}
+			if picker == protocol.PickerCP && (!evidence.OrderedPaths || !evidence.Multiplicity || !evidence.NoTrailingSpace ||
+				!reflect.DeepEqual(evidence.Selected, []string{evidence.Target, evidence.Second, evidence.Target})) {
+				t.Fatalf("hostile CP evidence=%+v", evidence)
+			}
+		})
+	}
 }
 
 func equalZshArgs(frames, want []string) bool {
@@ -167,5 +218,3 @@ func equalZshArgs(frames, want []string) bool {
 	}
 	return true
 }
-
-func zshQuote(value string) string { return strings.ReplaceAll(value, " ", "\\ ") }

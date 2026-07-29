@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,27 +34,41 @@ type zshAdapterGolden struct {
 }
 
 type zshParityEvidence struct {
-	Started, Ended, BufferNonblank, NoTrailingSpace, OrderedPaths bool
-	InvocationCount, AcceptCount                                  int
+	Started, Ended, BufferEqual, NoTrailingSpace, OrderedPaths, Multiplicity bool
+	InvocationCount, AcceptCount                                             int
+	CWD, Home, Target, Second, Buffer, ExpectedBuffer                        string
+	Args, Selected                                                           []string
+}
+
+func TestParityZshSemanticRows(t *testing.T) {
+	count := 0
+	for _, row := range loadParityMatrix(t) {
+		if row.Suite != "zshrc-cd" && row.Suite != "zshrc-cp" {
+			continue
+		}
+		row := row
+		t.Run(row.ID, func(t *testing.T) { runParityRow(t, row) })
+		count++
+	}
+	if count != 85 {
+		t.Fatalf("focused Zsh semantic rows=%d, want 85", count)
+	}
 }
 
 func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 	golden := loadParityGolden[zshAdapterGolden](t, "zsh-adapter.json")
 	evidence := exerciseParityZshAdapter(t, picker)
-	root := t.TempDir()
-	firstPath := filepath.Join(root, "first path")
-	secondPath := filepath.Join(root, "second\npath")
-	first := newParityRecord(protocol.KindFile, "first display", []byte(firstPath))
-	second := newParityRecord(protocol.KindFile, "second display", []byte(secondPath))
+	root := evidence.CWD
+	first := newParityRecord(protocol.KindFile, "first display", []byte(evidence.Target))
+	second := newParityRecord(protocol.KindFile, "second display", []byte(evidence.Second))
 	if picker == protocol.PickerCD {
 		first.Kind = protocol.KindLocal
 		first.Target = pathutil.Filesystem(first.Path)
 	} else {
 		first.Kind = protocol.KindDirectory
 	}
-	state := parityState(picker, protocol.ModeNormal, pathutil.Filesystem([]byte(root)), pathutil.Filesystem([]byte(root)))
+	state := parityState(picker, protocol.ModeNormal, pathutil.Filesystem([]byte(root)), pathutil.Filesystem([]byte(evidence.Home)))
 	actor, snapshot := newParityActor(t, state, []candidate.Record{first, second, first})
-	_ = actor
 	options := fzf.Options(picker, state.Prompt)
 	joined := strings.Join(options, "\n")
 	for _, key := range golden.Bindings {
@@ -75,13 +90,17 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 		assertParityText(t, row, boolText(evidence.Started))
 	case "end-after-start":
 		assertParityText(t, row, boolText(evidence.Started && evidence.Ended))
-	case "encoded-cwd", "encoded-root", "encoded-home", "encoded-base":
-		value := []byte(root)
-		if strings.Contains(row.Check, "root") {
-			value = pathutil.Root().Path
-		}
-		decoded, err := protocol.DecodePath(protocol.EncodePath(value))
-		assertParityText(t, row, boolText(err == nil && bytes.Equal(decoded, value)))
+	case "encoded-cwd":
+		assertParityText(t, row, boolText(zshArgValue(evidence.Args, "--cwd") == evidence.CWD))
+	case "encoded-home":
+		assertParityText(t, row, boolText(zshArgValue(evidence.Args, "--home") == evidence.Home))
+	case "encoded-base":
+		assertParityText(t, row, boolText(zshArgValue(evidence.Args, "--cwd") == evidence.CWD &&
+			bytes.Equal(snapshot.State().Location.Path, []byte(evidence.CWD))))
+	case "encoded-root":
+		result, err := session.Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpSlash})
+		assertParityText(t, row, boolText(err == nil && sameParityLocation(result.Snapshot.State().Location, pathutil.Root()) &&
+			bytes.Equal(snapshot.State().Location.Path, []byte(evidence.CWD))))
 	case "escape-callback":
 		assertParityText(t, row, boolText(strings.Contains(joined, "transform(e:"+string(protocol.OpEscape)+")")))
 	case "enter-callback":
@@ -116,35 +135,45 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 		parent := pathutil.Parent(pathutil.Filesystem([]byte(root)))
 		assertParityText(t, row, boolText(parent.Kind == pathutil.KindFilesystem && string(parent.Path) == filepath.Dir(root)))
 	case "encoded-helper-route", "field-three-helper-route":
-		wire, err := protocol.ParseRecord(first.Wire().Bytes())
-		decoded, decodeErr := protocol.DecodePath(wire.Payload)
-		assertParityText(t, row, boolText(err == nil && decodeErr == nil && bytes.Equal(decoded, first.Path)))
+		resolved, err := actor.ResolveCurrent(context.Background(), first.Wire().Bytes())
+		assertParityText(t, row, boolText(err == nil && bytes.Equal(resolved.Path, []byte(evidence.Target)) &&
+			resolved.FullKey() == first.FullKey()))
 	case "field-three-parsed":
 		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first)))
 	case "payload-decoded":
 		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first)))
 	case "nul-aware-read":
-		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first)))
+		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first) && len(evidence.Selected) == 1 &&
+			evidence.Selected[0] == evidence.Target && strings.Contains(evidence.Target, "\n")))
 	case "no-command-substitution-decode":
-		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first)))
+		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first) && evidence.BufferEqual &&
+			strings.Contains(evidence.Target, "$(") && strings.Contains(evidence.Target, "`")))
 	case "zsh-quoted-command":
-		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first) && evidence.BufferNonblank))
+		assertParityText(t, row, boolText(validateZshCDSelection(t, snapshot, first) && evidence.BufferEqual &&
+			evidence.Buffer == evidence.ExpectedBuffer))
 	case "exactly-one-target":
-		valid := validateZshCDSelection(t, snapshot, first)
+		valid := validateZshCDSelection(t, snapshot, first) && len(evidence.Selected) == 1 && evidence.AcceptCount == 1
 		assertParityText(t, row, boolText(valid))
 	case "destination-count":
 		assertParityText(t, row, strconv.Itoa(zshNavigationDestinationCount(t, picker, state, first)))
 	case "root-does-not-bypass-slash":
 		result, err := session.Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpSlash})
-		assertParityText(t, row, boolText(err == nil && result.Snapshot.State().Location.Kind == pathutil.Root().Kind))
+		assertParityText(t, row, boolText(err == nil && sameParityLocation(result.Snapshot.State().Location, pathutil.Root())))
 	case "encoded-home-route":
 		result, err := session.Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpHome})
-		assertParityText(t, row, boolText(err == nil && result.Snapshot.State().Location.Kind == state.Home.Kind))
+		assertParityText(t, row, boolText(err == nil && sameParityLocation(result.Snapshot.State().Location, state.Home) &&
+			zshArgValue(evidence.Args, "--home") == evidence.Home))
 	case "raw-root-excluded", "raw-home-excluded", "raw-path-modifier-excluded", "encoded-eza-route-excluded", "encoded-script-route-excluded", "direct-reload-excluded":
-		if row.Check == "raw-root-excluded" || row.Check == "raw-home-excluded" {
-			wire, err := protocol.ParseRecord(first.Wire().Bytes())
-			decoded, decodeErr := protocol.DecodePath(wire.Payload)
-			assertParityText(t, row, boolText(err == nil && decodeErr == nil && bytes.Equal(decoded, first.Path) && strings.Contains(joined, "transform(e:")))
+		if row.Check == "raw-root-excluded" {
+			result, err := session.Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpSlash})
+			assertParityText(t, row, boolText(err == nil && sameParityLocation(result.Snapshot.State().Location, pathutil.Root()) &&
+				strings.Contains(joined, "transform(e:")))
+			break
+		}
+		if row.Check == "raw-home-excluded" {
+			result, err := session.Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpHome})
+			assertParityText(t, row, boolText(err == nil && bytes.Equal(result.Snapshot.State().Location.Path, []byte(evidence.Home)) &&
+				zshArgValue(evidence.Args, "--home") == evidence.Home))
 			break
 		}
 		forbidden := map[string]string{
@@ -160,7 +189,7 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 		assertParityText(t, row, strconv.Itoa(evidence.InvocationCount))
 	case "buffer":
 		got := ""
-		if evidence.BufferNonblank {
+		if evidence.BufferEqual && evidence.Buffer == evidence.ExpectedBuffer && strings.HasSuffix(evidence.Target, "\n") {
 			got = "zsh-quoted-decoded-target"
 		}
 		assertParityText(t, row, got)
@@ -175,37 +204,44 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 	case "normal-space-preserves-marks":
 		assertParityText(t, row, boolText(!strings.Contains(joined, "--bind=space:clear-multi")))
 	case "enter-key-first":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && len(evidence.Selected) == 3 &&
+			evidence.Selected[0] == evidence.Target))
 	case "all-records-collected":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(exactZshCPSelections(evidence)))
 	case "exactly-two-tabs":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) &&
+			bytes.Count(first.Wire().Bytes(), []byte{'\t'}) == 2 && bytes.Count(second.Wire().Bytes(), []byte{'\t'}) == 2))
 	case "full-record-count-map":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && len(snapshot.Records()) == 3 &&
+			exactZshCPSelections(evidence)))
 	case "counts-keyed-by-full-record":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && first.FullKey() != second.FullKey() &&
+			exactZshCPSelections(evidence)))
 	case "nested-matching-excluded":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && exactZshCPSelections(evidence)))
 	case "all-records-match":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && exactZshCPSelections(evidence)))
 	case "all-payloads-collected":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(exactZshCPSelections(evidence)))
 	case "atomic-relative-decode":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && exactZshCPSelections(evidence)))
 	case "nul-aware-relative-read":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(exactZshCPSelections(evidence) && strings.Contains(evidence.Second, "\n")))
 	case "decode-cardinality":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && len(evidence.Selected) == 3 &&
+			exactZshCPSelections(evidence)))
 	case "zsh-quote-each-path":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second) && evidence.OrderedPaths))
+		assertParityText(t, row, boolText(evidence.BufferEqual && evidence.Buffer == evidence.ExpectedBuffer && exactZshCPSelections(evidence)))
 	case "single-space-join":
-		assertParityText(t, row, boolText(validateZshCPSelection(t, snapshot, root, first, second)))
+		assertParityText(t, row, boolText(evidence.BufferEqual && evidence.Buffer == evidence.ExpectedBuffer && evidence.OrderedPaths &&
+			evidence.NoTrailingSpace && exactZshCPSelections(evidence)))
 	case "restored-by-full-record":
 		goldenRecords := loadWireGolden(t, "cp-order.bin")
-		assertParityText(t, row, boolText(len(goldenRecords) == 3 && goldenRecords[0].Payload == goldenRecords[1].Payload && goldenRecords[0].Display != goldenRecords[1].Display))
+		assertParityText(t, row, boolText(len(goldenRecords) == 3 && goldenRecords[0].Payload == goldenRecords[1].Payload &&
+			goldenRecords[0].Display != goldenRecords[1].Display && exactZshCPSelections(evidence)))
 	case "multiplicity-preserved":
-		outcome, err := session.ValidateCP(snapshot, [][]byte{first.Wire().Bytes(), first.Wire().Bytes()}, []byte(root))
-		assertParityText(t, row, boolText(err == nil && len(outcome.Paths) == 2 && bytes.Equal(outcome.Paths[0], outcome.Paths[1])))
+		assertParityText(t, row, boolText(evidence.Multiplicity && exactZshCPSelections(evidence) &&
+			evidence.Selected[0] == evidence.Selected[2]))
 	case "no-trailing-space":
 		assertParityText(t, row, boolText(evidence.NoTrailingSpace))
 	case "rejected":
@@ -232,7 +268,7 @@ func validateZshCDSelection(t *testing.T, snapshot session.Snapshot, record cand
 func validateZshCPSelection(t *testing.T, snapshot session.Snapshot, base string, first, second candidate.Record) bool {
 	t.Helper()
 	output := []byte("enter\x00")
-	for _, record := range []candidate.Record{second, first, first} {
+	for _, record := range []candidate.Record{first, second, first} {
 		output = append(output, record.Wire().Bytes()...)
 		output = append(output, 0)
 	}
@@ -248,6 +284,20 @@ func validateZshCPSelection(t *testing.T, snapshot session.Snapshot, base string
 	outcome, err := session.ValidateCP(snapshot, parsed.Records, []byte(base))
 	return err == nil && len(outcome.Paths) == 3 && bytes.Equal(outcome.Paths[0], pathutil.Relative([]byte(base), first.Path)) &&
 		bytes.Equal(outcome.Paths[1], pathutil.Relative([]byte(base), second.Path)) && bytes.Equal(outcome.Paths[2], pathutil.Relative([]byte(base), first.Path))
+}
+
+func zshArgValue(arguments []string, option string) string {
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == option {
+			return arguments[index+1]
+		}
+	}
+	return ""
+}
+
+func exactZshCPSelections(evidence zshParityEvidence) bool {
+	want := []string{evidence.Target, evidence.Second, evidence.Target}
+	return reflect.DeepEqual(evidence.Selected, want)
 }
 
 func zshNavigationDestinationCount(t *testing.T, picker protocol.Picker, state session.State, record candidate.Record) int {
