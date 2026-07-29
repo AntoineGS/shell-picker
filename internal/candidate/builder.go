@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/pathutil"
@@ -29,9 +28,26 @@ type Builder struct {
 	Policy   ZoxidePolicy
 	NewCache func() (*ZoxideCache, error)
 
-	enumerate       func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error)
-	freshPermitOnce sync.Once
-	freshPermit     chan struct{}
+	enumerate   func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error)
+	freshPermit chan struct{}
+}
+
+// ConfigureCached installs session-owned cached-policy state before the first Build.
+func (builder *Builder) ConfigureCached(cache *ZoxideCache) {
+	builder.Cache = cache
+	builder.Policy = ZoxideCached
+	builder.NewCache = nil
+	builder.freshPermit = nil
+}
+
+// ConfigureFresh installs a factory and one session-owned permit before the first Build.
+func (builder *Builder) ConfigureFresh(newCache func() (*ZoxideCache, error)) {
+	permit := make(chan struct{}, 1)
+	permit <- struct{}{}
+	builder.Cache = nil
+	builder.Policy = ZoxideFresh
+	builder.NewCache = newCache
+	builder.freshPermit = permit
 }
 
 func (builder *Builder) Build(ctx context.Context, request BuildRequest) (BuildResult, error) {
@@ -82,10 +98,6 @@ func (builder *Builder) Build(ctx context.Context, request BuildRequest) (BuildR
 }
 
 func (builder *Builder) acquireFreshPermit(ctx context.Context) error {
-	builder.freshPermitOnce.Do(func() {
-		builder.freshPermit = make(chan struct{}, 1)
-		builder.freshPermit <- struct{}{}
-	})
 	select {
 	case <-ctx.Done():
 		return context.Cause(ctx)
@@ -109,8 +121,8 @@ func (builder *Builder) validate() error {
 			return errors.New("cached zoxide policy requires Cache and forbids NewCache")
 		}
 	case ZoxideFresh:
-		if builder.Cache != nil || builder.NewCache == nil {
-			return errors.New("fresh zoxide policy requires NewCache and forbids Cache")
+		if builder.Cache != nil || builder.NewCache == nil || builder.freshPermit == nil {
+			return errors.New("fresh zoxide policy requires explicit configuration")
 		}
 	default:
 		return fmt.Errorf("invalid zoxide policy %d", builder.Policy)

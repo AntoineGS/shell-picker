@@ -101,16 +101,38 @@ func TestCachedPolicyAttemptsOnceForSessionAndLaterReportsCached(t *testing.T) {
 	}
 }
 
+func TestFreshPolicyRejectsIncompleteConfiguration(t *testing.T) {
+	builder := &Builder{Policy: ZoxideFresh, NewCache: func() (*ZoxideCache, error) {
+		t.Fatal("incomplete fresh configuration invoked factory")
+		return nil, nil
+	}, enumerate: testLocal}
+	if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true)); err == nil {
+		t.Fatal("incomplete fresh configuration succeeded")
+	}
+}
+
+func TestExplicitPolicyConfigurationClearsStaleStateAndSuppliesOneFreshPermit(t *testing.T) {
+	stale, _ := newObservedCache(t, "printf '/stale\\n'\n", time.Second, nil)
+	builder := &Builder{Cache: stale, Policy: ZoxideCached, NewCache: func() (*ZoxideCache, error) { return stale, nil }}
+	factory := func() (*ZoxideCache, error) { return stale, nil }
+	builder.ConfigureFresh(factory)
+	if builder.Policy != ZoxideFresh || builder.Cache != nil || builder.NewCache == nil ||
+		builder.freshPermit == nil || cap(builder.freshPermit) != 1 || len(builder.freshPermit) != 1 {
+		t.Fatalf("fresh builder=%+v permit=(%d,%d)", builder, cap(builder.freshPermit), len(builder.freshPermit))
+	}
+	builder.ConfigureCached(stale)
+	if builder.Policy != ZoxideCached || builder.Cache != stale || builder.NewCache != nil || builder.freshPermit != nil {
+		t.Fatalf("cached builder=%+v", builder)
+	}
+}
+
 func TestFreshPolicyAttemptsEveryCDGeneration(t *testing.T) {
 	name, environment := zoxideExecutable(t, "printf '/z/one\\n'\n")
 	counts := new(processCounts)
-	builder := &Builder{
-		Policy:    ZoxideFresh,
-		enumerate: testLocal,
-		NewCache: func() (*ZoxideCache, error) {
-			return NewZoxideCache(process.Runner{Observe: counts.observe}, name, environment, time.Second)
-		},
-	}
+	builder := &Builder{enumerate: testLocal}
+	builder.ConfigureFresh(func() (*ZoxideCache, error) {
+		return NewZoxideCache(process.Runner{Observe: counts.observe}, name, environment, time.Second)
+	})
 	for _, initial := range []bool{true, false} {
 		got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, initial))
 		if err != nil {
@@ -131,9 +153,10 @@ func TestFreshZeroTimeoutIsAuthoritativeUnlimitedPerGeneration(t *testing.T) {
 	}
 	name, environment := zoxideExecutable(t, "sleep 0.1\nprintf '/z/one\\n'\n")
 	counts := new(processCounts)
-	builder := &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
+	builder := &Builder{enumerate: testLocal}
+	builder.ConfigureFresh(func() (*ZoxideCache, error) {
 		return NewZoxideCache(process.Runner{Observe: counts.observe}, name, environment, 0)
-	}}
+	})
 	for _, initial := range []bool{true, false} {
 		got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, initial))
 		if err != nil || !reflect.DeepEqual(paths(got.Records), []string{"/local", "/z/same", "/z/one"}) {
@@ -161,10 +184,11 @@ func TestFreshBuilderSerializesSessionQueriesAndCancelledWaiterDoesNotAttempt(t 
 		}
 	}}
 	var factoryCalls atomic.Int32
-	builder := &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
+	builder := &Builder{enumerate: testLocal}
+	builder.ConfigureFresh(func() (*ZoxideCache, error) {
 		factoryCalls.Add(1)
 		return NewZoxideCache(runner, name, environment, 0)
-	}}
+	})
 	firstDone := make(chan error, 1)
 	go func() {
 		_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
@@ -235,9 +259,11 @@ func TestIndependentFreshSessionBuildersMayQueryConcurrently(t *testing.T) {
 		}
 	}}
 	newBuilder := func() *Builder {
-		return &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
+		builder := &Builder{enumerate: testLocal}
+		builder.ConfigureFresh(func() (*ZoxideCache, error) {
 			return NewZoxideCache(runner, name, environment, 0)
-		}}
+		})
+		return builder
 	}
 	done := make(chan error, 2)
 	for range 2 {
@@ -275,11 +301,10 @@ func TestCPNeverLoadsCacheOrInvokesFreshFactory(t *testing.T) {
 			cache, counts := newObservedCache(t, "printf '/z/one\\n'\n", time.Second, nil)
 			builder := &Builder{Cache: cache, Policy: policy, enumerate: testLocal}
 			if policy == ZoxideFresh {
-				builder.Cache = nil
-				builder.NewCache = func() (*ZoxideCache, error) {
+				builder.ConfigureFresh(func() (*ZoxideCache, error) {
 					t.Fatal("fresh factory called for cp")
 					return nil, nil
-				}
+				})
 			}
 			got, err := builder.Build(context.Background(), testRequest(protocol.PickerCP, true))
 			if err != nil {

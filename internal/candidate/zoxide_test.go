@@ -389,9 +389,10 @@ func BenchmarkFreshZoxideNavigation(b *testing.B) {
 	path, environment := zoxideExecutable(b, zoxideRowsScript(10_000))
 	counts := new(processCounts)
 	runner := process.Runner{Observe: counts.observe}
-	builder := &Builder{Policy: ZoxideFresh, enumerate: testLocal, NewCache: func() (*ZoxideCache, error) {
+	builder := &Builder{enumerate: testLocal}
+	builder.ConfigureFresh(func() (*ZoxideCache, error) {
 		return NewZoxideCache(runner, path, environment, 0)
-	}}
+	})
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
@@ -408,11 +409,11 @@ func BenchmarkCPZoxideProcessCountsStayZero(b *testing.B) {
 		b.Run(policy.String(), func(b *testing.B) {
 			counts := new(processCounts)
 			runner := process.Runner{Observe: counts.observe}
-			builder := &Builder{Policy: policy, enumerate: testLocal}
+			builder := &Builder{enumerate: testLocal}
 			if policy == ZoxideCached {
-				builder.Cache = benchmarkCache(b, runner, path, environment, 0)
+				builder.ConfigureCached(benchmarkCache(b, runner, path, environment, 0))
 			} else {
-				builder.NewCache = func() (*ZoxideCache, error) { return NewZoxideCache(runner, path, environment, 0) }
+				builder.ConfigureFresh(func() (*ZoxideCache, error) { return NewZoxideCache(runner, path, environment, 0) })
 			}
 			for range b.N {
 				if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCP, false)); err != nil {
