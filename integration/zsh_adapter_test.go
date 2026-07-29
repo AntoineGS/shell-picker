@@ -142,6 +142,13 @@ func TestZshAdapter(t *testing.T) {
 		{"plain-effective", "cp -- existing ", []string{"--", "existing", "-leading", "duplicate", "duplicate"}},
 		{"escaped-effective", `cp \-- existing `, []string{"--", "existing", "-leading", "duplicate", "duplicate"}},
 		{"separator-reset", "cp -- prior ; cp -t -- existing ", []string{"-t", "--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"here-string", "cp existing <<< -- ", []string{"existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"combined-output", "cp existing &>> -- ", []string{"existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"multiple-redirections", "cp -t > first 2>> second <<< input -- existing ", []string{"-t", "--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"quoted-here-string", `cp existing "<<<" -- `, []string{"existing", "<<<", "--", "-leading", "duplicate", "duplicate"}},
+		{"escaped-here-string", `cp existing \<\<\< -- `, []string{"existing", "<<<", "--", "-leading", "duplicate", "duplicate"}},
+		{"quoted-combined-output", `cp existing "&>" -- `, []string{"existing", "&>", "--", "-leading", "duplicate", "duplicate"}},
+		{"escaped-combined-output", `cp existing \&\> -- `, []string{"existing", "&>", "--", "-leading", "duplicate", "duplicate"}},
 	}
 	for _, context := range contexts {
 		t.Run("cp-terminator-context-"+context.name, func(t *testing.T) {
@@ -152,6 +159,18 @@ func TestZshAdapter(t *testing.T) {
 			}
 			fixture.assertOnePicker(t, "cp")
 			fixture.assertCPArgs(t, context.want)
+		})
+	}
+
+	for _, operator := range []string{"<<", "<<-"} {
+		t.Run("cp-terminator-context-heredoc-"+operator, func(t *testing.T) {
+			fixture := newZshAdapterFixture(t, zsh, plugin)
+			state := fixture.runCPHeredoc(t, "cp existing "+operator+" -- ", []string{"-leading", "duplicate", "duplicate"})
+			if strings.HasSuffix(state[3], " ") {
+				t.Fatalf("cp LBUFFER has trailing space: %q", state[3])
+			}
+			fixture.assertOnePicker(t, "cp")
+			fixture.assertCPArgs(t, []string{"existing", "--", "-leading", "duplicate", "duplicate"})
 		})
 	}
 
@@ -230,6 +249,11 @@ func (fixture zshAdapterFixture) run(t *testing.T, scenario string, records []st
 func (fixture zshAdapterFixture) runCP(t *testing.T, lbuffer string, records []string) []string {
 	fixture.environment = replaceEnvironment(fixture.environment, "SHELL_PICKER_LBUFFER="+lbuffer)
 	return fixture.run(t, "tab-custom", records)
+}
+
+func (fixture zshAdapterFixture) runCPHeredoc(t *testing.T, lbuffer string, records []string) []string {
+	fixture.environment = replaceEnvironment(fixture.environment, "SHELL_PICKER_LBUFFER="+lbuffer)
+	return fixture.run(t, "tab-heredoc", records)
 }
 
 func (fixture zshAdapterFixture) runLocale(t *testing.T, scenario string, records []string, locale string) []string {
@@ -413,18 +437,23 @@ case $3 in
     _shell_picker_space
     quoted=${BUFFER#'builtin cd -- '}
     ;;
-  tab | tab-options | tab-terminator | tab-escaped-terminator | tab-custom)
+  tab | tab-options | tab-terminator | tab-escaped-terminator | tab-custom | tab-heredoc)
     case $3 in
       tab) LBUFFER='cp ' ;;
       tab-options) LBUFFER='cp -a existing ' ;;
       tab-terminator) LBUFFER='cp -a -- existing ' ;;
       tab-escaped-terminator) LBUFFER='cp -a \-- existing ' ;;
       tab-custom) LBUFFER=$SHELL_PICKER_LBUFFER ;;
+      tab-heredoc) LBUFFER=$SHELL_PICKER_LBUFFER ;;
     esac
     RBUFFER=
     _shell_picker_tab
     [[ $LBUFFER != *' ' ]] || exit 91
-    eval "$LBUFFER" || exit 94
+    if [[ $3 == tab-heredoc ]]; then
+      eval "$LBUFFER"$'\nheredoc body\n--\n' || exit 94
+    else
+      eval "$LBUFFER" || exit 94
+    fi
     while IFS= read -r -d $'\0' argument; do decoded+=("$argument"); done < "$SHELL_PICKER_CP_CALLS"
     ;;
   *) exit 92 ;;

@@ -38,7 +38,7 @@ _shell_picker_cd() {
 
 _shell_picker_cp() {
   emulate -L zsh
-  local saved=$BUFFER saved_cursor=$CURSOR output selected word argument cluster option
+  local saved=$BUFFER saved_cursor=$CURSOR output selected word argument cluster option redirection
   local -a selected_paths quoted parsed_words command_words
   integer picker_status=1 valid=1 has_terminator=0 index option_index
   integer expect_redirection_operand=0 expect_option_argument=0
@@ -87,9 +87,11 @@ _shell_picker_cp() {
         expect_redirection_operand=0
         continue
       fi
-      case $word in
-        '>' | '>>' | '>|' | '>!' | '<' | '<>' | '<&' | '>&' | \
-          <->'>' | <->'>>' | <->'>|' | <->'>!' | <->'<' | <->'<>' | <->'<&' | <->'>&')
+      redirection=$word
+      [[ $redirection == <->* ]] && redirection=${redirection##<->}
+      case $redirection in
+        '<' | '<>' | '<&' | '>' | '>|' | '>>' | '>>|' | '>&' | '>>&' | '>>&|' | \
+          '&>' | '&>|' | '<<' | '<<-' | '<<<')
           expect_redirection_operand=1
           continue
           ;;

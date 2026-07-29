@@ -268,6 +268,49 @@ test_cp_terminator_context() {
   done
 }
 
+test_cp_zsh_redirection_families() {
+  local -a operators=(
+    '<' '<>' '>' '>|' '>!' '>>' '>>|' '>>!'
+    '<&' '>&' '>&|' '>&!' '>>&' '>>&|' '>>&!'
+    '&>' '&>|' '&>!' '&>>' '&>>|' '&>>!'
+    '<<' '<<-' '<<<'
+  )
+  local operator prefix input
+  for operator in $operators; do
+    for prefix in '' 2; do
+      reset_case
+      PICKER_MODE=cp-leading
+      input="cp existing ${prefix}${operator} -- "
+      LBUFFER=$input RBUFFER=
+      _shell_picker_cp
+      assert_equal "${input}-- -leading duplicate duplicate" "$LBUFFER" \
+        "Zsh redirection ${prefix}${operator} exposed selected options"
+    done
+  done
+
+  local -a ordinary=(
+    'cp existing "<<<" -- '
+    'cp existing \<\<\< -- '
+    'cp existing "&>" -- '
+    'cp existing \&\> -- '
+  )
+  for input in $ordinary; do
+    reset_case
+    PICKER_MODE=cp-leading
+    LBUFFER=$input RBUFFER=
+    _shell_picker_cp
+    assert_equal "${input}-leading duplicate duplicate" "$LBUFFER" \
+      "quoted or escaped operator text ${input} was treated as redirection"
+  done
+
+  reset_case
+  PICKER_MODE=cp-leading
+  LBUFFER='cp -t > first 2>> second <<< input -- existing ' RBUFFER=
+  _shell_picker_cp
+  assert_equal 'cp -t > first 2>> second <<< input -- existing -- -leading duplicate duplicate' "$LBUFFER" \
+    'multiple redirections consumed pending cp option state'
+}
+
 test_tab_current_command_parser() {
   local separator
   for separator in ';' '&' '&&' '||' '|' '|&' '&!' '&|'; do
@@ -355,6 +398,7 @@ test_cp_order_duplicates_and_special_bytes
 test_cp_abort_error_and_malformed_restore
 test_cp_option_terminator
 test_cp_terminator_context
+test_cp_zsh_redirection_families
 test_tab_current_command_parser
 test_temp_cleanup_is_owned_and_soft
 test_temp_commands_ignore_hostile_functions
