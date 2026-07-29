@@ -166,7 +166,7 @@ test_cp_order_duplicates_and_special_bytes() {
   LBUFFER='cp ' RBUFFER=
   _shell_picker_cp
   picker_call_count
-  assert_equal 'cp first\ path third\ path first\ path' "$LBUFFER" 'cp did not preserve order and duplicates'
+  assert_equal 'cp -- first\ path third\ path first\ path' "$LBUFFER" 'cp did not preserve order and duplicates'
   [[ $LBUFFER != *' ' ]] || fail 'cp ordered insertion has a trailing space'
   assert_equal 1 "$REPLY" 'cp selection did not use exactly one picker process'
 
@@ -174,7 +174,7 @@ test_cp_order_duplicates_and_special_bytes() {
   PICKER_MODE=cp-special
   LBUFFER='cp ' RBUFFER=
   _shell_picker_cp
-  assert_equal $'cp -leading trailing\\  back\\\\slash apost\\\047rophe nbsp\u00a0path tab$\047\\t\047path line$\047\\n\047path' \
+  assert_equal $'cp -- -leading trailing\\  back\\\\slash apost\\\047rophe nbsp\u00a0path tab$\047\\t\047path line$\047\\n\047path' \
     "$LBUFFER" 'cp special bytes were not individually quoted'
   [[ $LBUFFER != *' ' ]] || fail 'cp special insertion has a trailing space'
 }
@@ -193,6 +193,25 @@ test_cp_abort_error_and_malformed_restore() {
   done
 }
 
+test_cp_option_terminator() {
+  reset_case
+  PICKER_MODE=cp-order
+  LBUFFER='cp -a existing ' RBUFFER=
+  _shell_picker_cp
+  assert_equal 'cp -a existing -- first\ path third\ path first\ path' "$LBUFFER" \
+    'cp did not terminate options before selected operands'
+
+  local existing
+  for existing in '--' '\--'; do
+    reset_case
+    PICKER_MODE=cp-order
+    LBUFFER="echo before | cp -a $existing existing " RBUFFER=
+    _shell_picker_cp
+    assert_equal "echo before | cp -a $existing existing first\\ path third\\ path first\\ path" "$LBUFFER" \
+      "cp duplicated effective terminator $existing"
+  done
+}
+
 test_tab_current_command_parser() {
   local separator
   for separator in ';' '&' '&&' '||' '|' '|&' '&!' '&|'; do
@@ -201,7 +220,7 @@ test_tab_current_command_parser() {
     LBUFFER="echo before $separator cp " RBUFFER=
     _shell_picker_tab
     picker_call_count
-    assert_equal "echo before $separator cp first\\ path third\\ path first\\ path" "$LBUFFER" \
+    assert_equal "echo before $separator cp -- first\\ path third\\ path first\\ path" "$LBUFFER" \
       "separator $separator did not reset the current command"
     assert_equal 1 "$REPLY" "separator $separator did not route to one cp picker"
     assert_equal 0 "$fzf_completion_calls" "separator $separator fell back to completion"
@@ -243,14 +262,45 @@ test_temp_cleanup_is_owned_and_soft() {
   assert_equal 6 "$CURSOR" 'mktemp failure changed the cursor'
 }
 
+test_temp_commands_ignore_hostile_functions() {
+  reset_case
+  local saved_tmpdir=$TMPDIR
+  TMPDIR=$test_root/'-leading temp'/'space dir'
+  mkdir -p -- "$TMPDIR"
+  local unrelated=$TMPDIR/unrelated hostile_log=$TMPDIR/hostile-functions
+  print -rn -- 'unrelated bytes' >| "$unrelated"
+  mktemp() {
+    print -r -- mktemp >> "$hostile_log"
+    print -r -- "$unrelated"
+  }
+  rm() {
+    print -r -- rm >> "$hostile_log"
+    return 0
+  }
+
+  BUFFER='safe cd' CURSOR=4
+  _shell_picker_cd
+  LBUFFER='cp ' RBUFFER=
+  _shell_picker_cp
+  unfunction mktemp rm
+
+  [[ ! -e $hostile_log ]] || fail 'widget invoked a hostile temp function'
+  assert_equal 'unrelated bytes' "$(<"$unrelated")" 'hostile temp function redirected an unrelated file'
+  local -a leftovers=( $TMPDIR/shell-picker-(cd|cp).*(N) )
+  assert_equal 0 "${#leftovers}" 'qualified temp cleanup leaked widget output'
+  TMPDIR=$saved_tmpdir
+}
+
 test_registration_and_explicit_bindings
 test_space_exact_after_magic_space
 test_cd_nul_quoting_and_immediate_accept
 test_cd_abort_error_and_malformed_restore
 test_cp_order_duplicates_and_special_bytes
 test_cp_abort_error_and_malformed_restore
+test_cp_option_terminator
 test_tab_current_command_parser
 test_temp_cleanup_is_owned_and_soft
+test_temp_commands_ignore_hostile_functions
 
 if (( failures != 0 )); then
   print -ru2 -- "$failures zsh adapter assertion(s) failed"

@@ -3,7 +3,7 @@ _shell_picker_cd() {
   local saved=$BUFFER saved_cursor=$CURSOR output target record
   integer picker_status=1 count=0 valid=1
 
-  output=$(mktemp "${TMPDIR:-/tmp}/shell-picker-cd.${$}.XXXXXX") || {
+  output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-cd.${$}.XXXXXX") || {
     zle redisplay
     return 0
   }
@@ -22,7 +22,7 @@ _shell_picker_cd() {
       fi
     done < "$output"
   } always {
-    rm -f -- "$output"
+    command rm -f -- "$output"
   }
 
   if (( picker_status != 0 || ! valid || count != 1 )); then
@@ -38,11 +38,11 @@ _shell_picker_cd() {
 
 _shell_picker_cp() {
   emulate -L zsh
-  local saved=$BUFFER saved_cursor=$CURSOR output selected
-  local -a selected_paths quoted
-  integer picker_status=1 valid=1
+  local saved=$BUFFER saved_cursor=$CURSOR output selected word
+  local -a selected_paths quoted parsed_words command_words
+  integer picker_status=1 valid=1 has_terminator=0 index
 
-  output=$(mktemp "${TMPDIR:-/tmp}/shell-picker-cp.${$}.XXXXXX") || {
+  output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-cp.${$}.XXXXXX") || {
     zle redisplay
     return 0
   }
@@ -60,7 +60,7 @@ _shell_picker_cp() {
       fi
     done < "$output"
   } always {
-    rm -f -- "$output"
+    command rm -f -- "$output"
   }
 
   if (( picker_status != 0 || ! valid || ${#selected_paths} == 0 )); then
@@ -72,6 +72,22 @@ _shell_picker_cp() {
   for selected in "${selected_paths[@]}"; do
     quoted+=("${(q)selected}")
   done
+  parsed_words=( ${(z)LBUFFER} )
+  for word in $parsed_words; do
+    case $word in
+      ';' | '&' | '&&' | '||' | '|' | '|&' | '&!' | '&|') command_words=() ;;
+      *) command_words+=("$word") ;;
+    esac
+  done
+  if [[ $command_words[1] == cp ]]; then
+    for (( index = 2; index <= ${#command_words}; ++index )); do
+      if [[ ${(Q)command_words[index]} == -- ]]; then
+        has_terminator=1
+        break
+      fi
+    done
+  fi
+  (( has_terminator )) || quoted=(-- "${quoted[@]}")
   LBUFFER+="${(j: :)quoted}"
   zle redisplay
   return 0

@@ -21,6 +21,7 @@ type zshAdapterFixture struct {
 	output      string
 	state       string
 	calls       string
+	cpCalls     string
 	unexpected  string
 	environment []string
 }
@@ -89,11 +90,64 @@ func TestZshAdapter(t *testing.T) {
 		fixture := newZshAdapterFixture(t, zsh, plugin)
 		paths := []string{"first path", "tab\tpath", "line\npath", "-leading", "trailing ", "first path"}
 		state := fixture.run(t, "tab", paths)
-		assertZshAdapterState(t, state, 0, 0, paths)
+		assertZshAdapterState(t, state, 0, 0, append([]string{"--"}, paths...))
 		if strings.HasSuffix(state[3], " ") {
 			t.Fatalf("cp LBUFFER has trailing space: %q", state[3])
 		}
 		fixture.assertOnePicker(t, "cp")
+		fixture.assertCPArgs(t, append([]string{"--"}, paths...))
+	})
+
+	terminators := []struct {
+		name     string
+		scenario string
+	}{
+		{"insert", "tab-options"},
+		{"existing", "tab-terminator"},
+		{"escaped-existing", "tab-escaped-terminator"},
+	}
+	for _, terminator := range terminators {
+		t.Run("cp-option-terminator-"+terminator.name, func(t *testing.T) {
+			fixture := newZshAdapterFixture(t, zsh, plugin)
+			state := fixture.run(t, terminator.scenario, []string{"-leading", "duplicate", "duplicate"})
+			wantArgs := []string{"-a", "existing", "--", "-leading", "duplicate", "duplicate"}
+			if terminator.scenario != "tab-options" {
+				wantArgs = []string{"-a", "--", "existing", "-leading", "duplicate", "duplicate"}
+			}
+			if strings.HasSuffix(state[3], " ") {
+				t.Fatalf("cp LBUFFER has trailing space: %q", state[3])
+			}
+			fixture.assertOnePicker(t, "cp")
+			fixture.assertCPArgs(t, wantArgs)
+		})
+	}
+
+	t.Run("invalid-utf8-bytes", func(t *testing.T) {
+		locales := []struct {
+			name  string
+			value string
+		}{{"c", "C"}}
+		if locale, ok := findZshUTF8Locale(zsh); ok {
+			locales = append(locales, struct {
+				name  string
+				value string
+			}{"utf8", locale})
+		} else {
+			t.Run("utf8", func(t *testing.T) { t.Skip("no locale reports a UTF-8 codeset to zsh") })
+		}
+		for _, locale := range locales {
+			t.Run(locale.name, func(t *testing.T) {
+				fixture := newZshAdapterFixture(t, zsh, plugin)
+				invalid := string([]byte{'i', 'n', 'v', 'a', 'l', 'i', 'd', '-', 0xff, '-', 0xfe})
+				if err := os.WriteFile(filepath.Join(fixture.cwd, invalid), []byte("fixture"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				state := fixture.runLocale(t, "tab", []string{invalid}, locale.value)
+				assertZshAdapterState(t, state, 0, 0, []string{"--", invalid})
+				fixture.assertOnePicker(t, "cp")
+				fixture.assertCPArgs(t, []string{"--", invalid})
+			})
+		}
 	})
 }
 
@@ -113,19 +167,22 @@ func newZshAdapterFixture(t *testing.T, zsh, plugin string) zshAdapterFixture {
 	fixture := zshAdapterFixture{
 		zsh: zsh, plugin: plugin, runner: filepath.Join(root, "runner.zsh"), cwd: cwd, home: home,
 		output: filepath.Join(root, "output.nul"), state: filepath.Join(root, "state.nul"),
-		calls: filepath.Join(root, "calls.nul"), unexpected: filepath.Join(root, "unexpected"),
+		calls: filepath.Join(root, "calls.nul"), cpCalls: filepath.Join(root, "cp-calls.nul"),
+		unexpected: filepath.Join(root, "unexpected"),
 	}
 	writeExecutable(t, filepath.Join(bin, "shell-picker"), zsh, fakeShellPicker)
+	writeExecutable(t, filepath.Join(bin, "cp"), zsh, fakeCP)
 	writeExecutable(t, filepath.Join(bin, "fzf"), zsh, unexpectedExecutable)
 	writeExecutable(t, filepath.Join(home, ".config", "fzf", "fzf-picker-candidates.zsh"), zsh, unexpectedExecutable)
 	if err := os.WriteFile(fixture.runner, []byte(zshAdapterRunner), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fixture.environment = append(os.Environ(),
+	fixture.environment = replaceEnvironment(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"HOME="+home,
 		"TMPDIR="+tmp,
 		"SHELL_PICKER_CALLS="+fixture.calls,
+		"SHELL_PICKER_CP_CALLS="+fixture.cpCalls,
 		"SHELL_PICKER_OUTPUT="+fixture.output,
 		"SHELL_PICKER_STATE="+fixture.state,
 		"SHELL_PICKER_UNEXPECTED="+fixture.unexpected,
@@ -134,6 +191,10 @@ func newZshAdapterFixture(t *testing.T, zsh, plugin string) zshAdapterFixture {
 }
 
 func (fixture zshAdapterFixture) run(t *testing.T, scenario string, records []string) []string {
+	return fixture.runLocale(t, scenario, records, "")
+}
+
+func (fixture zshAdapterFixture) runLocale(t *testing.T, scenario string, records []string, locale string) []string {
 	t.Helper()
 	var output []byte
 	for _, record := range records {
@@ -143,7 +204,7 @@ func (fixture zshAdapterFixture) run(t *testing.T, scenario string, records []st
 	if err := os.WriteFile(fixture.output, output, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{fixture.state, fixture.calls, fixture.unexpected} {
+	for _, path := range []string{fixture.state, fixture.calls, fixture.cpCalls, fixture.unexpected} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
@@ -151,10 +212,60 @@ func (fixture zshAdapterFixture) run(t *testing.T, scenario string, records []st
 	command := exec.Command(fixture.zsh, "-f", fixture.runner, fixture.plugin, fixture.cwd, scenario)
 	command.Dir = fixture.cwd
 	command.Env = fixture.environment
+	if locale != "" {
+		command.Env = replaceEnvironment(command.Env, "LC_ALL="+locale, "LANG="+locale)
+	}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("zsh scenario %s: %v\n%s", scenario, err, output)
 	}
 	return readNULRecords(t, fixture.state)
+}
+
+func findZshUTF8Locale(zsh string) (string, bool) {
+	candidates := []string{"C.UTF-8", "C.utf8", "en_US.UTF-8", "en_US.utf8", "UTF-8"}
+	if locale, err := exec.LookPath("locale"); err == nil {
+		if output, err := exec.Command(locale, "-a").Output(); err == nil {
+			candidates = append(candidates, strings.Fields(string(output))...)
+		}
+	}
+	seen := make(map[string]bool)
+	for _, candidate := range candidates {
+		if seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		command := exec.Command(zsh, "-fc", `zmodload zsh/langinfo || exit 1
+codeset=${langinfo[CODESET]:l}
+[[ $codeset == utf-8 || $codeset == utf8 ]]`)
+		command.Env = replaceEnvironment(os.Environ(), "LC_ALL="+candidate, "LANG="+candidate)
+		if command.Run() == nil {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func replaceEnvironment(environment []string, replacements ...string) []string {
+	keys := make(map[string]bool, len(replacements))
+	for _, replacement := range replacements {
+		key, _, _ := strings.Cut(replacement, "=")
+		keys[key] = true
+	}
+	result := make([]string, 0, len(environment)+len(replacements))
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		if !keys[key] {
+			result = append(result, entry)
+		}
+	}
+	return append(result, replacements...)
+}
+
+func (fixture zshAdapterFixture) assertCPArgs(t *testing.T, want []string) {
+	t.Helper()
+	if got := readNULRecords(t, fixture.cpCalls); !reflect.DeepEqual(got, want) {
+		t.Fatalf("executed cp argv=%q, want %q", got, want)
+	}
 }
 
 func (fixture zshAdapterFixture) assertOnePicker(t *testing.T, operation string) {
@@ -225,6 +336,10 @@ emit() { print -rn -- "$1"$'\0' }
 while IFS= read -r -d $'\0' record; do emit "$record"; done < "$SHELL_PICKER_OUTPUT"
 `
 
+const fakeCP = `emulate -LR zsh
+for argument in "$@"; do print -rn -- "$argument"$'\0'; done >| "$SHELL_PICKER_CP_CALLS"
+`
+
 const unexpectedExecutable = `emulate -LR zsh
 print -r -- "${0:t}" >> "$SHELL_PICKER_UNEXPECTED"
 exit 97
@@ -259,10 +374,17 @@ case $3 in
     _shell_picker_space
     quoted=${BUFFER#'builtin cd -- '}
     ;;
-  tab)
-    LBUFFER='cp ' RBUFFER=
+  tab | tab-options | tab-terminator | tab-escaped-terminator)
+    case $3 in
+      tab) LBUFFER='cp ' ;;
+      tab-options) LBUFFER='cp -a existing ' ;;
+      tab-terminator) LBUFFER='cp -a -- existing ' ;;
+      tab-escaped-terminator) LBUFFER='cp -a \-- existing ' ;;
+    esac
+    RBUFFER=
     _shell_picker_tab
     [[ $LBUFFER != *' ' ]] || exit 91
+    eval "$LBUFFER" || exit 94
     quoted=${LBUFFER#'cp '}
     ;;
   *) exit 92 ;;
