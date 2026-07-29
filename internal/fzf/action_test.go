@@ -9,7 +9,7 @@ import (
 
 func TestRenderNavigationEffect(t *testing.T) {
 	got, err := RenderEffect(protocol.Effect{Mode: protocol.ModeNormal, Prompt: `[N] a\)b/ `, ClearMulti: true, ClearQuery: true, ReloadGeneration: 7})
-	want := `clear-multi+reload-sync(l:7)+change-prompt([N] a\\\)b/ )+clear-query+wait+first`
+	want := `clear-multi+reload-sync(l:7)+clear-query+wait+first+change-prompt:[N] a\)b/ `
 	if err != nil || got != want {
 		t.Fatalf("got=%q want=%q err=%v", got, want, err)
 	}
@@ -22,11 +22,11 @@ func TestRenderModeEffects(t *testing.T) {
 		want   string
 	}{
 		{"insert", protocol.Effect{Search: "on", Rebind: protocol.ModeInsert, Prompt: "[I] /work/ "},
-			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(h,j,k,l,i,a,q,space)+change-prompt([I] /work/ )"},
+			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(h,j,k,l,i,a,q,space)+change-prompt:[I] /work/ "},
 		{"normal", protocol.Effect{Search: "off", Rebind: protocol.ModeNormal, Prompt: "[N] /work/ "},
-			"disable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+change-prompt([N] /work/ )"},
+			"disable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+change-prompt:[N] /work/ "},
 		{"add", protocol.Effect{Search: "on", Rebind: protocol.ModeAdd, Prompt: "[A] /work/ ", ClearQuery: true},
-			"enable-search+unbind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+change-prompt([A] /work/ )+clear-query"},
+			"enable-search+unbind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+clear-query+change-prompt:[A] /work/ "},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestActionArgumentDelimiterCorpusCannotInjectAction(t *testing.T) {
 		if err != nil {
 			t.Fatalf("changePrompt(%q): %v", raw, err)
 		}
-		assertSingleActionArgument(t, action.text)
+		assertTerminalPromptAction(t, action.text, raw)
 	}
 }
 
@@ -97,51 +97,22 @@ func FuzzActionArgumentsRejectInjection(f *testing.F) {
 			return
 		}
 		if err == nil {
-			assertSingleActionArgument(t, action.text)
+			assertTerminalPromptAction(t, action.text, raw)
 		}
 	})
 }
 
-func TestWindowsPromptBackslashIsEscapedOnlyForActionGrammar(t *testing.T) {
+func TestWindowsPromptBackslashIsPreservedByTerminalAction(t *testing.T) {
 	got, err := changePrompt(`[N] C:\ `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.text != `change-prompt([N] C:\\ )` {
-		t.Fatalf("action=%q", got.text)
-	}
+	assertTerminalPromptAction(t, got.text, `[N] C:\ `)
 }
 
-func assertSingleActionArgument(t *testing.T, rendered string) {
+func assertTerminalPromptAction(t *testing.T, rendered, prompt string) {
 	t.Helper()
-	depth, escaped, closes := 0, false, 0
-	for _, r := range rendered {
-		if escaped {
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			escaped = true
-			continue
-		}
-		switch r {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				closes++
-			}
-		case '+':
-			if depth == 0 {
-				t.Fatalf("action injection in %q", rendered)
-			}
-		}
-		if depth < 0 {
-			t.Fatalf("unbalanced action %q", rendered)
-		}
-	}
-	if escaped || depth != 0 || closes != 1 {
-		t.Fatalf("not one balanced action argument: %q", rendered)
+	if want := "change-prompt:" + prompt; rendered != want {
+		t.Fatalf("action=%q want terminal action=%q", rendered, want)
 	}
 }

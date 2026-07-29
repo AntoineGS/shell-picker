@@ -86,28 +86,25 @@ func reload(generation uint64) action {
 	return action{text: fmt.Sprintf("reload-sync(l:%d)", generation)}
 }
 
-func changePrompt(prompt string) (action, error) { return argumentAction("change-prompt", prompt) }
+func changePrompt(prompt string) (action, error) {
+	if err := validateActionArgument(prompt); err != nil {
+		return action{}, err
+	}
+	return action{text: "change-prompt:" + prompt}, nil
+}
 
 func put(text string) (action, error) {
 	if text != "/" && text != "~" {
 		return action{}, errors.New("fzf: put accepts only slash or tilde")
 	}
-	return argumentAction("put", text)
+	return action{text: "put(" + text + ")"}, nil
 }
 
-func argumentAction(name, argument string) (action, error) {
+func validateActionArgument(argument string) error {
 	if strings.ContainsAny(argument, "\r\n\x00") {
-		return action{}, errors.New("fzf: action argument contains a control delimiter")
+		return errors.New("fzf: action argument contains a control delimiter")
 	}
-	var escaped strings.Builder
-	escaped.Grow(len(argument))
-	for _, char := range argument {
-		if char == '\\' || char == '(' || char == ')' || char == '+' {
-			escaped.WriteByte('\\')
-		}
-		escaped.WriteRune(char)
-	}
-	return action{text: name + "(" + escaped.String() + ")"}, nil
+	return nil
 }
 
 func transformEvent(opcode protocol.Opcode) action {
@@ -143,13 +140,6 @@ func RenderEffect(effect protocol.Effect) (string, error) {
 	if effect.ReloadGeneration != 0 {
 		actions = append(actions, reload(effect.ReloadGeneration))
 	}
-	if effect.Prompt != "" {
-		prompt, err := changePrompt(effect.Prompt)
-		if err != nil {
-			return "", err
-		}
-		actions = append(actions, prompt)
-	}
 	if effect.ClearQuery {
 		actions = append(actions, clearQuery())
 	}
@@ -168,6 +158,13 @@ func RenderEffect(effect protocol.Effect) (string, error) {
 	}
 	if effect.ReloadGeneration != 0 {
 		actions = append(actions, wait(), first())
+	}
+	if effect.Prompt != "" {
+		prompt, err := changePrompt(effect.Prompt)
+		if err != nil {
+			return "", err
+		}
+		actions = append(actions, prompt)
 	}
 	return sequence(actions...), nil
 }
