@@ -75,3 +75,24 @@ func TestPickerCLILateCancellationEmitsNoAcceptedOrAbortedOutcome(t *testing.T) 
 		})
 	}
 }
+
+func TestSelectLifecycleErrorPrefersActorCloseOverParentCancellation(t *testing.T) {
+	selected := errors.New("launch or server failed")
+	actorClose := errors.New("actor close failed")
+	parentCause := errors.New("parent cancelled")
+	for _, test := range []struct {
+		name                          string
+		selected, actor, parent, want error
+	}{
+		{"selected lifecycle error", selected, actorClose, parentCause, selected},
+		{"actor close over cancellation", nil, actorClose, parentCause, actorClose},
+		{"clean actor uses exact cancellation", nil, nil, parentCause, parentCause},
+		{"clean lifecycle", nil, nil, nil, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := selectLifecycleError(test.selected, test.actor, test.parent); got != test.want {
+				t.Fatalf("got=%v want=%v", got, test.want)
+			}
+		})
+	}
+}

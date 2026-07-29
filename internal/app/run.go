@@ -130,12 +130,11 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		err = fmt.Errorf("run picker: %w", launchErr)
 	} else if closeServerErr != nil {
 		err = closeServerErr
-	} else if cause := context.Cause(ctx); cause != nil {
-		err = cause
 	}
+	parentCause := context.Cause(ctx)
 
 	var outcome protocol.Outcome
-	if err == nil {
+	if err == nil && parentCause == nil {
 		if result.Aborted {
 			outcome = protocol.Outcome{Status: protocol.StatusAborted}
 		} else {
@@ -149,24 +148,32 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 			}
 		}
 	}
-	if cause := context.Cause(ctx); cause != nil {
-		cancelActor(cause)
-		if err == nil {
-			err = cause
-		}
+	if latest := context.Cause(ctx); latest != nil {
+		parentCause = latest
+	}
+	if parentCause != nil {
+		cancelActor(parentCause)
 	}
 	actorErr := actor.Close()
 	actorOpen = false
-	if err == nil && actorErr != nil {
-		err = actorErr
+	if latest := context.Cause(ctx); latest != nil {
+		parentCause = latest
 	}
-	if err == nil {
-		err = context.Cause(ctx)
-	}
+	err = selectLifecycleError(err, actorErr, parentCause)
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
 	return outcome, nil
+}
+
+func selectLifecycleError(selected, actorClose, parentCause error) error {
+	if selected != nil {
+		return selected
+	}
+	if actorClose != nil {
+		return actorClose
+	}
+	return parentCause
 }
 
 func validatePickerOptions(ctx context.Context, options PickerOptions) error {
