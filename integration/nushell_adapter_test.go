@@ -163,6 +163,42 @@ func TestNushellAdapter(t *testing.T) {
 		})
 	}
 
+	t.Run("spawn-failures-are-soft", func(t *testing.T) {
+		emptyBin := filepath.Join(fixture.root, "empty picker bin")
+		unlaunchableBin := filepath.Join(fixture.root, "unlaunchable picker bin")
+		for _, directory := range []string{emptyBin, unlaunchableBin} {
+			if err := os.MkdirAll(directory, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		unlaunchable := filepath.Join(unlaunchableBin, "shell-picker")
+		if runtime.GOOS == "windows" {
+			unlaunchable += ".exe"
+		}
+		if err := os.WriteFile(unlaunchable, []byte("not an executable"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, spawnCase := range []struct {
+			name string
+			path string
+		}{{"absent", emptyBin}, {"unlaunchable", unlaunchableBin}} {
+			for _, operation := range []string{"cd", "cp"} {
+				t.Run(operation+"-"+spawnCase.name, func(t *testing.T) {
+					spawnFixture := fixture
+					spawnFixture.environment = replaceEnvironment(fixture.environment, "PATH="+spawnCase.path)
+					state := spawnFixture.run(t, operation+"-"+spawnCase.name, operation, 2, nil, 0, false)
+					if state.Buffer != operation+" " || filepath.Clean(state.PWD) != filepath.Clean(fixture.cwd) {
+						t.Fatalf("spawn failure changed buffer/PWD: %q/%q", state.Buffer, state.PWD)
+					}
+					if !reflect.DeepEqual(state.Edits, []string{"insert"}) {
+						t.Fatalf("spawn failure reached a replacement edit: %q", state.Edits)
+					}
+					fixture.assertNoPicker(t)
+				})
+			}
+		}
+	})
+
 	t.Run("cd-accepted", func(t *testing.T) {
 		target := filepath.Join(fixture.root, "selected cd with space")
 		if err := os.MkdirAll(target, 0o755); err != nil {
@@ -362,8 +398,12 @@ func (fixture nushellFixture) run(t *testing.T, scenario, buffer string, cursor 
 		"SHELL_PICKER_NUSHELL_CURSOR="+strconv.Itoa(cursor), "SHELL_PICKER_NUSHELL_EXIT="+strconv.Itoa(exitCode),
 		"SHELL_PICKER_NUSHELL_DECODE="+decodeValue,
 	)
-	if combined, err := command.CombinedOutput(); err != nil {
+	combined, err := command.CombinedOutput()
+	if err != nil {
 		t.Fatalf("Nushell scenario %s: %v\n%s", scenario, err, combined)
+	}
+	if len(combined) != 0 {
+		t.Fatalf("Nushell scenario %s leaked host output: %q", scenario, combined)
 	}
 	var state nushellState
 	raw, err := os.ReadFile(fixture.state)

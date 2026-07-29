@@ -1,5 +1,13 @@
 def --env _shell_picker_pick_cd [] {
-  let outcome = (^shell-picker cd --cwd $env.PWD --home $nu.home-dir --output nuon | complete)
+  let launch = (try {
+    {valid: true, value: (^shell-picker cd --cwd $env.PWD --home $nu.home-dir --output nuon | complete)}
+  } catch {
+    {valid: false, value: null}
+  })
+  if not $launch.valid {
+    return
+  }
+  let outcome = $launch.value
   let invalid = {valid: false, value: null}
   let selection = (try {
     if $outcome.exit_code != 0 {
@@ -42,7 +50,15 @@ def --env _shell_picker_pick_cd [] {
 }
 
 def --env _shell_picker_pick_cp [] {
-  let outcome = (^shell-picker cp --cwd $env.PWD --home $nu.home-dir --output nuon | complete)
+  let launch = (try {
+    {valid: true, value: (^shell-picker cp --cwd $env.PWD --home $nu.home-dir --output nuon | complete)}
+  } catch {
+    {valid: false, value: null}
+  })
+  if not $launch.valid {
+    return
+  }
+  let outcome = $launch.value
   let invalid = {valid: false, value: null}
   let selection = (try {
     if $outcome.exit_code != 0 {

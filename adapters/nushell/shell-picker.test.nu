@@ -164,6 +164,46 @@ def --env test_soft_cd_and_cp_results [] {
   }
 }
 
+def --env test_picker_spawn_failures_are_soft [] {
+  let saved_path = $env.PATH
+  let original = $env.PWD
+  mut results = []
+  for case in [
+    {name: absent, path: $env.SHELL_PICKER_TEST_EMPTY_BIN},
+    {name: unlaunchable, path: $env.SHELL_PICKER_TEST_UNLAUNCHABLE_BIN},
+  ] {
+    $env.PATH = [$case.path]
+    for operation in [cd cp] {
+      reset_editor $operation 2
+      set_picker ""
+      let succeeded = (try {
+        _shell_picker_space
+        true
+      } catch {
+        false
+      })
+      $results = ($results | append {
+        name: $"($operation)-($case.name)"
+        expected: ($operation + " ")
+        succeeded: $succeeded
+        buffer: $env.SHELL_PICKER_TEST_BUFFER
+        cwd: $env.PWD
+        edits: $env.SHELL_PICKER_TEST_EDITS
+        calls: ((picker_calls) | length)
+      })
+    }
+  }
+  $env.PATH = $saved_path
+
+  for result in $results {
+    assert $result.succeeded $result.name
+    assert equal $result.buffer $result.expected $result.name
+    assert equal $result.cwd $original $result.name
+    assert equal $result.edits [insert] $result.name
+    assert equal $result.calls 0 $result.name
+  }
+}
+
 def --env test_binding_is_targeted_and_idempotent [] {
   let tab = {
     name: completion_menu
@@ -215,10 +255,23 @@ r#'def --wrapped main [...args: string] {
 }
 '# | save $fake
 
+let empty_bin = ($test_root | path join "empty-bin")
+let unlaunchable_bin = ($test_root | path join "unlaunchable-bin")
+mkdir $empty_bin $unlaunchable_bin
+if $nu.os-info.name == "windows" {
+  "not a Windows executable" | save ($unlaunchable_bin | path join "shell-picker.exe")
+} else {
+  let unlaunchable = ($unlaunchable_bin | path join "shell-picker")
+  "not an executable" | save $unlaunchable
+  ^chmod +x $unlaunchable
+}
+
 $env.SHELL_PICKER_TEST_ROOT = $test_root
 $env.SHELL_PICKER_TEST_CALLS = ($test_root | path join "calls.nuon")
 $env.SHELL_PICKER_TEST_FAKE = $fake
 $env.SHELL_PICKER_TEST_NU = $nu.current-exe
+$env.SHELL_PICKER_TEST_EMPTY_BIN = $empty_bin
+$env.SHELL_PICKER_TEST_UNLAUNCHABLE_BIN = $unlaunchable_bin
 $env.PATH = ($env.PATH | prepend $bin)
 
 if $nu.os-info.name == "windows" {
@@ -233,6 +286,7 @@ test_space_trigger_matrix
 test_cd_accepts_one_string_with_percent_cd
 test_cp_nuon_insertion
 test_soft_cd_and_cp_results
+test_picker_spawn_failures_are_soft
 test_binding_is_targeted_and_idempotent
 
 rm --recursive --force $test_root
