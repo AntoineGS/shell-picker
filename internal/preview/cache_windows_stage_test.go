@@ -3,6 +3,8 @@
 package preview
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -175,6 +177,28 @@ func TestWindowsStaleCleanupRemovesGenuineAbandonedStage(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertNoCacheTemps(t, cache.root)
+}
+
+func TestWindowsStageMarkerValidationFailureLeavesNoPrivateStage(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	attackerLink := filepath.Join(t.TempDir(), "marker-link")
+	oldHook := stageMarkerWritten
+	stageMarkerWritten = func(stageName string) {
+		marker := filepath.Join(cache.root, stageName, testStageMarkerName)
+		if err := os.Link(marker, attackerLink); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { stageMarkerWritten = oldHook })
+
+	artifact, err := newConverterArtifact(cache, ".jpg")
+	if artifact != nil || !errors.Is(err, ErrUnsafeCache) {
+		t.Fatalf("artifact=%v err=%v", artifact, err)
+	}
+	assertNoCacheTemps(t, cache.root)
+	if data, err := os.ReadFile(attackerLink); err != nil || !bytes.HasPrefix(data, []byte(stageMarkerMagic)) {
+		t.Fatalf("attacker link changed: data=%q err=%v", data, err)
+	}
 }
 
 func writeStageFixture(t *testing.T, directory, name string, data []byte) {

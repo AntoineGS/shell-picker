@@ -20,6 +20,7 @@ const privateFileAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE
 // Wine does not apply protected create-time NT descriptors. Its closest private
 // representation grants only the emulated owner and LocalSystem.
 var wineRuntime = windows.NewLazySystemDLL("ntdll.dll").NewProc("wine_get_version").Find() == nil
+var stageMarkerWritten = func(string) {}
 
 func stageMarker(stageName string) ([]byte, bool) {
 	// ACL ownership distinguishes other principals. Windows cannot distinguish
@@ -162,34 +163,35 @@ func createStageMarker(directory windows.Handle, stageName string) (fileIdentity
 		_ = windows.CloseHandle(handle)
 		return fileIdentity{}, err
 	}
-	file := os.NewFile(uintptr(handle), stageMarkerName)
+	var writeHandle windows.Handle
+	process := windows.CurrentProcess()
+	if err := windows.DuplicateHandle(process, handle, process, &writeHandle, 0, false,
+		windows.DUPLICATE_SAME_ACCESS); err != nil {
+		_ = deleteHandle(handle)
+		_ = windows.CloseHandle(handle)
+		return fileIdentity{}, err
+	}
+	file := os.NewFile(uintptr(writeHandle), stageMarkerName)
 	written, writeErr := file.Write(contents)
 	if writeErr == nil && written != len(contents) {
 		writeErr = io.ErrShortWrite
 	}
 	writeErr = errors.Join(writeErr, file.Sync(), file.Close())
 	if writeErr != nil {
-		removeStageFile(directory, stageMarkerName, identity)
+		_ = deleteHandle(handle)
+		_ = windows.CloseHandle(handle)
 		return fileIdentity{}, writeErr
 	}
-	handle, reopenedIdentity, err := openValidatedStageFile(directory, stageMarkerName, identity)
+	stageMarkerWritten(stageName)
+	err = validateStageFile(handle, identity)
 	if err == nil {
-		err = validateStageMarker(handle, reopenedIdentity, contents)
+		err = validateStageMarker(handle, identity, contents)
 	}
-	if err != nil && handle != 0 {
+	if err != nil {
 		_ = deleteHandle(handle)
 	}
 	_ = windows.CloseHandle(handle)
 	return identity, err
-}
-
-func removeStageFile(directory windows.Handle, name string, expected fileIdentity) {
-	handle, _, err := openValidatedStageFile(directory, name, expected)
-	if err != nil {
-		return
-	}
-	_ = deleteHandle(handle)
-	_ = windows.CloseHandle(handle)
 }
 
 func cleanupStageMarker(directory windows.Handle, expected fileIdentity) bool {
