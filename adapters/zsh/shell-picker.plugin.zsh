@@ -38,9 +38,10 @@ _shell_picker_cd() {
 
 _shell_picker_cp() {
   emulate -L zsh
-  local saved=$BUFFER saved_cursor=$CURSOR output selected word
+  local saved=$BUFFER saved_cursor=$CURSOR output selected word argument cluster option
   local -a selected_paths quoted parsed_words command_words
-  integer picker_status=1 valid=1 has_terminator=0 index
+  integer picker_status=1 valid=1 has_terminator=0 index option_index
+  integer expect_redirection_operand=0 expect_option_argument=0
 
   output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-cp.${$}.XXXXXX") || {
     zle redisplay
@@ -81,9 +82,38 @@ _shell_picker_cp() {
   done
   if [[ $command_words[1] == cp ]]; then
     for (( index = 2; index <= ${#command_words}; ++index )); do
-      if [[ ${(Q)command_words[index]} == -- ]]; then
+      word=${command_words[index]}
+      if (( expect_redirection_operand )); then
+        expect_redirection_operand=0
+        continue
+      fi
+      case $word in
+        '>' | '>>' | '>|' | '>!' | '<' | '<>' | '<&' | '>&' | \
+          <->'>' | <->'>>' | <->'>|' | <->'>!' | <->'<' | <->'<>' | <->'<&' | <->'>&')
+          expect_redirection_operand=1
+          continue
+          ;;
+      esac
+      argument=${(Q)word}
+      if (( expect_option_argument )); then
+        expect_option_argument=0
+        continue
+      fi
+      if [[ $argument == -- ]]; then
         has_terminator=1
         break
+      fi
+      if [[ $argument == --target-directory || $argument == --suffix ]]; then
+        expect_option_argument=1
+      elif [[ $argument == -?* && $argument != --* ]]; then
+        cluster=${argument#-}
+        for (( option_index = 1; option_index <= ${#cluster}; ++option_index )); do
+          option=$cluster[option_index]
+          if [[ $option == t || $option == S ]]; then
+            (( option_index == ${#cluster} )) && expect_option_argument=1
+            break
+          fi
+        done
       fi
     done
   fi

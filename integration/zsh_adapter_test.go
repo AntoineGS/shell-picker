@@ -122,6 +122,39 @@ func TestZshAdapter(t *testing.T) {
 		})
 	}
 
+	contexts := []struct {
+		name    string
+		lbuffer string
+		want    []string
+	}{
+		{"redirect", "cp existing > -- ", []string{"existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"fd-redirect", "cp existing 2>> -- ", []string{"existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"short-target", "cp -t -- existing ", []string{"-t", "--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"short-suffix", "cp -S -- existing ", []string{"-S", "--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"short-cluster", "cp -avt -- existing ", []string{"-avt", "--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"short-target-attached", "cp -t-- existing ", []string{"-t--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"short-suffix-attached", "cp -S-- existing ", []string{"-S--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"short-attached-then-effective", "cp -tfoo -- existing ", []string{"-tfoo", "--", "existing", "-leading", "duplicate", "duplicate"}},
+		{"long-target", "cp --target-directory -- existing ", []string{"--target-directory", "--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"long-suffix", "cp --suffix -- existing ", []string{"--suffix", "--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"long-target-attached", "cp --target-directory=-- existing ", []string{"--target-directory=--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"long-suffix-attached", "cp --suffix=-- existing ", []string{"--suffix=--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+		{"plain-effective", "cp -- existing ", []string{"--", "existing", "-leading", "duplicate", "duplicate"}},
+		{"escaped-effective", `cp \-- existing `, []string{"--", "existing", "-leading", "duplicate", "duplicate"}},
+		{"separator-reset", "cp -- prior ; cp -t -- existing ", []string{"-t", "--", "existing", "--", "-leading", "duplicate", "duplicate"}},
+	}
+	for _, context := range contexts {
+		t.Run("cp-terminator-context-"+context.name, func(t *testing.T) {
+			fixture := newZshAdapterFixture(t, zsh, plugin)
+			state := fixture.runCP(t, context.lbuffer, []string{"-leading", "duplicate", "duplicate"})
+			if strings.HasSuffix(state[3], " ") {
+				t.Fatalf("cp LBUFFER has trailing space: %q", state[3])
+			}
+			fixture.assertOnePicker(t, "cp")
+			fixture.assertCPArgs(t, context.want)
+		})
+	}
+
 	t.Run("invalid-utf8-bytes", func(t *testing.T) {
 		locales := []struct {
 			name  string
@@ -192,6 +225,11 @@ func newZshAdapterFixture(t *testing.T, zsh, plugin string) zshAdapterFixture {
 
 func (fixture zshAdapterFixture) run(t *testing.T, scenario string, records []string) []string {
 	return fixture.runLocale(t, scenario, records, "")
+}
+
+func (fixture zshAdapterFixture) runCP(t *testing.T, lbuffer string, records []string) []string {
+	fixture.environment = replaceEnvironment(fixture.environment, "SHELL_PICKER_LBUFFER="+lbuffer)
+	return fixture.run(t, "tab-custom", records)
 }
 
 func (fixture zshAdapterFixture) runLocale(t *testing.T, scenario string, records []string, locale string) []string {
@@ -363,6 +401,7 @@ zle() {
 bindkey() { return 0 }
 source "$1" || exit $?
 cd -- "$2" || exit $?
+typeset -a decoded
 case $3 in
   cd)
     BUFFER='original cd state' CURSOR=4
@@ -374,23 +413,25 @@ case $3 in
     _shell_picker_space
     quoted=${BUFFER#'builtin cd -- '}
     ;;
-  tab | tab-options | tab-terminator | tab-escaped-terminator)
+  tab | tab-options | tab-terminator | tab-escaped-terminator | tab-custom)
     case $3 in
       tab) LBUFFER='cp ' ;;
       tab-options) LBUFFER='cp -a existing ' ;;
       tab-terminator) LBUFFER='cp -a -- existing ' ;;
       tab-escaped-terminator) LBUFFER='cp -a \-- existing ' ;;
+      tab-custom) LBUFFER=$SHELL_PICKER_LBUFFER ;;
     esac
     RBUFFER=
     _shell_picker_tab
     [[ $LBUFFER != *' ' ]] || exit 91
     eval "$LBUFFER" || exit 94
-    quoted=${LBUFFER#'cp '}
+    while IFS= read -r -d $'\0' argument; do decoded+=("$argument"); done < "$SHELL_PICKER_CP_CALLS"
     ;;
   *) exit 92 ;;
 esac
-typeset -a decoded
-eval "decoded=( $quoted )" || exit 93
+if [[ $3 == cd || $3 == space ]]; then
+  eval "decoded=( $quoted )" || exit 93
+fi
 emit() { print -rn -- "$1"$'\0' }
 {
   emit "$accepted_calls"

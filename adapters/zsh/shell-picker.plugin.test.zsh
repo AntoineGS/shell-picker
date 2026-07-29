@@ -73,6 +73,7 @@ case $PICKER_MODE in
   cd-newline) emit $'line\n' ;;
   cd-double) emit one; emit two ;;
   cp-order) emit 'first path'; emit 'third path'; emit 'first path' ;;
+  cp-leading) emit '-leading'; emit duplicate; emit duplicate ;;
   cp-special) emit '-leading'; emit 'trailing '; emit 'back\slash'; emit "apost'rophe"; emit $'nbsp\u00a0path'; emit $'tab\tpath'; emit $'line\npath' ;;
   malformed) emit 'first path'; print -rn -- unterminated ;;
   *) print -rn -- unknown; exit 0 ;;
@@ -195,20 +196,75 @@ test_cp_abort_error_and_malformed_restore() {
 
 test_cp_option_terminator() {
   reset_case
-  PICKER_MODE=cp-order
+  PICKER_MODE=cp-leading
   LBUFFER='cp -a existing ' RBUFFER=
   _shell_picker_cp
-  assert_equal 'cp -a existing -- first\ path third\ path first\ path' "$LBUFFER" \
+  assert_equal 'cp -a existing -- -leading duplicate duplicate' "$LBUFFER" \
     'cp did not terminate options before selected operands'
 
   local existing
   for existing in '--' '\--'; do
     reset_case
-    PICKER_MODE=cp-order
+    PICKER_MODE=cp-leading
     LBUFFER="echo before | cp -a $existing existing " RBUFFER=
     _shell_picker_cp
-    assert_equal "echo before | cp -a $existing existing first\\ path third\\ path first\\ path" "$LBUFFER" \
+    assert_equal "echo before | cp -a $existing existing -leading duplicate duplicate" "$LBUFFER" \
       "cp duplicated effective terminator $existing"
+  done
+}
+
+test_cp_terminator_context() {
+  local -a inputs expected
+  inputs=(
+    'cp existing > -- '
+    'cp existing 2> -- '
+    'cp existing 2>> -- '
+    'cp -t -- existing '
+    'cp -S -- existing '
+    'cp -avt -- existing '
+    'cp -t-- existing '
+    'cp -S-- existing '
+    'cp -tfoo -- existing '
+    'cp -S.bak -- existing '
+    'cp --target-directory -- existing '
+    'cp --suffix -- existing '
+    'cp --target-directory=-- existing '
+    'cp --suffix=-- existing '
+  )
+  expected=(
+    'cp existing > -- -- -leading duplicate duplicate'
+    'cp existing 2> -- -- -leading duplicate duplicate'
+    'cp existing 2>> -- -- -leading duplicate duplicate'
+    'cp -t -- existing -- -leading duplicate duplicate'
+    'cp -S -- existing -- -leading duplicate duplicate'
+    'cp -avt -- existing -- -leading duplicate duplicate'
+    'cp -t-- existing -- -leading duplicate duplicate'
+    'cp -S-- existing -- -leading duplicate duplicate'
+    'cp -tfoo -- existing -leading duplicate duplicate'
+    'cp -S.bak -- existing -leading duplicate duplicate'
+    'cp --target-directory -- existing -- -leading duplicate duplicate'
+    'cp --suffix -- existing -- -leading duplicate duplicate'
+    'cp --target-directory=-- existing -- -leading duplicate duplicate'
+    'cp --suffix=-- existing -- -leading duplicate duplicate'
+  )
+  integer index
+  for (( index = 1; index <= ${#inputs}; ++index )); do
+    reset_case
+    PICKER_MODE=cp-leading
+    LBUFFER=${inputs[index]} RBUFFER=
+    _shell_picker_cp
+    assert_equal "${expected[index]}" "$LBUFFER" "cp terminator context ${inputs[index]} was misclassified"
+    [[ $LBUFFER != *' ' ]] || fail "cp terminator context ${inputs[index]} has a trailing space"
+  done
+
+  local separator
+  for separator in ';' '&' '&&' '||' '|' '|&' '&!' '&|'; do
+    reset_case
+    PICKER_MODE=cp-leading
+    LBUFFER="cp -- prior $separator cp -t -- existing " RBUFFER=
+    _shell_picker_cp
+    assert_equal "cp -- prior $separator cp -t -- existing -- -leading duplicate duplicate" "$LBUFFER" \
+      "separator $separator did not reset terminator parser state"
   done
 }
 
@@ -298,6 +354,7 @@ test_cd_abort_error_and_malformed_restore
 test_cp_order_duplicates_and_special_bytes
 test_cp_abort_error_and_malformed_restore
 test_cp_option_terminator
+test_cp_terminator_context
 test_tab_current_command_parser
 test_temp_cleanup_is_owned_and_soft
 test_temp_commands_ignore_hostile_functions
