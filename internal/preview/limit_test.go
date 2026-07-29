@@ -182,7 +182,7 @@ func TestStagedArtifactRejectsReplacementAfterExclusiveCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stage.Cleanup()
-	path := soleStagedArtifact(t, cache.root)
+	path := stage.Path()
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
@@ -296,18 +296,6 @@ func main(){ os.WriteFile(os.Getenv("READY"),[]byte(os.Args[len(os.Args)-1]),060
 	}
 }
 
-func soleStagedArtifact(t *testing.T, root string) string {
-	t.Helper()
-	entries, err := os.ReadDir(root)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("stage entries=%v err=%v", entries, err)
-	}
-	children, err := os.ReadDir(filepath.Join(root, entries[0].Name()))
-	if err != nil || len(children) != 1 {
-		t.Fatalf("artifact entries=%v err=%v", children, err)
-	}
-	return filepath.Join(root, entries[0].Name(), children[0].Name())
-}
 func stagedArtifactPath(t *testing.T, root string) string {
 	t.Helper()
 	entries, err := os.ReadDir(root)

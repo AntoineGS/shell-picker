@@ -17,7 +17,7 @@ import (
 type converterArtifact struct {
 	root, directory, held windows.Handle
 	name, path            string
-	identity              fileIdentity
+	identity, marker      fileIdentity
 	mu                    sync.Mutex
 	complete              bool
 }
@@ -35,7 +35,7 @@ const cacheEnvironmentVariable = "LOCALAPPDATA"
 const rootAccessMask = windows.FILE_GENERIC_READ
 const cacheHomeSuffix = `AppData\Local`
 
-var cacheArtifactCreated = func() {}
+var cacheArtifactCreated = func(string) {}
 
 func ensureCacheRoot(path string) (fileIdentity, error) {
 	root, err := openCacheRoot(path, true)
@@ -220,22 +220,42 @@ func newConverterArtifact(cache *Cache, suffix string) (*converterArtifact, erro
 	if err != nil {
 		return nil, err
 	}
-	directory, directoryName, err := createRandomAt(root, cacheTempPrefix, windows.FILE_DIRECTORY_FILE, rootAccessMask|windows.DELETE)
+	directory, directoryName, err := createRandomPrivateAt(root, cacheTempPrefix, windows.FILE_DIRECTORY_FILE,
+		rootAccessMask|windows.DELETE)
 	if err != nil {
 		_ = windows.CloseHandle(root)
 		return nil, err
 	}
-	name := "artifact" + suffix
-	file, err := ntOpenAt(directory, name, windows.FILE_CREATE, windows.FILE_NON_DIRECTORY_FILE, windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE)
+	if _, err = stageDirectoryIdentity(directory); err != nil {
+		_ = deleteHandle(directory)
+		_ = windows.CloseHandle(directory)
+		_ = windows.CloseHandle(root)
+		return nil, err
+	}
+	marker, err := createStageMarker(directory, directoryName)
 	if err != nil {
 		_ = deleteHandle(directory)
 		_ = windows.CloseHandle(directory)
 		_ = windows.CloseHandle(root)
 		return nil, err
 	}
-	artifact := &converterArtifact{root: root, directory: directory, name: name, path: filepath.Join(cache.root, directoryName, name)}
-	cacheArtifactCreated()
+	name := "artifact" + suffix
+	file, err := createPrivateAt(directory, name, windows.FILE_NON_DIRECTORY_FILE,
+		windows.FILE_GENERIC_READ|windows.FILE_GENERIC_WRITE|windows.DELETE)
+	if err != nil {
+		cleanupStageMarker(directory, marker)
+		_ = deleteHandle(directory)
+		_ = windows.CloseHandle(directory)
+		_ = windows.CloseHandle(root)
+		return nil, err
+	}
+	artifact := &converterArtifact{root: root, directory: directory, name: name,
+		path: filepath.Join(cache.root, directoryName, name), marker: marker}
+	cacheArtifactCreated(artifact.path)
 	identity, _, err := validateHandle(file, 1, fileIdentity{})
+	if err == nil {
+		err = validatePrivateHandle(file)
+	}
 	if err != nil {
 		_ = windows.CloseHandle(file)
 		_ = artifact.Cleanup()
@@ -279,6 +299,9 @@ func (artifact *converterArtifact) Cleanup() bool {
 	if err != nil && !errors.Is(err, windows.STATUS_OBJECT_NAME_NOT_FOUND) {
 		return false
 	}
+	if !cleanupStageMarker(artifact.directory, artifact.marker) {
+		return false
+	}
 	if err = deleteHandle(artifact.directory); err != nil {
 		return false
 	}
@@ -287,6 +310,7 @@ func (artifact *converterArtifact) Cleanup() bool {
 	artifact.complete = true
 	return true
 }
+
 func openCacheSource(cache *Cache, key string) (*cacheSource, error) {
 	root, err := openCache(cache)
 	if err != nil {
@@ -320,20 +344,4 @@ func (artifact *converterArtifact) Validate() error {
 	handle, _, _, _, err := openAcceptedAt(artifact.directory, artifact.name, artifact.identity, false)
 	artifact.held = handle
 	return err
-}
-func createRandomAt(root windows.Handle, prefix string, options, access uint32) (windows.Handle, string, error) {
-	for attempts := 0; attempts < 100; attempts++ {
-		name, err := randomCacheName(prefix)
-		if err != nil {
-			return 0, "", err
-		}
-		handle, err := ntOpenAt(root, name, windows.FILE_CREATE, options, access)
-		if err == nil {
-			return handle, name, nil
-		}
-		if !errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
-			return 0, "", err
-		}
-	}
-	return 0, "", ErrUnsafeCache
 }

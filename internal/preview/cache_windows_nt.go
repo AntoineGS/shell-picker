@@ -46,34 +46,74 @@ func validPrivateStageName(name string) bool {
 }
 
 func cleanupStaleStageAt(root windows.Handle, name string) {
-	directory, err := ntOpenAt(root, name, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE, rootAccessMask|windows.DELETE)
+	markerContents, ok := stageMarker(name)
+	if !ok {
+		return
+	}
+	directory, directoryID, err := openStageDirectory(root, name, fileIdentity{})
 	if err != nil {
 		return
 	}
-	defer windows.CloseHandle(directory)
-	if _, err := directoryIdentity(directory); err != nil {
+	defer func() {
+		if directory != 0 {
+			_ = windows.CloseHandle(directory)
+		}
+	}()
+	entries, err := readStageEntries(directory, name)
+	if err != nil || !stageEntrySet(entries, false) {
 		return
 	}
-	var duplicate windows.Handle
-	process := windows.CurrentProcess()
-	if windows.DuplicateHandle(process, directory, process, &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS) != nil {
-		return
-	}
-	stream := os.NewFile(uintptr(duplicate), name)
-	entries, readErr := stream.Readdir(-1)
-	_ = stream.Close()
-	if readErr != nil || len(entries) != 1 || entries[0].IsDir() || entries[0].Name() != "artifact.jpg" {
-		return
-	}
-	artifact, _, _, _, err := openAcceptedAt(directory, entries[0].Name(), fileIdentity{}, true)
+	marker, markerID, err := openValidatedStageFile(directory, stageMarkerName, fileIdentity{})
 	if err != nil {
 		return
 	}
-	deleted := deleteHandle(artifact) == nil
+	defer func() {
+		if marker != 0 {
+			_ = windows.CloseHandle(marker)
+		}
+	}()
+	if err := validateStageMarker(marker, markerID, markerContents); err != nil {
+		return
+	}
+	artifact, artifactID, err := openValidatedStageFile(directory, "artifact.jpg", fileIdentity{})
+	if err != nil {
+		return
+	}
+	defer func() {
+		if artifact != 0 {
+			_ = windows.CloseHandle(artifact)
+		}
+	}()
+	confirmed, _, err := openStageDirectory(root, name, directoryID)
+	if err != nil {
+		return
+	}
+	confirmedEntries, readErr := readStageEntries(confirmed, name)
+	_ = windows.CloseHandle(confirmed)
+	if readErr != nil || !stageEntrySet(confirmedEntries, false) ||
+		validateStageMarker(marker, markerID, markerContents) != nil ||
+		validateStageFile(artifact, artifactID) != nil {
+		return
+	}
+	if deleteHandle(artifact) != nil || deleteHandle(marker) != nil {
+		return
+	}
 	_ = windows.CloseHandle(artifact)
-	if deleted {
-		_ = deleteHandle(directory)
+	artifact = 0
+	_ = windows.CloseHandle(marker)
+	marker = 0
+	_ = windows.CloseHandle(directory)
+	directory = 0
+	finalDirectory, _, err := openStageDirectory(root, name, directoryID)
+	if err != nil {
+		return
 	}
+	defer windows.CloseHandle(finalDirectory)
+	remaining, readErr := readStageEntries(finalDirectory, name)
+	if readErr != nil || !stageEntrySet(remaining, true) {
+		return
+	}
+	_ = deleteHandle(finalDirectory)
 }
 
 type fileRenameInformation struct {
@@ -99,16 +139,6 @@ func (artifact *converterArtifact) Abandon() {
 }
 
 func ntOpenAt(root windows.Handle, name string, disposition, options, access uint32) (windows.Handle, error) {
-	objectName, err := windows.NewNTUnicodeString(name)
-	if err != nil {
-		return 0, err
-	}
-	attributes := windows.OBJECT_ATTRIBUTES{RootDirectory: root, ObjectName: objectName,
-		Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE}
-	attributes.Length = uint32(unsafe.Sizeof(attributes))
-	var handle windows.Handle
-	var status windows.IO_STATUS_BLOCK
-	options |= windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
 	share := uint32(windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE)
 	if options&windows.FILE_NON_DIRECTORY_FILE != 0 && access&(windows.FILE_WRITE_DATA|windows.DELETE) == 0 {
 		share = windows.FILE_SHARE_READ
@@ -116,6 +146,22 @@ func ntOpenAt(root windows.Handle, name string, disposition, options, access uin
 	if options&windows.FILE_NON_DIRECTORY_FILE != 0 && access&windows.DELETE != 0 {
 		share |= windows.FILE_SHARE_DELETE
 	}
+	return ntOpenAtWithSecurity(root, name, disposition, options, access, share, nil)
+}
+
+func ntOpenAtWithSecurity(root windows.Handle, name string, disposition, options, access, share uint32,
+	descriptor *windows.SECURITY_DESCRIPTOR,
+) (windows.Handle, error) {
+	objectName, err := windows.NewNTUnicodeString(name)
+	if err != nil {
+		return 0, err
+	}
+	attributes := windows.OBJECT_ATTRIBUTES{RootDirectory: root, ObjectName: objectName,
+		Attributes: windows.OBJ_CASE_INSENSITIVE | windows.OBJ_DONT_REPARSE, SecurityDescriptor: descriptor}
+	attributes.Length = uint32(unsafe.Sizeof(attributes))
+	var handle windows.Handle
+	var status windows.IO_STATUS_BLOCK
+	options |= windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
 	err = windows.NtCreateFile(&handle, access, &attributes, &status, nil, windows.FILE_ATTRIBUTE_NORMAL,
 		share, disposition, options, 0, 0)
 	return handle, err
@@ -186,4 +232,21 @@ func deleteHandle(handle windows.Handle) error {
 	var status windows.IO_STATUS_BLOCK
 	return windows.NtSetInformationFile(handle, &status, (*byte)(unsafe.Pointer(&flags)),
 		uint32(unsafe.Sizeof(flags)), windows.FileDispositionInformationEx)
+}
+
+func createRandomAt(root windows.Handle, prefix string, options, access uint32) (windows.Handle, string, error) {
+	for attempts := 0; attempts < 100; attempts++ {
+		name, err := randomCacheName(prefix)
+		if err != nil {
+			return 0, "", err
+		}
+		handle, err := ntOpenAt(root, name, windows.FILE_CREATE, options, access)
+		if err == nil {
+			return handle, name, nil
+		}
+		if !errors.Is(err, windows.STATUS_OBJECT_NAME_COLLISION) {
+			return 0, "", err
+		}
+	}
+	return 0, "", ErrUnsafeCache
 }

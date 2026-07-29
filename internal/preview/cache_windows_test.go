@@ -144,8 +144,7 @@ func TestWindowsStaleCleanupLeavesUnvalidatedPrivateDirectory(t *testing.T) {
 func TestWindowsStageCreationValidationFailureLeavesNoPrivateArtifact(t *testing.T) {
 	cache := mustNewCache(t, t.TempDir(), 512<<20)
 	oldHook := cacheArtifactCreated
-	cacheArtifactCreated = func() {
-		path := stagedArtifactPath(t, cache.root)
+	cacheArtifactCreated = func(path string) {
 		if err := os.Link(path, filepath.Join(t.TempDir(), "attacker-link")); err != nil {
 			t.Fatal(err)
 		}
