@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 
 	"github.com/AntoineGS/shell-picker/internal/app"
@@ -10,5 +9,7 @@ import (
 var version = "dev"
 
 func main() {
-	os.Exit(app.Main(context.Background(), os.Args[1:], app.Streams{Out: os.Stdout, Err: os.Stderr}, version))
+	ctx, cancel := signalContext()
+	defer cancel()
+	os.Exit(app.Main(ctx, os.Args[1:], app.Streams{Out: os.Stdout, Err: os.Stderr}, version))
 }
