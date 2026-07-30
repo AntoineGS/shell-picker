@@ -62,4 +62,4 @@ done
 
 # Package splitting is intentional: this is the checked manifest package list.
 # shellcheck disable=SC2086
-go test "$@" $TASK20_PACKAGES -run "$TASK20_PATTERN"
+GOENV=off GOFLAGS= go test "$@" $TASK20_PACKAGES -run "$TASK20_PATTERN"

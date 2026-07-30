@@ -193,8 +193,8 @@ func TestSecurityGateRunnerMatchesManifest(t *testing.T) {
 	if assignments["TASK20_PATTERN"] != task20FocusedPattern {
 		t.Fatalf("checked-in gate pattern differs from manifest")
 	}
-	if !strings.Contains(string(data), `go test "$@" $TASK20_PACKAGES -run "$TASK20_PATTERN"`) {
-		t.Fatal("checked-in gate does not execute the manifest with forwarded go test arguments")
+	if !strings.Contains(string(data), `GOENV=off GOFLAGS= go test "$@" $TASK20_PACKAGES -run "$TASK20_PATTERN"`) {
+		t.Fatal("checked-in gate does not sanitize Go configuration while executing the manifest")
 	}
 	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
 	if err != nil {
@@ -222,8 +222,13 @@ func TestSecurityGateRejectsUnsafeArgumentsAndForwardsSafeArguments(t *testing.T
 	bin := t.TempDir()
 	logPath := filepath.Join(bin, "go-arguments")
 	marker := filepath.Join(bin, "injection-ran")
+	markerCommand := filepath.Join(bin, "hostile-exec")
+	markerScript := fmt.Sprintf("#!/bin/sh\n: > %q\nexec \"$@\"\n", marker)
+	if err := os.WriteFile(markerCommand, []byte(markerScript), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	fakeGo := filepath.Join(bin, "go")
-	fake := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\n", logPath)
+	fake := fmt.Sprintf("#!/bin/sh\nprintf 'GOFLAGS=%%s\\nGOENV=%%s\\n' \"${GOFLAGS-<unset>}\" \"${GOENV-<unset>}\" > %q\nprintf '%%s\\n' \"$@\" >> %q\n", logPath, logPath)
 	if err := os.WriteFile(fakeGo, []byte(fake), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -246,19 +251,45 @@ func TestSecurityGateRejectsUnsafeArgumentsAndForwardsSafeArguments(t *testing.T
 		})
 	}
 
-	command := exec.Command(script, "-race", "-count=10", "-p=1", "-timeout=1m30s")
-	command.Env = append(os.Environ(), "PATH="+bin)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("safe arguments failed: %v: %s", err, output)
-	}
-	data, err := os.ReadFile(logPath)
-	if err != nil {
+	goEnv := filepath.Join(bin, "hostile-go-env")
+	goEnvContents := fmt.Sprintf("GOFLAGS=-exec=%s -run=TestInjected -args\n", markerCommand)
+	if err := os.WriteFile(goEnv, []byte(goEnvContents), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	arguments := strings.Split(strings.TrimSpace(string(data)), "\n")
-	wantPrefix := []string{"test", "-race", "-count=10", "-p=1", "-timeout=1m30s"}
-	if len(arguments) < len(wantPrefix) || !reflect.DeepEqual(arguments[:len(wantPrefix)], wantPrefix) {
-		t.Fatalf("safe arguments did not reach go test intact: %q", arguments)
+	hostileEnvironments := []struct {
+		name    string
+		entries []string
+	}{
+		{name: "GOFLAGS exec", entries: []string{"GOFLAGS=-exec=true"}},
+		{name: "GOFLAGS run", entries: []string{"GOFLAGS=-run=TestInjected"}},
+		{name: "GOFLAGS args", entries: []string{"GOFLAGS=-args"}},
+		{name: "GOENV file", entries: []string{"GOFLAGS=", "GOENV=" + goEnv}},
+	}
+	wantArguments := append([]string{"test", "-race", "-count=10", "-p=1", "-timeout=1m30s"}, strings.Fields(task20ManifestPackages)...)
+	wantArguments = append(wantArguments, "-run", task20FocusedPattern)
+	for _, hostile := range hostileEnvironments {
+		t.Run(hostile.name, func(t *testing.T) {
+			_ = os.Remove(logPath)
+			command := exec.Command(script, "-race", "-count=10", "-p=1", "-timeout=1m30s")
+			command.Env = append(os.Environ(), append([]string{"PATH=" + bin}, hostile.entries...)...)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("safe arguments failed: %v: %s", err, output)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+			if len(lines) < 2 || lines[0] != "GOFLAGS=" || lines[1] != "GOENV=off" {
+				t.Fatalf("hostile Go environment reached invocation: %q", lines)
+			}
+			if !reflect.DeepEqual(lines[2:], wantArguments) {
+				t.Fatalf("safe arguments did not reach go test intact: got %q want %q", lines[2:], wantArguments)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("environment injection ran marker command: %v", err)
+			}
+		})
 	}
 }
 
