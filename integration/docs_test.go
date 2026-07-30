@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -70,6 +71,34 @@ func TestDocumentationDiscoversEveryExecutableFence(t *testing.T) {
 		if !strings.Contains(joined, command) {
 			t.Errorf("README executable command %q was not discovered", command)
 		}
+	}
+}
+
+func TestMarkdownDocumentsExcludesUntrackedMarkdown(t *testing.T) {
+	temporary, err := os.CreateTemp(filepath.Join("..", "docs"), "untracked-document-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := temporary.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(temporary.Name()); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	})
+
+	relative, err := filepath.Rel("..", temporary.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	temporaryDocument := filepath.ToSlash(relative)
+	documents := markdownDocuments(t)
+	if slices.Contains(documents, temporaryDocument) {
+		t.Fatalf("untracked Markdown document %q was discovered", temporaryDocument)
+	}
+	if !slices.Contains(documents, "docs/protocol.md") {
+		t.Fatal("tracked Markdown document docs/protocol.md was not discovered")
 	}
 }
 
@@ -198,25 +227,25 @@ func isShellPickerDocCommand(command string) bool {
 
 func markdownDocuments(t *testing.T) []string {
 	t.Helper()
-	documents := []string{"README.md"}
-	if _, err := os.Stat(filepath.Join("..", "README.md")); err != nil {
-		t.Fatal(err)
-	}
-	err := filepath.WalkDir(filepath.Join("..", "docs"), func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !entry.IsDir() && strings.EqualFold(filepath.Ext(path), ".md") {
-			relative, err := filepath.Rel("..", path)
-			if err != nil {
-				return err
-			}
-			documents = append(documents, filepath.ToSlash(relative))
-		}
-		return nil
-	})
+	root := filepath.Clean("..")
+	list := exec.Command("git", "ls-files", "--cached", "-z", "--", "README.md", "docs")
+	list.Dir = root
+	output, err := list.Output()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("list checked-in Markdown documents: %v", err)
+	}
+	documents := []string{}
+	for _, document := range strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00") {
+		if document == "" || !strings.EqualFold(filepath.Ext(document), ".md") {
+			continue
+		}
+		if _, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(document))); err != nil {
+			t.Fatalf("read %s: %v", document, err)
+		}
+		documents = append(documents, document)
+	}
+	if !slices.Contains(documents, "README.md") {
+		t.Fatal("README.md is not a checked-in Markdown document")
 	}
 	sort.Strings(documents)
 	return documents
