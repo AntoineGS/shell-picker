@@ -411,7 +411,6 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 		}
 	}
 	assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "eza", "ok", 2)
-	assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "eza", "", 0)
 	if err := f.controller.release(second.RendererPID); err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +421,6 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: 1})
-	assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "eza", "ok", 1)
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	if err := term.Send([]byte("q")); err != nil {
 		t.Fatal(err)
@@ -430,6 +428,8 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatal(err)
 	}
+	term.WaitBarrier(testContext(t), barrier{Event: "session.close", Operation: "aborted", Count: 1})
+	assertFinishedTrace(t, term.TraceEvents(), "eza", 1)
 }
 
 func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
@@ -440,9 +440,6 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	}
 	buildWindowsCommand(t, repository, filepath.Join(f.fakeBin, "chafa.exe"), "-ldflags",
 		"-X=main.helperPath="+f.helper+" -X=main.controller="+f.controller.address()+" -X=main.nonce="+f.controller.nonce, "./integration/testhelper/delegate")
-	if err := os.Remove(filepath.Join(f.fakeBin, "eza.exe")); err != nil {
-		t.Fatal(err)
-	}
 	for _, name := range []string{"image-a.png", "image-b.png", "image-c.png"} {
 		if err := os.WriteFile(filepath.Join(f.cwd, name), []byte("\x89PNG\r\n\x1a\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -452,50 +449,58 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 	term.AssertProcessTopology(t)
+	initial := f.waitTree(t, 1)
+	defer initial.close()
 	if err := term.Send([]byte("image")); err != nil {
 		t.Fatal(err)
 	}
-	first := f.waitTree(t, 1)
+	first := f.waitTree(t, 2)
 	defer first.close()
+	if err := waitTreeExit(testContext(t), initial); err != nil {
+		t.Fatalf("initial directory preview tree did not exit: %v", err)
+	}
 	if err := term.Resize(101, 37); err != nil {
 		t.Fatal(err)
 	}
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	if err := term.Send(keyDown); err != nil {
 		t.Fatal(err)
 	}
-	second := f.waitTree(t, 2)
+	second := f.waitTree(t, 3)
 	defer second.close()
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Renderer: "chafa", Operation: "ok", Count: 2})
 	if err := term.Resize(83, 29); err != nil {
 		t.Fatal(err)
 	}
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
 	if err := term.Send([]byte{0x1b, '[', 'A'}); err != nil {
 		t.Fatal(err)
 	}
-	third := f.waitTree(t, 3)
+	third := f.waitTree(t, 4)
 	defer third.close()
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Renderer: "chafa", Operation: "ok", Count: 3})
 	if second.Columns != 46 || second.Lines != 35 || third.Columns != 37 || third.Lines != 27 {
 		t.Fatalf("dimensions first=%dx%d second=%dx%d third=%dx%d", first.Columns, first.Lines, second.Columns, second.Lines, third.Columns, third.Lines)
 	}
 	assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "chafa", "ok", 3)
-	assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "chafa", "", 0)
 	if err := f.controller.release(third.RendererPID); err != nil {
 		t.Fatal(err)
 	}
 	f.controller.wait(testContext(t), "renderer-exit", 1)
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "chafa", Count: 1})
-	assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "chafa", "ok", 1)
-	for _, tree := range []observedPreviewTree{first, second, third} {
+	for _, tree := range []observedPreviewTree{initial, first, second, third} {
 		if err := waitTreeExit(testContext(t), tree); err != nil {
 			t.Fatal(err)
 		}
 	}
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	if err := term.Send([]byte("q")); err != nil {
 		t.Fatal(err)
 	}
 	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatal(err)
 	}
+	term.WaitBarrier(testContext(t), barrier{Event: "session.close", Operation: "aborted", Count: 1})
+	assertFinishedTrace(t, term.TraceEvents(), "chafa", 1)
 }
 
 func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
@@ -526,19 +531,6 @@ func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
 					t.Fatalf("terminal renderer claimed completion")
 				}
 			}
-			dispatches := 0
-			for _, event := range term.TraceEvents() {
-				if event.Event == "preview.dispatch" {
-					dispatches++
-					if event.Renderer != "eza" {
-						t.Fatalf("fallback=%+v", event)
-					}
-				}
-			}
-			if dispatches != 1 {
-				t.Fatalf("dispatches=%d", dispatches)
-			}
-			assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "eza", "", 0)
 			sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 			if err := term.Send([]byte("q")); err != nil {
 				t.Fatal(err)
@@ -546,6 +538,9 @@ func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
 			if err := term.Wait(testContext(t)); err != nil {
 				t.Fatal(err)
 			}
+			term.WaitBarrier(testContext(t), barrier{Event: "session.close", Operation: "aborted", Count: 1})
+			assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "eza", "ok", 1)
+			assertFinishedTrace(t, term.TraceEvents(), "eza", 0)
 		})
 	}
 }

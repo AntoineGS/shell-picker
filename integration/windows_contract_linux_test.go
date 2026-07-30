@@ -142,3 +142,36 @@ func TestWindowsPreviewTestsRequireTopologyAndCheckOperations(t *testing.T) {
 		}
 	}
 }
+
+func TestResizeAndFinishedEvidenceSourceOrderingMatchesWindows(t *testing.T) {
+	for _, path := range []string{"fzf_real_preview_linux_test.go", "fzf_real_preview_windows_test.go"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(raw)
+		start := strings.Index(source, "func TestRealFZFResizeUpdatesPreviewDimensions")
+		if start < 0 {
+			t.Fatalf("%s lacks resize test boundary", path)
+		}
+		end := strings.Index(source[start:], "func TestRealFZFPreviewTerminalFailuresKillWholeTree")
+		if end < 0 {
+			t.Fatalf("%s lacks resize/failure test boundaries", path)
+		}
+		body := source[start : start+end]
+		for _, required := range []string{
+			"Resize(101, 37)", `Operation: "es", Count: 1`, "Send(keyDown)", `Renderer: "chafa", Operation: "ok", Count: 2`,
+			"Resize(83, 29)", `Operation: "es", Count: 2`, "Send([]byte{0x1b, '[', 'A'})",
+			`Renderer: "chafa", Operation: "ok", Count: 3`, `Event: "session.close"`, "assertFinishedTrace",
+		} {
+			if !strings.Contains(body, required) {
+				t.Errorf("%s resize evidence lacks %s", path, required)
+			}
+		}
+		closeBarrier := strings.LastIndex(body, `Event: "session.close"`)
+		finishedAssertion := strings.LastIndex(body, "assertFinishedTrace")
+		if closeBarrier < 0 || finishedAssertion < closeBarrier {
+			t.Errorf("%s samples finished telemetry before session.close synchronization", path)
+		}
+	}
+}
