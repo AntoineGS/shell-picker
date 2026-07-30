@@ -92,11 +92,28 @@ func TestDocumentationStatesLaunchOnlyZoxideContract(t *testing.T) {
 }
 
 func TestDocumentationStatesCurrentRuntimeContracts(t *testing.T) {
-	documentation := readDoc(t, "README.md") + readDoc(t, "docs/protocol.md") +
-		readDoc(t, "docs/architecture.md") + readDoc(t, "docs/security.md")
-	for _, required := range []string{"i:cd", "i:cp", "change-header", "two-line layout"} {
-		if !strings.Contains(documentation, required) {
-			t.Errorf("current documentation missing runtime contract %q", required)
+	requirements := map[string][]string{
+		"README.md": {
+			"two-line layout",
+			"For `cp`, the info text appends ` (N)` only while a selection is active. `cd` never shows a selection count.",
+		},
+		"docs/protocol.md": {
+			"display is exactly `d`; info is exactly `i:cd` or `i:cp`",
+			"the display request is `{}` and its response is `{\"header\":\"...\"}`",
+		},
+		"docs/architecture.md": {
+			"The display callback reads the current actor snapshot without applying a transition, changing generation, rebuilding candidates, or affecting selection.",
+		},
+		"docs/security.md": {
+			"The bootstrap header crosses the terminal boundary as a discrete `--header=` argv value; dynamic arbitrary escaped location updates remain final validated colon-delimited `change-header` actions.",
+		},
+	}
+	for path, requiredValues := range requirements {
+		document := readDoc(t, path)
+		for _, required := range requiredValues {
+			if !strings.Contains(document, required) {
+				t.Errorf("%s missing current runtime contract %q", path, required)
+			}
 		}
 	}
 }
