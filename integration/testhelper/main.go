@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -43,7 +42,7 @@ func main() {
 }
 
 func runRenderer(address, nonce string, overflow bool) int {
-	connection, err := net.Dial("tcp4", address)
+	connection, err := dialController(address)
 	if err != nil {
 		return 10
 	}
@@ -88,7 +87,7 @@ func runRenderer(address, nonce string, overflow bool) int {
 }
 
 func runGrandchild(address, nonce string) int {
-	connection, err := net.Dial("tcp4", address)
+	connection, err := dialController(address)
 	if err != nil {
 		return 20
 	}

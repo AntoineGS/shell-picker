@@ -5,6 +5,8 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,15 +22,16 @@ import (
 )
 
 type windowsTerminalSession struct {
-	t        *testing.T
-	console  windows.Handle
-	input    windows.Handle
-	output   windows.Handle
-	trace    windows.Handle
-	process  windows.Handle
-	thread   windows.Handle
-	pid      int
-	handleMu sync.Mutex
+	t            *testing.T
+	console      windows.Handle
+	input        windows.Handle
+	output       windows.Handle
+	trace        windows.Handle
+	process      windows.Handle // control handle; waiter owns a duplicate
+	pid          int
+	fzfPath      string
+	argvCanaries []string
+	handleMu     sync.Mutex
 
 	outputMu sync.Mutex
 	buffer   bytes.Buffer
@@ -36,11 +39,13 @@ type windowsTerminalSession struct {
 	events   []traceEvent
 	changed  chan struct{}
 
-	waitResult chan error
-	drainDone  chan struct{}
-	traceDone  chan struct{}
-	closeOnce  sync.Once
-	closeErr   error
+	waitMu    sync.Mutex
+	waitErr   error
+	waitDone  chan struct{}
+	drainDone chan struct{}
+	traceDone chan struct{}
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
@@ -53,7 +58,8 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	if err := windows.CreatePipe(&inputRead, &inputWrite, nil, 0); err != nil {
 		t.Fatalf("create ConPTY input pipe: %v", err)
 	}
-	if err := windows.CreatePipe(&outputRead, &outputWrite, nil, 0); err != nil {
+	outputRead, outputWrite, err := createWindowsOverlappedReadPipe()
+	if err != nil {
 		_ = windows.CloseHandle(inputRead)
 		_ = windows.CloseHandle(inputWrite)
 		t.Fatalf("create ConPTY output pipe: %v", err)
@@ -67,8 +73,20 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	_ = windows.CloseHandle(outputWrite)
 
 	session := &windowsTerminalSession{t: t, console: console, input: inputWrite, output: outputRead,
-		changed: make(chan struct{}), waitResult: make(chan error, 1), drainDone: make(chan struct{}), traceDone: make(chan struct{})}
-	go session.drainOutput()
+		changed: make(chan struct{}), waitDone: make(chan struct{}), drainDone: make(chan struct{}), traceDone: make(chan struct{})}
+	for index, argument := range config.Args {
+		if argument == "--fzf" && index+1 < len(config.Args) {
+			session.fzfPath = config.Args[index+1]
+		}
+	}
+	for _, entry := range config.Environment {
+		if strings.HasPrefix(strings.ToUpper(entry), "SHELL_PICKER_ADDR=") ||
+			strings.HasPrefix(strings.ToUpper(entry), "SHELL_PICKER_TOKEN=") {
+			_, value, _ := strings.Cut(entry, "=")
+			session.argvCanaries = append(session.argvCanaries, value)
+		}
+	}
+	go session.drainOutput(outputRead)
 	tracePath, traceHandle := createWindowsTracePipe(t)
 	session.trace = traceHandle
 	traceReady := make(chan struct{})
@@ -114,24 +132,109 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		session.Close()
 		t.Fatalf("start picker in ConPTY: %v", err)
 	}
-	session.process, session.thread, session.pid = information.Process, information.Thread, int(information.ProcessId)
-	go session.waitProcess()
+	if err := windows.CloseHandle(information.Thread); err != nil {
+		_ = windows.TerminateProcess(information.Process, 1)
+		_ = windows.CloseHandle(information.Process)
+		session.Close()
+		t.Fatalf("close unused picker thread handle: %v", err)
+	}
+	var waitHandle windows.Handle
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), information.Process, windows.CurrentProcess(), &waitHandle,
+		0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+		_ = windows.TerminateProcess(information.Process, 1)
+		_ = windows.CloseHandle(information.Process)
+		session.Close()
+		t.Fatalf("duplicate picker wait handle: %v", err)
+	}
+	session.process, session.pid = information.Process, int(information.ProcessId)
+	go session.waitProcess(waitHandle)
 	return session
+}
+
+func createWindowsOverlappedReadPipe() (windows.Handle, windows.Handle, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return 0, 0, err
+	}
+	name := `\\.\pipe\shell-picker-conpty-output-` + hex.EncodeToString(raw)
+	wide, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return 0, 0, err
+	}
+	security, err := currentUserSecurityAttributes()
+	if err != nil {
+		return 0, 0, err
+	}
+	server, err := windows.CreateNamedPipe(wide, windows.PIPE_ACCESS_INBOUND|windows.FILE_FLAG_FIRST_PIPE_INSTANCE|windows.FILE_FLAG_OVERLAPPED,
+		windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT, 1, 64<<10, 64<<10, 0, security)
+	if err != nil {
+		return 0, 0, err
+	}
+	event, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		_ = windows.CloseHandle(server)
+		return 0, 0, err
+	}
+	defer windows.CloseHandle(event)
+	overlapped := windows.Overlapped{HEvent: event}
+	err = windows.ConnectNamedPipe(server, &overlapped)
+	connectPending := errors.Is(err, windows.ERROR_IO_PENDING)
+	if err != nil && !errors.Is(err, windows.ERROR_IO_PENDING) && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
+		_ = windows.CloseHandle(server)
+		return 0, 0, err
+	}
+	client, err := windows.CreateFile(wide, windows.GENERIC_WRITE, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		_ = windows.CancelIoEx(server, &overlapped)
+		_ = windows.CloseHandle(server)
+		return 0, 0, err
+	}
+	if connectPending {
+		var transferred uint32
+		err = windows.GetOverlappedResult(server, &overlapped, &transferred, true)
+	}
+	if err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
+		_ = windows.CloseHandle(client)
+		_ = windows.CloseHandle(server)
+		return 0, 0, err
+	}
+	return server, client, nil
 }
 
 func createWindowsTracePipe(t *testing.T) (string, windows.Handle) {
 	t.Helper()
-	name := `\\.\pipe\shell-picker-trace-` + fmt.Sprint(os.Getpid()) + "-" + strings.NewReplacer("/", "-", "\\", "-").Replace(t.Name())
+	random := make([]byte, 24)
+	if _, err := rand.Read(random); err != nil {
+		t.Fatalf("random trace pipe name: %v", err)
+	}
+	name := `\\.\pipe\shell-picker-trace-` + hex.EncodeToString(random)
 	wide, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		t.Fatal(err)
 	}
+	security, err := currentUserSecurityAttributes()
+	if err != nil {
+		t.Fatalf("create trace pipe security descriptor: %v", err)
+	}
 	handle, err := windows.CreateNamedPipe(wide, windows.PIPE_ACCESS_INBOUND|windows.FILE_FLAG_FIRST_PIPE_INSTANCE|windows.FILE_FLAG_OVERLAPPED,
-		windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT, 1, 64<<10, 64<<10, 0, nil)
+		windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT, 1, 64<<10, 64<<10, 0, security)
 	if err != nil {
 		t.Fatalf("create trace named pipe: %v", err)
 	}
 	return name, handle
+}
+
+func currentUserSecurityAttributes() (*windows.SecurityAttributes, error) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return nil, err
+	}
+	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;" + user.User.Sid.String() + ")")
+	if err != nil {
+		return nil, err
+	}
+	return &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: descriptor}, nil
 }
 
 func (session *windowsTerminalSession) drainTrace(handle windows.Handle, ready chan<- struct{}) {
@@ -145,8 +248,8 @@ func (session *windowsTerminalSession) drainTrace(handle windows.Handle, ready c
 	}
 	defer windows.CloseHandle(event)
 	overlapped := windows.Overlapped{HEvent: event}
-	close(ready)
 	err = windows.ConnectNamedPipe(handle, &overlapped)
+	close(ready)
 	if errors.Is(err, windows.ERROR_IO_PENDING) {
 		var connected uint32
 		err = windows.GetOverlappedResult(handle, &overlapped, &connected, true)
@@ -213,12 +316,25 @@ func windowsEnvironment(environment []string) []uint16 {
 	return windows.StringToUTF16(strings.Join(sorted, "\x00") + "\x00")
 }
 
-func (session *windowsTerminalSession) drainOutput() {
+func (session *windowsTerminalSession) drainOutput(handle windows.Handle) {
 	defer close(session.drainDone)
+	defer windows.CloseHandle(handle)
+	event, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(event)
+	overlapped := windows.Overlapped{HEvent: event}
 	buffer := make([]byte, 32<<10)
 	for {
+		if err := windows.ResetEvent(event); err != nil {
+			return
+		}
 		var read uint32
-		err := windows.ReadFile(session.output, buffer, &read, nil)
+		err := windows.ReadFile(handle, buffer, &read, &overlapped)
+		if errors.Is(err, windows.ERROR_IO_PENDING) {
+			err = windows.GetOverlappedResult(handle, &overlapped, &read, true)
+		}
 		if read > 0 {
 			session.outputMu.Lock()
 			_, _ = session.buffer.Write(buffer[:read])
@@ -230,25 +346,34 @@ func (session *windowsTerminalSession) drainOutput() {
 	}
 }
 
-func (session *windowsTerminalSession) waitProcess() {
-	_, err := windows.WaitForSingleObject(session.process, windows.INFINITE)
+func (session *windowsTerminalSession) waitProcess(handle windows.Handle) {
+	defer close(session.waitDone)
+	defer windows.CloseHandle(handle)
+	_, err := windows.WaitForSingleObject(handle, windows.INFINITE)
 	if err == nil {
 		var code uint32
-		err = windows.GetExitCodeProcess(session.process, &code)
+		err = windows.GetExitCodeProcess(handle, &code)
 		if err == nil && code != 0 {
 			err = fmt.Errorf("picker exited with code %d", code)
 		}
 	}
+	session.waitMu.Lock()
+	session.waitErr = err
+	session.waitMu.Unlock()
 	session.handleMu.Lock()
 	if session.console != 0 {
 		windows.ClosePseudoConsole(session.console)
 		session.console = 0
 	}
 	session.handleMu.Unlock()
-	session.waitResult <- err
 }
 
 func (session *windowsTerminalSession) Send(data []byte) error {
+	session.handleMu.Lock()
+	defer session.handleMu.Unlock()
+	if session.input == 0 {
+		return os.ErrClosed
+	}
 	for len(data) > 0 {
 		var written uint32
 		if err := windows.WriteFile(session.input, data, &written, nil); err != nil {
@@ -317,6 +442,8 @@ func (session *windowsTerminalSession) Output() []byte {
 }
 
 func (session *windowsTerminalSession) CloseInput() error {
+	session.handleMu.Lock()
+	defer session.handleMu.Unlock()
 	if session.input == 0 {
 		return nil
 	}
@@ -327,7 +454,7 @@ func (session *windowsTerminalSession) CloseInput() error {
 
 func (session *windowsTerminalSession) Wait(ctx context.Context) error {
 	select {
-	case err := <-session.waitResult:
+	case <-session.waitDone:
 		select {
 		case <-session.drainDone:
 		case <-ctx.Done():
@@ -338,6 +465,9 @@ func (session *windowsTerminalSession) Wait(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		session.waitMu.Lock()
+		err := session.waitErr
+		session.waitMu.Unlock()
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
@@ -346,17 +476,37 @@ func (session *windowsTerminalSession) Wait(ctx context.Context) error {
 
 func (session *windowsTerminalSession) Close() error {
 	session.closeOnce.Do(func() {
+		session.handleMu.Lock()
 		if session.process != 0 {
 			_ = windows.TerminateProcess(session.process, 1)
 		}
-		session.handleMu.Lock()
 		if session.console != 0 {
 			windows.ClosePseudoConsole(session.console)
 			session.console = 0
 		}
+		if session.output != 0 {
+			_ = windows.CancelIoEx(session.output, nil)
+		}
+		if session.trace != 0 {
+			_ = windows.CancelIoEx(session.trace, nil)
+		}
+		if session.input != 0 {
+			session.closeErr = errors.Join(session.closeErr, windows.CloseHandle(session.input))
+			session.input = 0
+		}
 		session.handleMu.Unlock()
-		closeWindowsHandles(session.input, session.output, session.trace, session.thread, session.process)
-		session.input, session.output, session.trace, session.thread, session.process = 0, 0, 0, 0, 0
+		if session.process != 0 {
+			<-session.waitDone
+		}
+		<-session.drainDone
+		<-session.traceDone
+		session.handleMu.Lock()
+		if session.process != 0 {
+			session.closeErr = errors.Join(session.closeErr, windows.CloseHandle(session.process))
+			session.process = 0
+		}
+		session.output, session.trace = 0, 0
+		session.handleMu.Unlock()
 	})
 	return session.closeErr
 }

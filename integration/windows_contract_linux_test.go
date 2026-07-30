@@ -1,0 +1,90 @@
+//go:build linux
+
+package integration
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestWindowsTracePipeSourceUsesRandomRestrictedFirstInstance(t *testing.T) {
+	raw, err := os.ReadFile("fzf_real_windows_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	for _, required := range []string{"rand.Read", "FILE_FLAG_FIRST_PIPE_INSTANCE", "FILE_FLAG_OVERLAPPED", "currentUserSecurityAttributes"} {
+		if !strings.Contains(source, required) {
+			t.Errorf("Windows trace pipe source lacks %s", required)
+		}
+	}
+	if strings.Contains(source, "os.Getpid()") || strings.Contains(source, "t.Name()") {
+		t.Error("Windows trace pipe name uses predictable process/test identity")
+	}
+}
+
+func TestWindowsRegistersNativePreviewLifecycleTests(t *testing.T) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "fzf_real_preview_windows_test.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"TestRealFZFPreviewReplacementKillsWholeTree":     false,
+		"TestRealFZFResizeUpdatesPreviewDimensions":       false,
+		"TestRealFZFPreviewTerminalFailuresKillWholeTree": false,
+	}
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Recv == nil {
+			if _, exists := want[function.Name.Name]; exists {
+				want[function.Name.Name] = true
+			}
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("Windows native test %s is not registered", name)
+		}
+	}
+}
+
+func TestWindowsOutputDrainUsesCancellableOverlappedIO(t *testing.T) {
+	raw, err := os.ReadFile("fzf_real_windows_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	start := strings.Index(source, "func (session *windowsTerminalSession) drainOutput")
+	if start < 0 {
+		t.Fatal("cannot locate Windows output drain")
+	}
+	end := strings.Index(source[start:], "func (session *windowsTerminalSession) waitProcess")
+	if end < 0 {
+		t.Fatal("cannot locate end of Windows output drain")
+	}
+	body := source[start : start+end]
+	if !strings.Contains(body, "windows.Overlapped") || !strings.Contains(body, "GetOverlappedResult") {
+		t.Fatal("Windows output drain is not overlapped/cancellable")
+	}
+}
+
+func TestWindowsTerminalLifecycleSourceContract(t *testing.T) {
+	raw, err := os.ReadFile("fzf_real_windows_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	for _, required := range []string{"waitErr", "waitDone", "DuplicateHandle", "CloseHandle(information.Thread)",
+		"CancelIoEx(session.output", "CancelIoEx(session.trace", "<-session.drainDone", "<-session.traceDone"} {
+		if !strings.Contains(source, required) {
+			t.Errorf("Windows lifecycle source lacks %s", required)
+		}
+	}
+	if strings.Contains(source, "waitResult") || strings.Contains(source, "session.thread") {
+		t.Error("Windows lifecycle retains consumable wait or thread-handle state")
+	}
+}
