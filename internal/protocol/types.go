@@ -58,6 +58,7 @@ type Event struct {
 type Effect struct {
 	Mode             Mode        `json:"mode"`
 	Prompt           string      `json:"prompt"`
+	Header           string      `json:"header"`
 	Search           string      `json:"search"`
 	Rebind           Mode        `json:"rebind"`
 	ClearQuery       bool        `json:"clear_query"`

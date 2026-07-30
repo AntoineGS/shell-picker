@@ -161,7 +161,7 @@ func reduceEnter(snapshot Snapshot, proposal ProposedTransition, event protocol.
 func addErrorProposal(snapshot Snapshot) ProposedTransition {
 	state := cloneState(snapshot.state)
 	state.AddError = true
-	state.Prompt = modePrompt(protocol.ModeAdd, state.Location, true)
+	state.Prompt = modePrompt(protocol.ModeAdd, true)
 	return ProposedTransition{
 		BaseGeneration: snapshot.generation,
 		State:          state,
@@ -172,7 +172,7 @@ func addErrorProposal(snapshot Snapshot) ProposedTransition {
 func setMode(proposal *ProposedTransition, mode protocol.Mode, clearQuery bool) {
 	proposal.State.Mode = mode
 	proposal.State.AddError = false
-	proposal.State.Prompt = modePrompt(mode, proposal.State.Location, false)
+	proposal.State.Prompt = modePrompt(mode, false)
 	proposal.Effect = modeEffect(proposal.State, clearQuery)
 }
 
@@ -188,18 +188,18 @@ func modeEffect(state State, clearQuery bool) protocol.Effect {
 	return effect
 }
 
-func modePrompt(mode protocol.Mode, location pathutil.Location, addError bool) string {
-	prefix := "[I]"
+func modePrompt(mode protocol.Mode, addError bool) string {
 	switch mode {
 	case protocol.ModeNormal:
-		prefix = "[N]"
+		return "[N] "
 	case protocol.ModeAdd:
-		prefix = "[A]"
 		if addError {
-			prefix = "[A!]"
+			return "[A!] "
 		}
+		return "[A] "
+	default:
+		return "[I] "
 	}
-	return prefix + " " + pathutil.PromptDisplay(location) + " "
 }
 
 func navigationTarget(record candidate.Record) (pathutil.Location, error) {
@@ -219,9 +219,10 @@ func setNavigationUnchecked(proposal *ProposedTransition, target pathutil.Locati
 	proposal.State.Location = cloneLocation(target)
 	proposal.State.Mode = protocol.ModeNormal
 	proposal.State.AddError = false
-	proposal.State.Prompt = modePrompt(protocol.ModeNormal, target, false)
+	proposal.State.Prompt = modePrompt(protocol.ModeNormal, false)
 	proposal.Build = &candidate.BuildRequest{Picker: proposal.State.Picker, Location: cloneLocation(target)}
 	proposal.Effect = modeEffect(proposal.State, true)
+	proposal.Effect.Header = pathutil.PromptDisplay(target)
 	proposal.Effect.ClearMulti = true
 }
 

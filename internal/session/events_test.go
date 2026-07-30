@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
@@ -34,7 +33,7 @@ func eventSnapshot(picker protocol.Picker, mode protocol.Mode, location pathutil
 	}
 	state := State{
 		Picker: picker, Mode: mode, Location: location,
-		Home: pathutil.Filesystem([]byte("/home/test")), Prompt: prefix + pathutil.PromptDisplay(location) + " ",
+		Home: pathutil.Filesystem([]byte("/home/test")), Prompt: prefix,
 	}
 	return Snapshot{generation: 7, state: state, records: records, byFullRecord: buildIndex(records)}
 }
@@ -47,11 +46,11 @@ func TestModeAndQueryTransitionMatrix(t *testing.T) {
 		event protocol.Event
 		want  protocol.Effect
 	}{
-		{"normal i", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeInsert}, protocol.Effect{Mode: protocol.ModeInsert, Prompt: "[I] /work/ ", Search: "on", Rebind: protocol.ModeInsert, Cursor: protocol.CursorLine}},
-		{"normal a", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeAdd}, protocol.Effect{Mode: protocol.ModeAdd, Prompt: "[A] /work/ ", Search: "on", Rebind: protocol.ModeAdd, ClearQuery: true, Cursor: protocol.CursorLine}},
-		{"insert escape", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] /work/ ", Search: "off", Rebind: protocol.ModeNormal, Cursor: protocol.CursorBlock}},
+		{"normal i", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeInsert}, protocol.Effect{Mode: protocol.ModeInsert, Prompt: "[I] ", Search: "on", Rebind: protocol.ModeInsert, Cursor: protocol.CursorLine}},
+		{"normal a", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeAdd}, protocol.Effect{Mode: protocol.ModeAdd, Prompt: "[A] ", Search: "on", Rebind: protocol.ModeAdd, ClearQuery: true, Cursor: protocol.CursorLine}},
+		{"insert escape", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Search: "off", Rebind: protocol.ModeNormal, Cursor: protocol.CursorBlock}},
 		{"normal escape", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{ClearMulti: true}},
-		{"add escape", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] /work/ ", Search: "off", Rebind: protocol.ModeNormal, ClearQuery: true, Cursor: protocol.CursorBlock}},
+		{"add escape", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Search: "off", Rebind: protocol.ModeNormal, ClearQuery: true, Cursor: protocol.CursorBlock}},
 		{"add forward", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpForward, CurrentItem: []byte(record.FullKey())}, protocol.Effect{Ignore: true}},
 		{"add parent", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpParent}, protocol.Effect{Ignore: true}},
 		{"add slash", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("..")}, protocol.Effect{Put: "/"}},
@@ -87,38 +86,29 @@ func TestModeEventsRejectBindingsUnavailableInCurrentMode(t *testing.T) {
 	}
 }
 
-func TestPromptDisplayForModesAndPlatformRoots(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		for _, test := range []struct {
-			location pathutil.Location
-			want     string
-		}{
-			{pathutil.Filesystem([]byte(`C:\`)), `[A] C:\ `},
-			{pathutil.Filesystem([]byte(`C:\work\\`)), `[A] C:\work\ `},
-			{pathutil.Filesystem([]byte(`\\server\share\`)), `[A] \\server\share\ `},
-			{pathutil.Drives(), `[A] Drives\ `},
-		} {
-			if got := modePrompt(protocol.ModeAdd, test.location, false); got != test.want {
-				t.Fatalf("prompt=%q want=%q", got, test.want)
-			}
-		}
-		return
-	}
+func TestModePromptContainsOnlyMode(t *testing.T) {
 	for _, test := range []struct {
-		location pathutil.Location
+		mode     protocol.Mode
+		addError bool
 		want     string
 	}{
-		{pathutil.Filesystem([]byte("/")), "[A] / "},
-		{pathutil.Filesystem([]byte(`/work/a\b/`)), `[A] /work/a\\b/ `},
-		{pathutil.Filesystem(append([]byte("/work/"), 0xff)), `[A] /work/\xFF/ `},
-		{pathutil.Filesystem([]byte(`/work/x)+,:(/`)), `[A] /work/x)+,:(/ `},
+		{protocol.ModeInsert, false, "[I] "},
+		{protocol.ModeNormal, false, "[N] "},
+		{protocol.ModeAdd, false, "[A] "},
+		{protocol.ModeAdd, true, "[A!] "},
 	} {
-		if got := modePrompt(protocol.ModeAdd, test.location, false); got != test.want {
-			t.Fatalf("prompt=%q want=%q", got, test.want)
+		if got := modePrompt(test.mode, test.addError); got != test.want {
+			t.Fatalf("modePrompt(%q, %t)=%q want %q", test.mode, test.addError, got, test.want)
 		}
 	}
-	if got := modePrompt(protocol.ModeAdd, pathutil.Root(), true); got != "[A!] / " {
-		t.Fatalf("error prompt=%q", got)
+}
+
+func TestNavigationEffectSeparatesPromptAndHeader(t *testing.T) {
+	s := eventSnapshot(protocol.PickerCD, protocol.ModeNormal, pathutil.Filesystem([]byte("/work")))
+	reduction, err := Reduce(s, protocol.Event{Opcode: protocol.OpParent})
+	proposal := reduction.proposalForTest()
+	if err != nil || proposal.Effect.Prompt != "[N] " || proposal.Effect.Header != "/" {
+		t.Fatalf("effect=%+v err=%v", proposal.Effect, err)
 	}
 }
 
@@ -255,7 +245,7 @@ func TestAddSuccessInvalidAndBuildFailureRollback(t *testing.T) {
 	for _, query := range [][]byte{nil, []byte("../escape"), []byte("/absolute")} {
 		badReduction, reduceErr := Reduce(s, protocol.Event{Opcode: protocol.OpEnter, Query: query})
 		bad := badReduction.proposalForTest()
-		wantEffect := protocol.Effect{Prompt: "[A!] " + pathutil.PromptDisplay(s.state.Location) + " ", ErrorPrompt: true}
+		wantEffect := protocol.Effect{Prompt: "[A!] ", ErrorPrompt: true}
 		if reduceErr != nil || bad.State.Mode != protocol.ModeAdd || !bad.State.AddError || bad.Build != nil || bad.Effect != wantEffect {
 			t.Fatalf("query=%q proposal=%+v err=%v", query, bad, reduceErr)
 		}
@@ -354,7 +344,7 @@ func TestHandleInvalidAddRetainsGenerationRecordsAndQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("child")})
-	wantEffect := protocol.Effect{Prompt: "[A!] " + pathutil.PromptDisplay(pathutil.Drives()) + " ", ErrorPrompt: true}
+	wantEffect := protocol.Effect{Prompt: "[A!] ", ErrorPrompt: true}
 	if err != nil || result.Snapshot.Generation() != 1 || len(result.Snapshot.Records()) != 1 ||
 		result.Snapshot.State().Mode != protocol.ModeAdd || !result.Snapshot.State().AddError || result.Effect != wantEffect {
 		t.Fatalf("result=%+v err=%v", result, err)

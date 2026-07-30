@@ -130,7 +130,7 @@ func initializeActor(t *testing.T) (*Actor, *controlledGenerator) {
 			t.Errorf("Close() = %v", err)
 		}
 	})
-	pending := asyncApply(actor, context.Background(), testProposal(0, testState("/start", protocol.ModeInsert, "[I] /start/ "), true, protocol.Effect{}))
+	pending := asyncApply(actor, context.Background(), testProposal(0, testState("/start", protocol.ModeInsert, "[I] "), true, protocol.Effect{}))
 	call := generator.Next(t)
 	call.Complete([]candidate.Record{testRecord("start", "/start")}, nil)
 	if outcome := awaitApply(t, pending); outcome.err != nil {
@@ -194,14 +194,14 @@ func TestCloneProposalPreservesBuildGenerationAndClonesLocation(t *testing.T) {
 func TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically(t *testing.T) {
 	actor, generator := initializeActor(t)
 	effect := protocol.Effect{ClearQuery: true, ClearMulti: true}
-	pending := asyncApply(actor, context.Background(), testProposal(1, testState("/next", protocol.ModeNormal, "[N] /next/ "), true, effect))
+	pending := asyncApply(actor, context.Background(), testProposal(1, testState("/next", protocol.ModeNormal, "[N] "), true, effect))
 	call := generator.Next(t)
 
 	current, err := actor.Current(context.Background())
 	if err != nil {
 		t.Fatalf("Current() = %v", err)
 	}
-	if current.Generation() != 1 || string(current.State().Location.Path) != "/start" || current.State().Prompt != "[I] /start/ " {
+	if current.Generation() != 1 || string(current.State().Location.Path) != "/start" || current.State().Prompt != "[I] " {
 		t.Fatalf("pending Current() = %+v", current)
 	}
 	assertApplyPending(t, pending)
@@ -213,7 +213,7 @@ func TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically(t *testing.T)
 	}
 	result := outcome.result
 	if result.Snapshot.Generation() != 2 || result.Snapshot.State().Mode != protocol.ModeNormal ||
-		result.Snapshot.State().Prompt != "[N] /next/ " || result.Snapshot.Records()[0].Display != "next" ||
+		result.Snapshot.State().Prompt != "[N] " || result.Snapshot.Records()[0].Display != "next" ||
 		result.Effect.ReloadGeneration != 2 || !result.Effect.ClearQuery || !result.Effect.ClearMulti {
 		t.Fatalf("result = %+v", result)
 	}
@@ -340,7 +340,7 @@ func TestSnapshotRecordsAreImmutableCopies(t *testing.T) {
 
 func TestActorNilBuildRetainsGenerationRecordsAndResolvesCurrentMembership(t *testing.T) {
 	actor, _ := initializeActor(t)
-	proposal := testProposal(1, testState("/start", protocol.ModeNormal, "[N] /start/ "), false, protocol.Effect{Mode: protocol.ModeNormal})
+	proposal := testProposal(1, testState("/start", protocol.ModeNormal, "[N] "), false, protocol.Effect{Mode: protocol.ModeNormal})
 	result, err := actor.Apply(context.Background(), proposal)
 	if err != nil {
 		t.Fatalf("Apply() = %v", err)

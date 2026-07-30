@@ -114,7 +114,7 @@ func TestHandleAddCreateErrorsRetainAddSnapshotAndDoNotBuild(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result, handleErr := Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpEnter, Query: []byte(test.query)})
-			wantEffect := protocol.Effect{Prompt: modePrompt(protocol.ModeAdd, state.Location, true), ErrorPrompt: true}
+			wantEffect := protocol.Effect{Prompt: modePrompt(protocol.ModeAdd, true), ErrorPrompt: true}
 			if handleErr != nil || result.Effect != wantEffect || result.Snapshot.Generation() != initial.Snapshot.Generation() ||
 				result.Snapshot.State().Mode != protocol.ModeAdd || !result.Snapshot.State().AddError || len(result.Snapshot.Records()) != 1 {
 				t.Fatalf("result=%+v err=%v", result, handleErr)
