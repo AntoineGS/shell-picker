@@ -31,11 +31,12 @@ type linuxTerminalSession struct {
 	fzfPath      string
 	argvCanaries []string
 
-	outputMu sync.Mutex
-	output   bytes.Buffer
-	eventMu  sync.Mutex
-	events   []traceEvent
-	changed  chan struct{}
+	outputMu      sync.Mutex
+	output        bytes.Buffer
+	outputChanged chan struct{}
+	eventMu       sync.Mutex
+	events        []traceEvent
+	changed       chan struct{}
 
 	waitMu    sync.Mutex
 	waitErr   error
@@ -189,7 +190,7 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	}
 	session := &linuxTerminalSession{t: t, master: master, traceReader: os.NewFile(uintptr(readerFD), tracePath),
 		dummyWriter: os.NewFile(uintptr(dummyFD), tracePath), changed: make(chan struct{}), waitDone: make(chan struct{}),
-		drainDone: make(chan struct{}), traceDone: make(chan struct{})}
+		drainDone: make(chan struct{}), traceDone: make(chan struct{}), outputChanged: make(chan struct{})}
 	for index, argument := range config.Args {
 		if argument == "--fzf" && index+1 < len(config.Args) {
 			session.fzfPath = config.Args[index+1]
@@ -290,6 +291,10 @@ func (session *linuxTerminalSession) drainPTY() {
 		if n > 0 {
 			session.outputMu.Lock()
 			_, _ = session.output.Write(buffer[:n])
+			if session.outputChanged != nil {
+				close(session.outputChanged)
+			}
+			session.outputChanged = make(chan struct{})
 			session.outputMu.Unlock()
 		}
 		if err != nil {
@@ -405,6 +410,27 @@ func (session *linuxTerminalSession) Output() []byte {
 	session.outputMu.Lock()
 	defer session.outputMu.Unlock()
 	return bytes.Clone(session.output.Bytes())
+}
+
+func (session *linuxTerminalSession) WaitOutputAfter(ctx context.Context, before int) {
+	session.t.Helper()
+	for {
+		session.outputMu.Lock()
+		if session.output.Len() > before {
+			session.outputMu.Unlock()
+			return
+		}
+		if session.outputChanged == nil {
+			session.outputChanged = make(chan struct{})
+		}
+		changed := session.outputChanged
+		session.outputMu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			session.t.Fatalf("wait for terminal output after %d bytes: %v", before, ctx.Err())
+		}
+	}
 }
 
 func (session *linuxTerminalSession) CloseInput() error { return session.Send([]byte{0x04}) }

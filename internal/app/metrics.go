@@ -47,6 +47,9 @@ func (metrics *pickerMetrics) recordTransition(result session.TransitionResult) 
 	metrics.sources.ZoxideOutcome = result.Metrics.Sources.ZoxideOutcome
 	metrics.sources.ZoxideAttempts = boundedIntAdd(metrics.sources.ZoxideAttempts, result.Metrics.Sources.ZoxideAttempts)
 	metrics.sources.ZoxideStarts = boundedIntAdd(metrics.sources.ZoxideStarts, result.Metrics.Sources.ZoxideStarts)
+	metrics.sources.ZoxideExits = boundedIntAdd(metrics.sources.ZoxideExits, result.Metrics.Sources.ZoxideExits)
+	metrics.sources.ZoxideProcesses = boundedIntAdd(metrics.sources.ZoxideProcesses, result.Metrics.Sources.ZoxideProcesses)
+	metrics.sources.ZoxideLive = result.Metrics.Sources.ZoxideLive
 	if result.Metrics.Sources.ZoxideMaxLive > metrics.sources.ZoxideMaxLive {
 		metrics.sources.ZoxideMaxLive = result.Metrics.Sources.ZoxideMaxLive
 	}
@@ -118,8 +121,8 @@ func validatePreviewMetric(request sessionipc.PreviewRequest) error {
 		}
 	case "finished":
 		if !validMetricLabel(request.Renderer) || !validMetricLabel(request.Outcome) || request.DurationUS < 0 ||
-			request.DurationUS > int64(10*time.Second/time.Microsecond) || request.ChildStarts < 0 || request.ChildStarts > 3 ||
-			request.MaxLiveChildren < 0 || request.MaxLiveChildren > 1 || request.MaxLiveChildren > request.ChildStarts ||
+			request.DurationUS > int64(10*time.Second/time.Microsecond) || request.ChildStarts < 0 || request.ChildStarts > sessionipc.MaxPreviewChildStarts ||
+			request.MaxLiveChildren < 0 || request.MaxLiveChildren > sessionipc.MaxPreviewLiveChildren || request.MaxLiveChildren > request.ChildStarts ||
 			(request.Renderer == "native" && (request.ChildStarts != 0 || request.MaxLiveChildren != 0)) {
 			return errors.New("invalid finished preview metric")
 		}

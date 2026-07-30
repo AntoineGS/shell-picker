@@ -459,20 +459,22 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	if err := waitTreeExit(testContext(t), initial); err != nil {
 		t.Fatalf("initial directory preview tree did not exit: %v", err)
 	}
+	beforeResize := len(term.Output())
 	if err := term.Resize(101, 37); err != nil {
 		t.Fatal(err)
 	}
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	term.WaitOutputAfter(testContext(t), beforeResize)
 	if err := term.Send(keyDown); err != nil {
 		t.Fatal(err)
 	}
 	second := f.waitTree(t, 3)
 	defer second.close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Renderer: "chafa", Operation: "ok", Count: 2})
+	beforeResize = len(term.Output())
 	if err := term.Resize(83, 29); err != nil {
 		t.Fatal(err)
 	}
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
+	term.WaitOutputAfter(testContext(t), beforeResize)
 	if err := term.Send([]byte{0x1b, '[', 'A'}); err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +495,7 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := term.Send([]byte("q")); err != nil {
+	if err := term.Send([]byte{0x03}); err != nil {
 		t.Fatal(err)
 	}
 	if err := term.Wait(testContext(t)); err != nil {

@@ -39,6 +39,9 @@ type traceEvent struct {
 	ZoxidePolicy    string `json:"zoxide_policy,omitempty"`
 	ZoxideAttempts  int    `json:"zoxide_attempts,omitempty"`
 	ZoxideStarts    int    `json:"zoxide_starts,omitempty"`
+	ZoxideExits     int    `json:"zoxide_exits,omitempty"`
+	ZoxideProcesses int    `json:"zoxide_processes,omitempty"`
+	ZoxideLive      int    `json:"zoxide_live,omitempty"`
 	ZoxideMaxLive   int    `json:"zoxide_max_live,omitempty"`
 	CallbackIPCUS   int64  `json:"callback_ipc_us,omitempty"`
 	ChildStarts     int    `json:"child_starts,omitempty"`
@@ -61,6 +64,7 @@ type terminalSession interface {
 	AssertProcessTopology(*testing.T)
 	PID() int
 	Output() []byte
+	WaitOutputAfter(context.Context, int)
 	CloseInput() error
 	Wait(context.Context) error
 	Close() error

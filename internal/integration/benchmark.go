@@ -36,7 +36,7 @@ type BenchmarkOptions struct {
 	Samples  int
 	Policy   string
 	Timeout  time.Duration
-	Expected BenchmarkCounters
+	Expected *BenchmarkCounters
 	Metadata BenchmarkMetadata
 	Measure  func(context.Context) (BenchmarkSample, error)
 }
@@ -117,7 +117,7 @@ func RunBenchmark(ctx context.Context, options BenchmarkOptions) (BenchmarkRepor
 		} else if sample.BenchmarkCounters != counters {
 			return BenchmarkReport{}, ErrBenchmarkCounters
 		}
-		if options.Expected != (BenchmarkCounters{}) && sample.BenchmarkCounters != options.Expected {
+		if options.Expected != nil && sample.BenchmarkCounters != *options.Expected {
 			return BenchmarkReport{}, ErrBenchmarkCounters
 		}
 		durations = append(durations, sample.Duration)
@@ -137,7 +137,9 @@ func RunBenchmark(ctx context.Context, options BenchmarkOptions) (BenchmarkRepor
 func validBenchmarkScenario(value string) bool {
 	switch value {
 	case "startup-local-only", "startup-zoxide-present", "startup-zoxide-missing", "startup-zoxide-spawn-failure",
-		"startup-zoxide-timeout", "cached-navigation", "fresh-navigation", "fresh-exact-parity-navigation", "preview-dispatch":
+		"startup-zoxide-timeout", "cached-navigation", "fresh-navigation", "fresh-exact-parity-navigation", "preview-dispatch",
+		"candidate-initial-cached-overlap-10000", "candidate-timeout-discard", "candidate-cached-repeated",
+		"candidate-fresh-repeated", "candidate-missing", "candidate-spawn-failure", "candidate-cp-cached", "candidate-cp-fresh":
 		return true
 	default:
 		return false

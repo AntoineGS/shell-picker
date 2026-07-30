@@ -237,6 +237,8 @@ func traceTransition(trace *pickerTrace, policy candidate.ZoxidePolicy, result s
 	trace.event(integrationpkg.TraceEvent{Name: "generation.publish", Generation: result.Snapshot.Generation(),
 		CandidateCount: len(result.Snapshot.Records()), Outcome: "ok", Path: path, ZoxidePolicy: policy.String(),
 		ZoxideAttempts: metrics.Sources.ZoxideAttempts, ZoxideStarts: metrics.Sources.ZoxideStarts,
+		ZoxideExits: metrics.Sources.ZoxideExits, ZoxideProcesses: metrics.Sources.ZoxideProcesses,
+		ZoxideLive:    metrics.Sources.ZoxideLive,
 		ZoxideMaxLive: metrics.Sources.ZoxideMaxLive, ActorQueueWait: metrics.QueueWait,
 		LocalDuration: metrics.Sources.LocalDuration, ZoxideDuration: metrics.Sources.ZoxideDuration,
 		ZoxideOutcome: metrics.Sources.ZoxideOutcome, TransformDuration: metrics.TransformDuration})

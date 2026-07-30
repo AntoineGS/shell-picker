@@ -30,13 +30,27 @@ func TestBenchmarkDefaultsToExactlyFiftySamplesAndUsesNearestRank(t *testing.T) 
 func TestBenchmarkRejectsCounterDriftInEverySample(t *testing.T) {
 	_, err := RunBenchmark(context.Background(), BenchmarkOptions{
 		Scenario: "cached-navigation", Samples: 2, Policy: "cached",
-		Expected: BenchmarkCounters{ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideMaxLive: 1, ZoxideProcesses: 1},
+		Expected: &BenchmarkCounters{ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideMaxLive: 1, ZoxideProcesses: 1},
 		Measure: func(context.Context) (BenchmarkSample, error) {
 			return BenchmarkSample{Duration: time.Microsecond, BenchmarkCounters: BenchmarkCounters{ZoxideAttempts: 1}}, nil
 		},
 	})
 	if !errors.Is(err, ErrBenchmarkCounters) {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestBenchmarkEnforcesExplicitAllZeroCounters(t *testing.T) {
+	expected := BenchmarkCounters{}
+	_, err := RunBenchmark(context.Background(), BenchmarkOptions{
+		Scenario: "cached-navigation", Samples: 1, Policy: "cached", Expected: &expected,
+		Measure: func(context.Context) (BenchmarkSample, error) {
+			return BenchmarkSample{Duration: time.Microsecond,
+				BenchmarkCounters: BenchmarkCounters{ZoxideAttempts: 1}}, nil
+		},
+	})
+	if !errors.Is(err, ErrBenchmarkCounters) {
+		t.Fatalf("mutated all-zero counters error=%v", err)
 	}
 }
 

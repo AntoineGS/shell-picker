@@ -169,6 +169,9 @@ func buildWithZoxide(
 	if !reportAttempt {
 		metrics.ZoxideAttempts = 0
 		metrics.ZoxideStarts = 0
+		metrics.ZoxideExits = 0
+		metrics.ZoxideProcesses = 0
+		metrics.ZoxideLive = 0
 		metrics.ZoxideMaxLive = 0
 	}
 	if metrics.ZoxideOutcome == "cancelled" {
@@ -215,6 +218,9 @@ func (builder *Builder) buildCachedNavigation(
 	metrics.ZoxideDuration = 0
 	metrics.ZoxideAttempts = 0
 	metrics.ZoxideStarts = 0
+	metrics.ZoxideExits = 0
+	metrics.ZoxideProcesses = 0
+	metrics.ZoxideLive = 0
 	metrics.ZoxideMaxLive = 0
 	return BuildResult{Records: MergeRecords(local, zoxide), Metrics: metrics}, nil
 }

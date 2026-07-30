@@ -152,7 +152,11 @@ func TestPerformanceMakeTargetsUseCompiledHarnessAndFiftySamples(t *testing.T) {
 	}
 	text := string(output)
 	for _, required := range []string{"TestStablePerformanceGates", "go build -trimpath", "go test -c", "-samples 50",
-		"TestDedicatedBaseline", "TestDedicatedTargets"} {
+		"TestDedicatedBaseline", "TestDedicatedTargets", "TestRunPickerOwnsOneSessionAndOneFZF",
+		"TestRunDoesNotProbeVersion", "TestRunPickerShipsWorkingPreviewCallback", "TestOptionsHaveNoListenOrDuplicateBindings",
+		"TestPreviewAggregatesSequentialChildTelemetry", "TestPreviewTelemetryDistinguishesNativeFallbackAfterChild",
+		"TestCorePreviewEveryCategoryHasBoundedNativeFallback", "TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins",
+		"TestLocalWorkerCountBounded", "TestRealFZFPreviewReplacementKillsWholeTree"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("make output lacks %q:\n%s", required, text)
 		}

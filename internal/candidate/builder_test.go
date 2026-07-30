@@ -72,7 +72,8 @@ func TestInitialBuilderOverlapsCacheLoadAndMergesLocalFirst(t *testing.T) {
 	if want := []string{"/local", "/z/same", "/z/one", "/z/two"}; !reflect.DeepEqual(paths(got.Records), want) {
 		t.Fatalf("paths=%q, want %q", paths(got.Records), want)
 	}
-	if got.Metrics.ZoxideAttempts != 1 || got.Metrics.ZoxideStarts != 1 || got.Metrics.ZoxideMaxLive != 1 {
+	if got.Metrics.ZoxideAttempts != 1 || got.Metrics.ZoxideStarts != 1 || got.Metrics.ZoxideExits != 1 ||
+		got.Metrics.ZoxideProcesses != 1 || got.Metrics.ZoxideLive != 0 || got.Metrics.ZoxideMaxLive != 1 {
 		t.Fatalf("metrics=%+v", got.Metrics)
 	}
 }
@@ -89,7 +90,8 @@ func TestCachedPolicyAttemptsOnceForSessionAndLaterReportsCached(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Metrics.ZoxideOutcome != "cached" || got.Metrics.ZoxideAttempts != 0 || got.Metrics.ZoxideStarts != 0 {
+		if got.Metrics.ZoxideOutcome != "cached" || got.Metrics.ZoxideAttempts != 0 || got.Metrics.ZoxideStarts != 0 ||
+			got.Metrics.ZoxideExits != 0 || got.Metrics.ZoxideProcesses != 0 || got.Metrics.ZoxideLive != 0 {
 			t.Fatalf("later metrics=%+v", got.Metrics)
 		}
 	}

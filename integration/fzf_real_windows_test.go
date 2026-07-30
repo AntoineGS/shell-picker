@@ -34,11 +34,12 @@ type windowsTerminalSession struct {
 	argvCanaries []string
 	handleMu     sync.Mutex
 
-	outputMu sync.Mutex
-	buffer   bytes.Buffer
-	eventMu  sync.Mutex
-	events   []traceEvent
-	changed  chan struct{}
+	outputMu      sync.Mutex
+	buffer        bytes.Buffer
+	outputChanged chan struct{}
+	eventMu       sync.Mutex
+	events        []traceEvent
+	changed       chan struct{}
 
 	waitMu        sync.Mutex
 	waitErr       error
@@ -114,7 +115,8 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 			factory.ops.closeHandle(inputWrite), factory.ops.closeHandle(outputRead), factory.ops.closeHandle(outputWrite))
 	}
 	session := &windowsTerminalSession{ops: factory.ops, console: console, input: inputWrite, output: outputRead,
-		changed: make(chan struct{}), waitDone: make(chan struct{}), drainDone: make(chan struct{}), traceDone: make(chan struct{})}
+		changed: make(chan struct{}), waitDone: make(chan struct{}), drainDone: make(chan struct{}), traceDone: make(chan struct{}),
+		outputChanged: make(chan struct{})}
 	if closeErr := errors.Join(factory.ops.closeHandle(inputRead), factory.ops.closeHandle(outputWrite)); closeErr != nil {
 		close(session.drainDone)
 		close(session.traceDone)
@@ -411,6 +413,10 @@ func (session *windowsTerminalSession) drainOutput(handle windows.Handle) {
 		if read > 0 {
 			session.outputMu.Lock()
 			_, _ = session.buffer.Write(buffer[:read])
+			if session.outputChanged != nil {
+				close(session.outputChanged)
+			}
+			session.outputChanged = make(chan struct{})
 			session.outputMu.Unlock()
 		}
 		if err != nil {
@@ -513,6 +519,27 @@ func (session *windowsTerminalSession) Output() []byte {
 	session.outputMu.Lock()
 	defer session.outputMu.Unlock()
 	return bytes.Clone(session.buffer.Bytes())
+}
+
+func (session *windowsTerminalSession) WaitOutputAfter(ctx context.Context, before int) {
+	session.t.Helper()
+	for {
+		session.outputMu.Lock()
+		if session.buffer.Len() > before {
+			session.outputMu.Unlock()
+			return
+		}
+		if session.outputChanged == nil {
+			session.outputChanged = make(chan struct{})
+		}
+		changed := session.outputChanged
+		session.outputMu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			session.t.Fatalf("wait for terminal output after %d bytes: %v", before, ctx.Err())
+		}
+	}
 }
 
 func (session *windowsTerminalSession) CloseInput() error {

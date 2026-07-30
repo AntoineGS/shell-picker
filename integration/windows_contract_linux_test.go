@@ -160,13 +160,16 @@ func TestResizeAndFinishedEvidenceSourceOrderingMatchesWindows(t *testing.T) {
 		}
 		body := source[start : start+end]
 		for _, required := range []string{
-			"Resize(101, 37)", `Operation: "es", Count: 1`, "Send(keyDown)", `Renderer: "chafa", Operation: "ok", Count: 2`,
-			"Resize(83, 29)", `Operation: "es", Count: 2`, "Send([]byte{0x1b, '[', 'A'})",
+			"Resize(101, 37)", "WaitOutputAfter(testContext(t), beforeResize)", "Send(keyDown)", `Renderer: "chafa", Operation: "ok", Count: 2`,
+			"Resize(83, 29)", "Send([]byte{0x1b, '[', 'A'})",
 			`Renderer: "chafa", Operation: "ok", Count: 3`, `Event: "session.close"`, "assertFinishedTrace",
 		} {
 			if !strings.Contains(body, required) {
 				t.Errorf("%s resize evidence lacks %s", path, required)
 			}
+		}
+		if strings.Contains(body, `Operation: "es"`) || strings.Contains(body, "keyEsc") {
+			t.Errorf("%s resize evidence still uses lossy Escape synchronization", path)
 		}
 		closeBarrier := strings.LastIndex(body, `Event: "session.close"`)
 		finishedAssertion := strings.LastIndex(body, "assertFinishedTrace")

@@ -44,6 +44,38 @@ func TestDedicatedHarnessDefaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestDedicatedTraceCountersRequireMeasuredExitAndNoLiveRemainder(t *testing.T) {
+	valid := []traceEvent{{Event: "generation.publish", ZoxideAttempts: 1, ZoxideStarts: 1,
+		ZoxideExits: 1, ZoxideProcesses: 1, ZoxideLive: 0, ZoxideMaxLive: 1}}
+	counters, err := traceBenchmarkCounters(valid)
+	if err != nil || counters.ZoxideExits != 1 || counters.ZoxideProcesses != 1 {
+		t.Fatalf("valid counters=%+v err=%v", counters, err)
+	}
+	mutated := []traceEvent{{Event: "generation.publish", ZoxideAttempts: 1, ZoxideStarts: 1,
+		ZoxideExits: 0, ZoxideProcesses: 1, ZoxideLive: 1, ZoxideMaxLive: 1}}
+	if _, err := traceBenchmarkCounters(mutated); err == nil {
+		t.Fatal("missing measured exit and live remainder accepted")
+	}
+}
+
+func TestDedicatedNavigationEndsAtActionWriteNotCallbackReap(t *testing.T) {
+	receipt := time.Now().UTC().Truncate(time.Microsecond)
+	marker := performanceMarker{Start: receipt.Add(-time.Millisecond).UnixNano(),
+		ActionWritten: receipt.Add(5 * time.Millisecond).UnixNano(), Reaped: receipt.Add(50 * time.Millisecond).UnixNano()}
+	path := filepath.Join(t.TempDir(), "marker.json")
+	data, err := json.Marshal(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	duration, err := dedicatedDuration([]traceEvent{{Event: "callback.event", Time: receipt.Format(time.RFC3339Nano)}}, path, "event")
+	if err != nil || duration != 5*time.Millisecond {
+		t.Fatalf("duration=%v err=%v; reap delta=%v", duration, err, time.Unix(0, marker.Reaped).Sub(receipt))
+	}
+}
+
 func validateDedicatedOptions(binary string, samples int) error {
 	if binary == "" {
 		return errPrebuiltBinaryRequired
@@ -128,7 +160,7 @@ func TestDedicatedTargets(t *testing.T) {
 		scenario := scenario
 		report, err := integrationpkg.RunBenchmark(context.Background(), integrationpkg.BenchmarkOptions{
 			Scenario: scenario.name, Samples: *performanceSamples, Policy: scenario.policy, Timeout: scenario.timeout,
-			Expected: scenario.expected, Metadata: metadata,
+			Expected: &scenario.expected, Metadata: metadata,
 			Measure: func(context.Context) (integrationpkg.BenchmarkSample, error) {
 				return runDedicatedPickerSample(t, binary, scenario)
 			},
@@ -138,6 +170,7 @@ func TestDedicatedTargets(t *testing.T) {
 		}
 		reports = append(reports, report)
 	}
+	reports = append(reports, runDedicatedCandidateReports(t, *performanceSamples, metadata, defaultTimeout)...)
 	output := dedicatedTargetOutput{Schema: 1, Status: status, Fingerprint: integrationpkg.MetadataFingerprint(metadata),
 		BaselineFingerprint: baseline.Fingerprint, Metadata: metadata, Reports: reports}
 	writePerformanceJSON(t, *performanceOutput, output)
@@ -213,7 +246,10 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 	if countTraceEvents(events, "session.close") != 1 {
 		return integrationpkg.BenchmarkSample{}, errors.New("dedicated sample did not close session")
 	}
-	counters := traceBenchmarkCounters(events)
+	counters, err := traceBenchmarkCounters(events)
+	if err != nil {
+		return integrationpkg.BenchmarkSample{}, err
+	}
 	duration, err := dedicatedDuration(events, marker, scenario.action)
 	if err != nil {
 		return integrationpkg.BenchmarkSample{}, err
@@ -246,12 +282,17 @@ func countTraceEvents(events []traceEvent, name string) int {
 	return count
 }
 
-func traceBenchmarkCounters(events []traceEvent) integrationpkg.BenchmarkCounters {
+func traceBenchmarkCounters(events []traceEvent) (integrationpkg.BenchmarkCounters, error) {
 	counters := integrationpkg.BenchmarkCounters{}
 	for _, event := range events {
 		if event.Event == "generation.publish" {
+			if event.ZoxideExits != event.ZoxideStarts || event.ZoxideProcesses != event.ZoxideStarts || event.ZoxideLive != 0 {
+				return integrationpkg.BenchmarkCounters{}, errors.New("zoxide trace has unmatched process lifecycle")
+			}
 			counters.ZoxideAttempts += event.ZoxideAttempts
 			counters.ZoxideStarts += event.ZoxideStarts
+			counters.ZoxideExits += event.ZoxideExits
+			counters.ZoxideProcesses += event.ZoxideProcesses
 			counters.ZoxideMaxLive = max(counters.ZoxideMaxLive, event.ZoxideMaxLive)
 		}
 		if event.Event == "preview.finished" {
@@ -259,16 +300,13 @@ func traceBenchmarkCounters(events []traceEvent) integrationpkg.BenchmarkCounter
 			counters.PreviewMaxLive = max(counters.PreviewMaxLive, event.MaxLiveChildren)
 		}
 	}
-	// A completed picker has synchronously waited every successful zoxide start;
-	// session.close is the no-live-remainder boundary.
-	counters.ZoxideExits = counters.ZoxideStarts
-	counters.ZoxideProcesses = counters.ZoxideStarts
-	return counters
+	return counters, nil
 }
 
 type performanceMarker struct {
-	Start int64 `json:"start"`
-	End   int64 `json:"end"`
+	Start         int64 `json:"start"`
+	ActionWritten int64 `json:"action_written,omitempty"`
+	Reaped        int64 `json:"reaped"`
 }
 
 func dedicatedDuration(events []traceEvent, markerPath, action string) (time.Duration, error) {
@@ -293,7 +331,10 @@ func dedicatedDuration(events []traceEvent, markerPath, action string) (time.Dur
 		if err != nil {
 			return 0, err
 		}
-		return time.Unix(0, marker.End).Sub(receipt), nil
+		if marker.ActionWritten == 0 || marker.Reaped < marker.ActionWritten {
+			return 0, errors.New("callback action-write/reap markers are incomplete")
+		}
+		return time.Unix(0, marker.ActionWritten).Sub(receipt), nil
 	}
 	dispatch, err := traceTime(events, "preview.dispatch")
 	if err != nil {
@@ -379,12 +420,13 @@ func runPerformanceHelper() (int, bool) {
 			}
 			command := exec.Command(commandName, "--fzf-shell", commandArg)
 			command.Env = replaceEnvironment(os.Environ(), "FZF_KEY=left", "FZF_QUERY=", "FZF_CURRENT_ITEM="+string(current))
-			command.Stdout, command.Stderr = io.Discard, io.Discard
-			if err := command.Run(); err != nil {
+			command.Stderr = io.Discard
+			marker := performanceMarker{Start: start}
+			if err := runPerformanceCallback(command, action, &marker); err != nil {
 				return 3, true
 			}
-			marker, _ := json.Marshal(performanceMarker{Start: start, End: time.Now().UnixNano()})
-			if err := os.WriteFile(os.Getenv("GO_PERF_MARKER"), marker, 0o600); err != nil {
+			encoded, _ := json.Marshal(marker)
+			if err := os.WriteFile(os.Getenv("GO_PERF_MARKER"), encoded, 0o600); err != nil {
 				return 4, true
 			}
 		}
@@ -393,6 +435,34 @@ func runPerformanceHelper() (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func runPerformanceCallback(command *exec.Cmd, action string, marker *performanceMarker) error {
+	if action != "event" {
+		command.Stdout = io.Discard
+		err := command.Run()
+		marker.Reaped = time.Now().UnixNano()
+		return err
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := command.Start(); err != nil {
+		return err
+	}
+	buffer := make([]byte, 64<<10)
+	written, readErr := stdout.Read(buffer)
+	if written > 0 {
+		marker.ActionWritten = time.Now().UnixNano()
+	}
+	_, drainErr := io.Copy(io.Discard, stdout)
+	waitErr := command.Wait()
+	marker.Reaped = time.Now().UnixNano()
+	if written == 0 {
+		return errors.Join(errors.New("callback wrote no action"), readErr, drainErr, waitErr)
+	}
+	return errors.Join(readErr, drainErr, waitErr)
 }
 
 func performanceCallbackName(arguments []string) string {

@@ -16,7 +16,9 @@ real-fzf:
 	go test ./integration -run TestRealFZF -count=1 -v
 
 performance-stable:
-	go test ./integration -run TestStablePerformanceGates -count=1
+	go test ./integration -run '^(TestStablePerformanceGates|TestRealFZFPreviewReplacementKillsWholeTree)$$' -count=1
+	go test ./internal/app ./internal/fzf ./internal/callback ./internal/preview ./internal/sessionipc ./internal/candidate \
+		-run '^(TestRunPickerOwnsOneSessionAndOneFZF|TestRunPickerShipsWorkingPreviewCallback|TestRunDoesNotProbeVersion|TestOptionsHaveNoListenOrDuplicateBindings|TestPreviewAggregatesSequentialChildTelemetry|TestPreviewTelemetryDistinguishesNativeFallbackAfterChild|TestCorePreviewEveryCategoryHasBoundedNativeFallback|TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins|TestLocalWorkerCountBounded)$$' -count=1
 
 performance-dedicated:
 	test "$${SHELL_PICKER_DEDICATED_PERF}" = 1

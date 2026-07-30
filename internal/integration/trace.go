@@ -26,6 +26,9 @@ type TraceEvent struct {
 	ZoxidePolicy      string
 	ZoxideAttempts    int
 	ZoxideStarts      int
+	ZoxideExits       int
+	ZoxideProcesses   int
+	ZoxideLive        int
 	ZoxideMaxLive     int
 	ActorQueueWait    time.Duration
 	CallbackIPC       time.Duration
@@ -52,6 +55,9 @@ type TraceRecord struct {
 	ZoxidePolicy     string `json:"zoxide_policy,omitempty"`
 	ZoxideAttempts   int    `json:"zoxide_attempts,omitempty"`
 	ZoxideStarts     int    `json:"zoxide_starts,omitempty"`
+	ZoxideExits      int    `json:"zoxide_exits,omitempty"`
+	ZoxideProcesses  int    `json:"zoxide_processes,omitempty"`
+	ZoxideLive       int    `json:"zoxide_live,omitempty"`
 	ZoxideMaxLive    int    `json:"zoxide_max_live,omitempty"`
 	ActorQueueWaitUS int64  `json:"actor_queue_wait_us,omitempty"`
 	CallbackIPCUS    int64  `json:"callback_ipc_us,omitempty"`
@@ -88,6 +94,7 @@ func (trace *Trace) Event(event TraceEvent) error {
 		Event: event.Name, Generation: event.Generation, CandidateCount: event.CandidateCount,
 		Renderer: event.Renderer, ChildStarts: event.ChildStarts, MaxLiveChildren: event.MaxLiveChildren, Outcome: event.Outcome,
 		ZoxidePolicy: event.ZoxidePolicy, ZoxideAttempts: event.ZoxideAttempts, ZoxideStarts: event.ZoxideStarts,
+		ZoxideExits: event.ZoxideExits, ZoxideProcesses: event.ZoxideProcesses, ZoxideLive: event.ZoxideLive,
 		ZoxideMaxLive: event.ZoxideMaxLive, ActorQueueWaitUS: event.ActorQueueWait.Microseconds(),
 		CallbackIPCUS: event.CallbackIPC.Microseconds(), LocalUS: event.LocalDuration.Microseconds(),
 		ZoxideUS: event.ZoxideDuration.Microseconds(), ZoxideOutcome: event.ZoxideOutcome,
@@ -181,11 +188,14 @@ func isPreviewEvent(name string) bool {
 }
 
 func validateZoxideFields(event TraceEvent) error {
-	if event.ZoxideAttempts < 0 || event.ZoxideStarts < 0 || event.ZoxideMaxLive < 0 || event.ZoxideAttempts > 1_000_000 ||
-		event.ZoxideStarts > event.ZoxideAttempts || event.ZoxideMaxLive > event.ZoxideStarts {
+	if event.ZoxideAttempts < 0 || event.ZoxideStarts < 0 || event.ZoxideExits < 0 || event.ZoxideProcesses < 0 ||
+		event.ZoxideLive < 0 || event.ZoxideMaxLive < 0 || event.ZoxideAttempts > 1_000_000 ||
+		event.ZoxideStarts > event.ZoxideAttempts || event.ZoxideExits != event.ZoxideStarts ||
+		event.ZoxideProcesses != event.ZoxideStarts || event.ZoxideLive != 0 || event.ZoxideMaxLive > event.ZoxideStarts {
 		return errors.New("trace: invalid zoxide counters")
 	}
-	hasFields := event.ZoxidePolicy != "" || event.ZoxideAttempts != 0 || event.ZoxideStarts != 0 ||
+	hasFields := event.ZoxidePolicy != "" || event.ZoxideAttempts != 0 || event.ZoxideStarts != 0 || event.ZoxideExits != 0 ||
+		event.ZoxideProcesses != 0 || event.ZoxideLive != 0 ||
 		event.ZoxideMaxLive != 0 || event.ZoxideDuration != 0 || event.ZoxideOutcome != ""
 	if hasFields && event.Name != "generation.publish" && event.Name != "generation.discard" {
 		return errors.New("trace: zoxide fields are not valid for event")

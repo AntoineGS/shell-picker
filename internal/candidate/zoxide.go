@@ -53,12 +53,15 @@ func ParseZoxidePolicy(value string) (ZoxidePolicy, error) {
 }
 
 type SourceMetrics struct {
-	LocalDuration  time.Duration
-	ZoxideDuration time.Duration
-	ZoxideOutcome  string
-	ZoxideAttempts int
-	ZoxideStarts   int
-	ZoxideMaxLive  int
+	LocalDuration   time.Duration
+	ZoxideDuration  time.Duration
+	ZoxideOutcome   string
+	ZoxideAttempts  int
+	ZoxideStarts    int
+	ZoxideExits     int
+	ZoxideProcesses int
+	ZoxideLive      int
+	ZoxideMaxLive   int
 }
 
 type ZoxideCache struct {
@@ -140,7 +143,8 @@ func (cache *ZoxideCache) load(ctx context.Context) {
 		WaitDelay:   zoxideWaitDelay,
 	})
 	cache.metrics.ZoxideDuration = time.Since(started)
-	cache.metrics.ZoxideAttempts, cache.metrics.ZoxideStarts, cache.metrics.ZoxideMaxLive = tracker.metrics()
+	cache.metrics.ZoxideAttempts, cache.metrics.ZoxideStarts, cache.metrics.ZoxideExits,
+		cache.metrics.ZoxideProcesses, cache.metrics.ZoxideLive, cache.metrics.ZoxideMaxLive = tracker.metrics()
 
 	switch {
 	case errors.Is(runErr, errZoxideTimeout):
@@ -199,6 +203,8 @@ type zoxideTracker struct {
 	downstream func(process.ProcessEvent)
 	attempts   int
 	starts     int
+	exits      int
+	processes  int
 	live       int
 	maxLive    int
 }
@@ -214,11 +220,13 @@ func (tracker *zoxideTracker) observe(event process.ProcessEvent) {
 		tracker.attempts++
 	case "start":
 		tracker.starts++
+		tracker.processes++
 		tracker.live++
 		if tracker.live > tracker.maxLive {
 			tracker.maxLive = tracker.live
 		}
 	case "exit":
+		tracker.exits++
 		tracker.live--
 	}
 	tracker.mu.Unlock()
@@ -227,10 +235,10 @@ func (tracker *zoxideTracker) observe(event process.ProcessEvent) {
 	}
 }
 
-func (tracker *zoxideTracker) metrics() (int, int, int) {
+func (tracker *zoxideTracker) metrics() (int, int, int, int, int, int) {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
-	return tracker.attempts, tracker.starts, tracker.maxLive
+	return tracker.attempts, tracker.starts, tracker.exits, tracker.processes, tracker.live, tracker.maxLive
 }
 
 func cloneRecords(records []Record) []Record {

@@ -3,7 +3,12 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,6 +64,40 @@ func TestProbeReportsHardAndSoftDependenciesWithoutLeakingPaths(t *testing.T) {
 	}
 	if report.Cache.Root != "sha256:ad47e4d05532b1ea" || report.Cache.Status != "writable" {
 		t.Fatalf("cache=%+v", report.Cache)
+	}
+}
+
+func TestProbeUsesOneSanitizedFZFVersionExecution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX changing-output executable fixture")
+	}
+	root := t.TempDir()
+	countPath := filepath.Join(root, "count")
+	fzfPath := filepath.Join(root, "fzf")
+	script := fmt.Sprintf(`#!/bin/sh
+count=0
+if [ -f %[1]q ]; then read count < %[1]q; fi
+count=$((count + 1))
+printf '%%s\n' "$count" > %[1]q
+if [ -n "$FZF_DEFAULT_OPTS" ] || [ -n "$SHELL_PICKER_TOKEN" ]; then exit 9; fi
+if [ "$count" -eq 1 ]; then printf '0.74.1 first\n'; else printf '0.1.0 changed\n'; fi
+`, countPath)
+	if err := os.WriteFile(fzfPath, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	report := Probe(context.Background(), ProbeOptions{
+		FZFPath: fzfPath, PreviewTools: []string{},
+		Environment: []string{"PROBE_COUNT_FILE=" + countPath, "FZF_DEFAULT_OPTS=unsafe", "SHELL_PICKER_TOKEN=stale"},
+	})
+	count, err := os.ReadFile(countPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(count) != "1\n" || !report.Ready || report.FZF.Version != "0.74.1" {
+		t.Fatalf("count=%q report=%+v", count, report.FZF)
+	}
+	if strings.Contains(report.FZF.Version, "changed") {
+		t.Fatalf("reported a second execution: %+v", report.FZF)
 	}
 }
 

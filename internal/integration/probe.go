@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -109,15 +108,7 @@ func Probe(ctx context.Context, options ProbeOptions) ProbeReport {
 		check := options.CheckFZF
 		if check == nil {
 			check = func(checkCtx context.Context, path string, env []string) (string, error) {
-				checkErr := fzf.CheckVersion(checkCtx, options.Runner, path)
-				var output bytes.Buffer
-				err := options.Runner.Run(checkCtx, process.Spec{Path: path, Args: []string{"--version"}, Env: env,
-					Stdout: &output, Containment: process.ContainmentOwnTree, WaitDelay: time.Second})
-				fields := strings.Fields(output.String())
-				if err != nil || len(fields) == 0 {
-					return "", errors.Join(checkErr, errors.New("probe: fzf version unavailable"))
-				}
-				return fields[0], checkErr
+				return fzf.CheckVersionWithEnvironment(checkCtx, options.Runner, path, env)
 			}
 		}
 		version, checkErr := check(ctx, resolvedFZF, environment)

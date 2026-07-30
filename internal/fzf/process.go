@@ -123,30 +123,37 @@ func environmentValue(environment []string, wanted string) string {
 }
 
 func CheckVersion(ctx context.Context, runner process.Runner, path string) error {
+	_, err := CheckVersionWithEnvironment(ctx, runner, path, os.Environ())
+	return err
+}
+
+// CheckVersionWithEnvironment executes one version probe and returns the validated version from those same bytes.
+func CheckVersionWithEnvironment(ctx context.Context, runner process.Runner, path string, environment []string) (string, error) {
 	if path == "" {
-		return errors.New("fzf: empty fzf path")
+		return "", errors.New("fzf: empty fzf path")
 	}
 	var stdout, stderr bytes.Buffer
 	err := runner.Run(ctx, process.Spec{
 		Path:        path,
 		Args:        []string{"--version"},
-		Env:         process.SanitizeEnv(os.Environ(), nil),
+		Env:         process.SanitizeEnv(environment, nil),
 		Stdout:      &stdout,
 		Stderr:      &stderr,
 		Containment: process.ContainmentOwnTree,
 		WaitDelay:   time.Second,
 	})
 	if err != nil {
-		return fmt.Errorf("check fzf version: %w", err)
+		return "", fmt.Errorf("check fzf version: %w", err)
 	}
+	version := strings.Fields(stdout.String())
 	major, minor, patch, err := parseVersion(stdout.String())
 	if err != nil {
-		return err
+		return "", err
 	}
 	if major == 0 && (minor < 74 || minor == 74 && patch < 1) {
-		return fmt.Errorf("fzf: version %d.%d.%d is below required 0.74.1", major, minor, patch)
+		return version[0], fmt.Errorf("fzf: version %d.%d.%d is below required 0.74.1", major, minor, patch)
 	}
-	return nil
+	return version[0], nil
 }
 
 func parseVersion(output string) (int, int, int, error) {

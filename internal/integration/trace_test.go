@@ -17,7 +17,7 @@ func TestTraceWritesOnlyCompatibleBoundedPerformanceFields(t *testing.T) {
 	var output bytes.Buffer
 	trace := NewTrace(&output, fixedSessionID())
 	event := TraceEvent{Name: "generation.publish", Generation: 2, CandidateCount: 4, Path: []byte("/secret/path"),
-		ZoxidePolicy: "cached", ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideMaxLive: 1,
+		ZoxidePolicy: "cached", ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideProcesses: 1, ZoxideLive: 0, ZoxideMaxLive: 1,
 		ActorQueueWait: 2 * time.Microsecond, LocalDuration: 3 * time.Microsecond,
 		ZoxideDuration: 4 * time.Microsecond, ZoxideOutcome: "ok", TransformDuration: 5 * time.Microsecond,
 		Outcome: "ok"}
@@ -28,7 +28,8 @@ func TestTraceWritesOnlyCompatibleBoundedPerformanceFields(t *testing.T) {
 	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &record); err != nil {
 		t.Fatal(err)
 	}
-	if record.ZoxidePolicy != "cached" || record.ZoxideAttempts != 1 || record.ZoxideStarts != 1 || record.ZoxideMaxLive != 1 ||
+	if record.ZoxidePolicy != "cached" || record.ZoxideAttempts != 1 || record.ZoxideStarts != 1 || record.ZoxideExits != 1 ||
+		record.ZoxideProcesses != 1 || record.ZoxideLive != 0 || record.ZoxideMaxLive != 1 ||
 		record.ActorQueueWaitUS != 2 || record.LocalUS != 3 || record.ZoxideUS != 4 || record.ZoxideOutcome != "ok" || record.TransformUS != 5 {
 		t.Fatalf("record=%+v", record)
 	}
@@ -123,6 +124,7 @@ func TestTraceWritesStableRedactedJSONL(t *testing.T) {
 		if !map[string]bool{"schema": true, "time": true, "session": true, "event": true, "generation": true,
 			"candidate_count": true, "renderer": true, "child_starts": true, "max_live_children": true,
 			"outcome": true, "path": true, "zoxide_policy": true, "zoxide_attempts": true, "zoxide_starts": true,
+			"zoxide_exits": true, "zoxide_processes": true, "zoxide_live": true,
 			"zoxide_max_live": true, "actor_queue_wait_us": true, "callback_ipc_us": true, "local_us": true,
 			"zoxide_us": true, "zoxide_outcome": true, "transform_us": true, "load_us": true}[key] {
 			t.Fatalf("unstable trace field %q in %v", key, record)

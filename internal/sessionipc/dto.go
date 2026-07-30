@@ -12,6 +12,11 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
 
+const (
+	MaxPreviewChildStarts  = 3
+	MaxPreviewLiveChildren = 1
+)
+
 type EventRequest struct {
 	Opcode            protocol.Opcode `json:"opcode"`
 	Key               string          `json:"key"`
@@ -95,8 +100,8 @@ func validatePreview(request PreviewRequest) error {
 		}
 	case "finished":
 		if !validTelemetryValue(request.Renderer) || !validTelemetryValue(request.Outcome) || request.DurationUS < 0 ||
-			request.DurationUS > int64(10*time.Second/time.Microsecond) || request.ChildStarts < 0 || request.ChildStarts > 3 ||
-			request.MaxLiveChildren < 0 || request.MaxLiveChildren > 1 || request.MaxLiveChildren > request.ChildStarts ||
+			request.DurationUS > int64(10*time.Second/time.Microsecond) || request.ChildStarts < 0 || request.ChildStarts > MaxPreviewChildStarts ||
+			request.MaxLiveChildren < 0 || request.MaxLiveChildren > MaxPreviewLiveChildren || request.MaxLiveChildren > request.ChildStarts ||
 			(request.Renderer == "native" && (request.ChildStarts != 0 || request.MaxLiveChildren != 0)) {
 			return errors.New("invalid finished telemetry")
 		}
