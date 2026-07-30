@@ -170,6 +170,19 @@ func TestFZFShellRejectsMissingOrExtraCommandText(t *testing.T) {
 	}
 }
 
+func TestFZFShellInfoDoesNotRequireIPCCredentials(t *testing.T) {
+	t.Setenv("SHELL_PICKER_ADDR", "")
+	t.Setenv("SHELL_PICKER_TOKEN", "")
+	t.Setenv("FZF_MATCH_COUNT", "7")
+	t.Setenv("FZF_TOTAL_COUNT", "42")
+	t.Setenv("FZF_SELECT_COUNT", "1")
+	var stdout, stderr bytes.Buffer
+	code := Main(context.Background(), []string{"--fzf-shell", "i:cp"}, Streams{Out: &stdout, Err: &stderr}, "dev")
+	if code != 0 || stdout.String() != "7/42 (1)" || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestFZFShellTransportFailureReturnsOneWithoutCredentials(t *testing.T) {
 	t.Setenv("SHELL_PICKER_ADDR", "http://127.0.0.1:1")
 	t.Setenv("SHELL_PICKER_TOKEN", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")

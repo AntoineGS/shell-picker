@@ -22,8 +22,10 @@ type fakeClient struct {
 	events    []sessionipc.EventRequest
 	loads     []sessionipc.LoadRequest
 	previews  []sessionipc.PreviewRequest
+	displays  int
 	effect    protocol.Effect
 	load      []byte
+	display   sessionipc.DisplayResponse
 	resolved  sessionipc.PreviewResponse
 	err       error
 	recordErr error
@@ -60,10 +62,14 @@ func (client *fakeClient) RecordPreview(_ context.Context, request sessionipc.Pr
 	client.previews = append(client.previews, request)
 	return client.recordErr
 }
+func (client *fakeClient) Display(context.Context) (sessionipc.DisplayResponse, error) {
+	client.displays++
+	return client.display, client.err
+}
 
 func TestEventReadsOnlyFZFEnvironmentAndWritesTypedEffect(t *testing.T) {
-	client := &fakeClient{effect: protocol.Effect{Search: "off", Prompt: "safe> "}}
-	env := map[string]string{"FZF_KEY": "enter", "FZF_QUERY": "a b", "FZF_CURRENT_ITEM": "file\tdisplay\tYQ=="}
+	client := &fakeClient{effect: protocol.Effect{Search: "off", Prompt: "[N] ", Header: "/very/long/path/"}}
+	env := map[string]string{"FZF_KEY": "enter", "FZF_QUERY": "a b", "FZF_CURRENT_ITEM": "file\tdisplay\tYQ==", "FZF_COLUMNS": "12"}
 	var stdout bytes.Buffer
 	deps := Dependencies{Client: client, LookupEnv: func(key string) string { return env[key] }, Stdout: &stdout, Stderr: io.Discard}
 	if err := Dispatch(context.Background(), mustParse(t, "e:en"), deps); err != nil {
@@ -73,8 +79,51 @@ func TestEventReadsOnlyFZFEnvironmentAndWritesTypedEffect(t *testing.T) {
 	if len(client.events) != 1 || client.events[0] != want {
 		t.Fatalf("events=%+v want=%+v", client.events, want)
 	}
-	if stdout.String() != "disable-search+change-prompt:safe> " {
+	if stdout.String() != "disable-search+change-prompt([N] )+change-header:··ath/" {
 		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func TestDisplayReadsIPCOnceAndWritesVisibleHeader(t *testing.T) {
+	client := &fakeClient{display: sessionipc.DisplayResponse{Header: "/very/long/path/"}}
+	env := map[string]string{"FZF_COLUMNS": "12"}
+	var stdout bytes.Buffer
+	deps := Dependencies{Client: client, LookupEnv: func(key string) string { return env[key] }, Stdout: &stdout, Stderr: io.Discard}
+	if err := Dispatch(context.Background(), mustParse(t, "d"), deps); err != nil {
+		t.Fatal(err)
+	}
+	if client.displays != 1 || stdout.String() != "change-header:··ath/" {
+		t.Fatalf("displays=%d stdout=%q", client.displays, stdout.String())
+	}
+}
+
+func TestInfoUsesNoIPCAndWritesCounts(t *testing.T) {
+	env := map[string]string{"FZF_MATCH_COUNT": "7", "FZF_TOTAL_COUNT": "42", "FZF_SELECT_COUNT": "1"}
+	var stdout bytes.Buffer
+	deps := Dependencies{LookupEnv: func(key string) string { return env[key] }, Stdout: &stdout, Stderr: io.Discard}
+	if err := Dispatch(context.Background(), mustParse(t, "i:cp"), deps); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "7/42 (1)" {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func TestEventInvalidDimensionsStillRendersRemainingEffect(t *testing.T) {
+	client := &fakeClient{effect: protocol.Effect{Prompt: "[N] ", Header: "/work/", ReloadGeneration: 2}}
+	var stdout bytes.Buffer
+	deps := Dependencies{Client: client, LookupEnv: func(key string) string {
+		if key == "FZF_KEY" {
+			return "enter"
+		}
+		return ""
+	}, Stdout: &stdout, Stderr: io.Discard}
+	if err := Dispatch(context.Background(), mustParse(t, "e:en"), deps); err != nil {
+		t.Fatal(err)
+	}
+	want := "reload-sync(l:2)+wait+first+change-prompt([N] )"
+	if stdout.String() != want {
+		t.Fatalf("stdout=%q want=%q", stdout.String(), want)
 	}
 }
 
@@ -102,6 +151,18 @@ func TestLocalEventValidationReadsOnlyFZFKey(t *testing.T) {
 	})
 	if !errors.Is(err, ErrKey) || !reflect.DeepEqual(keys, []string{"FZF_KEY"}) {
 		t.Fatalf("err=%v keys=%q", err, keys)
+	}
+}
+
+func TestLocalDisplayAndInfoValidationReadNoEnvironment(t *testing.T) {
+	for _, raw := range []string{"d", "i:cd", "i:cp"} {
+		var keys []string
+		if err := ValidateLocal(mustParse(t, raw), func(key string) string {
+			keys = append(keys, key)
+			return "ignored"
+		}); err != nil || len(keys) != 0 {
+			t.Fatalf("command=%q err=%v keys=%q", raw, err, keys)
+		}
 	}
 }
 

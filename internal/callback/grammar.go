@@ -17,12 +17,15 @@ const (
 	KindEvent Kind = iota + 1
 	KindLoad
 	KindPreview
+	KindDisplay
+	KindInfo
 )
 
 type Command struct {
 	Kind       Kind
 	Opcode     protocol.Opcode
 	Generation uint64
+	Picker     protocol.Picker
 }
 
 func Parse(raw string) (Command, error) {
@@ -36,6 +39,15 @@ func Parse(raw string) (Command, error) {
 	}
 	if raw == "p" {
 		return Command{Kind: KindPreview}, nil
+	}
+	if raw == "d" {
+		return Command{Kind: KindDisplay}, nil
+	}
+	if raw == "i:cd" {
+		return Command{Kind: KindInfo, Picker: protocol.PickerCD}, nil
+	}
+	if raw == "i:cp" {
+		return Command{Kind: KindInfo, Picker: protocol.PickerCP}, nil
 	}
 	if !strings.HasPrefix(raw, "l:") {
 		return Command{}, ErrGrammar

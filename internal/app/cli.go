@@ -158,6 +158,14 @@ func callbackMain(ctx context.Context, args []string, streams Streams) int {
 		fmt.Fprintln(streams.Err, "invalid callback command")
 		return 2
 	}
+	if command.Kind == callback.KindInfo {
+		dependencies := callback.Dependencies{LookupEnv: os.Getenv, Stdout: streams.Out, Stderr: streams.Err}
+		if err := callback.Dispatch(ctx, command, dependencies); err != nil {
+			fmt.Fprintln(streams.Err, "callback failed")
+			return 1
+		}
+		return 0
+	}
 	client, err := sessionipc.NewClientFromEnv(os.Getenv)
 	if err != nil {
 		fmt.Fprintln(streams.Err, "callback connection unavailable")

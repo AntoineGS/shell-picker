@@ -23,6 +23,7 @@ type IPCClient interface {
 	Load(context.Context, sessionipc.LoadRequest) ([]byte, error)
 	ResolvePreview(context.Context, sessionipc.PreviewRequest) (sessionipc.PreviewResponse, error)
 	RecordPreview(context.Context, sessionipc.PreviewRequest) error
+	Display(context.Context) (sessionipc.DisplayResponse, error)
 }
 
 type Dependencies struct {
@@ -34,7 +35,10 @@ type Dependencies struct {
 }
 
 func Dispatch(ctx context.Context, command Command, dependencies Dependencies) error {
-	if ctx == nil || dependencies.Client == nil || dependencies.LookupEnv == nil || dependencies.Stdout == nil {
+	if ctx == nil || dependencies.LookupEnv == nil || dependencies.Stdout == nil {
+		return errors.New("callback: incomplete dependencies")
+	}
+	if command.Kind != KindInfo && dependencies.Client == nil {
 		return errors.New("callback: incomplete dependencies")
 	}
 	if err := ValidateLocal(command, dependencies.LookupEnv); err != nil {
@@ -47,6 +51,10 @@ func Dispatch(ctx context.Context, command Command, dependencies Dependencies) e
 		return dispatchLoad(ctx, command, dependencies)
 	case KindPreview:
 		return dispatchPreview(ctx, dependencies)
+	case KindDisplay:
+		return dispatchDisplay(ctx, dependencies)
+	case KindInfo:
+		return writeAll(dependencies.Stdout, []byte(finderInfo(command.Picker, dependencies.LookupEnv)))
 	default:
 		return ErrGrammar
 	}
@@ -61,7 +69,7 @@ func ValidateLocal(command Command, lookupEnv func(string) string) error {
 		if !validKey(command.Opcode, lookupEnv("FZF_KEY")) {
 			return ErrKey
 		}
-	case KindLoad, KindPreview:
+	case KindLoad, KindPreview, KindDisplay, KindInfo:
 		return nil
 	default:
 		return ErrGrammar
@@ -82,7 +90,31 @@ func dispatchEvent(ctx context.Context, command Command, dependencies Dependenci
 	if response.Effect.Cursor != "" {
 		SetCursor(response.Effect.Cursor)
 	}
+	if response.Effect.Header != "" {
+		header, ok := visibleHeader(response.Effect.Header, dependencies.LookupEnv)
+		if ok {
+			response.Effect.Header = header
+		} else {
+			response.Effect.Header = ""
+		}
+	}
 	action, err := fzf.RenderEffect(response.Effect)
+	if err != nil {
+		return err
+	}
+	return writeAll(dependencies.Stdout, []byte(action))
+}
+
+func dispatchDisplay(ctx context.Context, dependencies Dependencies) error {
+	response, err := dependencies.Client.Display(ctx)
+	if err != nil {
+		return err
+	}
+	header, ok := visibleHeader(response.Header, dependencies.LookupEnv)
+	if !ok {
+		return nil
+	}
+	action, err := fzf.RenderEffect(protocol.Effect{Header: header})
 	if err != nil {
 		return err
 	}
