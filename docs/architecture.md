@@ -14,7 +14,19 @@ Reduction is a pure reduction by deliberate design. Exclusive `Reduction` branch
 
 The proposal carries base generation, next state, optional build request, effect, and optionally created tree. The actor keeps one pending transition with its reply channel, effect/build state, cancellation cause, and retiring/replacement state; snapshot and resolve requests remain read-only while a build runs. A replacement first cancels the pending build, waits for completion, rolls back an unowned tree, replies to the prior caller, then starts the replacement. This ordering prevents a generator from observing a removed tree.
 
+```stateDiagram
+[*] --> Ready
+Ready --> Pending: ordinary proposal XOR AddIntent
+Pending --> Ready: cancel → wait → rollback → reply → replacement
+Pending --> Published: build completes, effect publishes
+Published --> Ready
+```
+
+`Reduction` has exclusive branches: an ordinary proposal XOR AddIntent, never both; a reduction that is applicable has one of those branches, while an ignored event has neither and no side effect. Pending state owns the proposal/build context, pending reply, cancellation function, accepted generation, retiring flag, and replacement cause. Reads use the immutable published snapshot while Pending is active.
+
 Containment is explicit: picker fzf uses a foreground tree, zoxide uses its own tree, and preview children either own or inherit the callback tree as required. This separates cancellation scope from ordinary parent process lifetime.
+
+The concrete modes are `ContainmentForegroundTree` for fzf, `ContainmentOwnTree` for zoxide and independent preview converters, and `ContainmentInheritTree` for callback renderers that must remain in their callback tree. Preview retains one `TreeHandle` on first child start; cancellation kills that tree, and close releases its handle after the callback has terminated.
 
 ## Process and terminal boundaries
 
