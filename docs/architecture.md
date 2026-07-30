@@ -2,7 +2,7 @@
 
 ## Session model
 
-Each session owns one *candidate.Builder, configures it before use, and it must not be copied after first use. Cached mode owns a session cache: initial local enumeration and the single attempt overlap, then later navigation reads immutable cache data. Fresh mode uses a generation-local cache factory; every completed `cd` build overlaps local enumeration and its attempt. The shared builder has one cancellation-aware permit: a cancelled waiter returns its context cause without factory or attempt. Because independent sessions may query concurrently, there is no package-global mutex. By design, cp never queries zoxide.
+Each session owns one *candidate.Builder, configures it before use, and it must not be copied after first use. Only the eligible launch query can add zoxide candidates to the initial CD view. Its cached or fresh policy and timeout apply only to that query, which overlaps its single attempt with local enumeration; fresh plus timeout zero is authoritative only there. Every later navigation generation is local-only, including a return to the launch path, and reports zoxide_outcome `not-run` with zero zoxide counters. Direct concurrent initial fresh calls remain protected by the shared builder's cancellation-aware permit: a cancelled waiter returns its context cause without factory or attempt. Independent sessions may query concurrently because there is no package-global mutex. By design, cp never invokes zoxide.
 
 Candidate records carry an authoritative target independently of their wire payload: filesystem targets may preview or become final output; a Windows root virtual `..` targets Drives for navigation only. Drives has no dot record.
 

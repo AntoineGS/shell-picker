@@ -52,6 +52,45 @@ func TestArchitectureDocumentsActualOwnership(t *testing.T) {
 	}
 }
 
+func TestDocumentationStatesLaunchOnlyZoxideContract(t *testing.T) {
+	currentDocuments := []string{
+		"README.md",
+		"docs/architecture.md",
+		"docs/adapters.md",
+		"docs/performance.md",
+		"docs/security.md",
+		"docs/parity.md",
+	}
+	documentation := strings.Builder{}
+	for _, path := range currentDocuments {
+		document := readDoc(t, path)
+		documentation.WriteString(document)
+		documentation.WriteByte('\n')
+		for _, stale := range []string{
+			"immutable cached later navigation",
+			"one attempt per completed fresh generation",
+			"authoritative fresh navigation",
+			"cached-navigation",
+			"fresh-navigation",
+			"fresh-exact-parity-navigation",
+		} {
+			if strings.Contains(document, stale) {
+				t.Errorf("%s contains stale zoxide navigation claim %q", path, stale)
+			}
+		}
+	}
+	for _, required := range []string{
+		"initial CD view",
+		"navigation is local-only",
+		"zoxide_outcome `not-run`",
+		"navigation-local-only",
+	} {
+		if !strings.Contains(documentation.String(), required) {
+			t.Errorf("current documentation missing launch-only zoxide concept %q", required)
+		}
+	}
+}
+
 func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode) []string {
 	t.Helper()
 	options := fzf.Options(picker, "[I] /work/ ")

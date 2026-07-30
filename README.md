@@ -43,15 +43,15 @@ Do not treat a displayed virtual record as a path: at a Windows drive or UNC sha
 
 ### zoxide policy
 
-The public flags are `--zoxide-policy cached|fresh` and `--zoxide-timeout DURATION`. The default is `cached`, with a 75ms timeout on Linux and 150ms on Windows. A timeout of `0` means unlimited for that query, but only `--zoxide-policy fresh --zoxide-timeout 0` supplies exact authoritative unlimited per-generation zoxide behavior.
+The public flags are `--zoxide-policy cached|fresh` and `--zoxide-timeout DURATION`. The default is `cached`, with a 75ms timeout on Linux and 150ms on Windows. These settings apply only to the eligible launch query that can add zoxide candidates to the initial CD view. A timeout of `0` means unlimited for that query, but only `--zoxide-policy fresh --zoxide-timeout 0` makes that launch query authoritative and unlimited.
 
 `zoxide query --list` returns absolute filesystem paths. Accepted rows preserve arbitrary legal bytes in a valid platform-absolute path; a relative row is a malformed soft failure for the whole buffer, and virtual tokens never reach this check. Timeout and partial output are discarded.
 
-For cached `cd`, there is exactly one invocation attempt per session, zero or one successful OS start, at most one live process, immutable cached later navigation, and no later attempts. Fresh `cd` performs exactly one attempt and zero or one successful start per completed generation, overlapped with local enumeration and with at most one live process per session Builder. A cancelled permit waiter returns promptly without factory or attempt; independent sessions may query concurrently without a package-global mutex. Missing or spawn-failure means attempt 1/start 0. `cp` makes zero attempts, starts, exits, and processes.
+For `cd`, zoxide candidates can appear only in the initial CD view. Cached and fresh launch queries each perform exactly one attempt and zero or one successful OS start, overlapped with local enumeration and with at most one live process per session Builder. Direct concurrent initial fresh calls remain permit-protected; a cancelled waiter returns promptly without factory or attempt, while independent sessions may query concurrently without a package-global mutex. After launch, navigation is local-only for every generation, including a return to the launch path: metrics report zoxide_outcome `not-run` and attempt, start, exit, process, and max-live counters are zero. Missing or spawn-failure on the eligible launch query means attempt 1/start 0. `cp` never invokes zoxide and has zero zoxide counters.
 
 ## Shell adapters
 
-Source `adapters/zsh/shell-picker.plugin.zsh` and call `shell-picker-bind-zsh`; source `adapters/nushell/shell-picker.nu` and call `shell-picker-bind-nushell`. The shipped commands intentionally omit zoxide flags, so they use the default cached policy and the 75ms Linux/150ms Windows timeout. Users who need authoritative freshness must invoke the public fresh+`0` form directly.
+Source `adapters/zsh/shell-picker.plugin.zsh` and call `shell-picker-bind-zsh`; source `adapters/nushell/shell-picker.nu` and call `shell-picker-bind-nushell`. The shipped commands intentionally omit zoxide flags, so their eligible initial launch query uses the default cached policy and the 75ms Linux/150ms Windows timeout. Users who need that launch query to be authoritative must invoke the public fresh+`0` form directly; later navigation remains local-only.
 
 The process topology is one parent and one fzf. Callback transforms are synchronous and short-lived. Optional preview tools are not required: native preview fallbacks remain useful when they are absent.
 
