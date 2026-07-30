@@ -50,4 +50,4 @@ release-snapshot:
 	go run ./scripts/release.go snapshot "$(VERSION)"
 
 release-check:
-	go run ./scripts/release.go check $(VERSION)
+	go run ./scripts/release.go check

@@ -71,6 +71,11 @@ func main() {
 			version = inferVersion()
 		}
 		check(version)
+	case "checksums":
+		if len(os.Args) != 3 {
+			fatal("checksums requires DIRECTORY")
+		}
+		checksumArtifacts(os.Args[2])
 	default:
 		fatal("unknown operation")
 	}
@@ -268,7 +273,11 @@ func writeChecksumsTo(directory string) {
 }
 
 func inferVersion() string {
-	archives, err := archivePaths("dist")
+	return inferVersionIn("dist")
+}
+
+func inferVersionIn(directory string) string {
+	archives, err := archivePaths(directory)
 	if err != nil {
 		fatal(err.Error())
 	}
@@ -340,7 +349,7 @@ func check(version string) {
 	for _, archive := range archives {
 		verifyArchive(archive, version, when)
 	}
-	verifyChecksums(archives)
+	verifyChecksumsAt("dist", archives)
 	temporary, err := os.MkdirTemp("", "shell-picker-release-rebuild-")
 	if err != nil {
 		fatal(err.Error())
@@ -409,8 +418,31 @@ func sameStrings(left, right []string) bool {
 	return true
 }
 
-func verifyChecksums(archives []string) {
-	data, err := os.ReadFile("dist/checksums.txt")
+func checksumArtifacts(directory string) {
+	version := inferVersionIn(directory)
+	archives := expectedArchivePaths(version, directory)
+	if !sameStrings(archives, mustArchivePaths(directory)) {
+		fatal("release archive set does not exactly match version and targets")
+	}
+	checksumPath := filepath.Join(directory, "checksums.txt")
+	if _, err := os.Stat(checksumPath); errors.Is(err, os.ErrNotExist) {
+		writeChecksumsTo(directory)
+	} else if err != nil {
+		fatal(err.Error())
+	}
+	verifyChecksumsAt(directory, archives)
+}
+
+func mustArchivePaths(directory string) []string {
+	archives, err := archivePaths(directory)
+	if err != nil {
+		fatal(err.Error())
+	}
+	return archives
+}
+
+func verifyChecksumsAt(directory string, archives []string) {
+	data, err := os.ReadFile(filepath.Join(directory, "checksums.txt"))
 	if err != nil {
 		fatal(err.Error())
 	}

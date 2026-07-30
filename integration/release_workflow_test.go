@@ -20,22 +20,32 @@ func TestReleaseWorkflowContract(t *testing.T) {
 	text := readWorkflow(t, "release.yml")
 	requireAll(t, text, "tags:", "- 'v*'", "actions/checkout@v5", "actions/setup-go@v6", "actions/upload-artifact@v4", "actions/download-artifact@v4", "linux", "windows", "amd64", "arm64", "checksums.txt", "gh release create")
 	rejectAll(t, text, "latest", "continue-on-error: true", "--force")
-	if !strings.Contains(text, "(cd dist && sha256sum -c checksums.txt)") {
-		t.Fatal("workflow must verify checksums from the directory containing basename-only entries")
-	}
-	if strings.Contains(text, "sha256sum \"dist/$name\"") {
-		t.Fatal("workflow checksum entries must not contain dist/ prefixes")
+	if strings.Contains(text, "sha256sum") {
+		t.Fatal("workflow must delegate checksum handling to the tested release tool")
 	}
 	requireAll(t, text, "permissions:\n  contents: write", "test \"${GITHUB_REF_TYPE}\" = tag", "--verify-tag", "--generate-notes", "--title \"$GITHUB_REF_NAME\"", "go run ./scripts/release.go check \"$GITHUB_REF_NAME\"")
+	releaseStart := strings.Index(text, "gh release create ")
+	if releaseStart < 0 || strings.Count(text[releaseStart:], "checksums.txt") != 1 {
+		t.Fatal("release publication must include checksums exactly once")
+	}
 	if strings.Contains(text, "workflow_dispatch:") || strings.Contains(text, "pull_request:") || strings.Contains(text, "branches:") {
 		t.Fatal("release workflow is not tag-only")
 	}
 	if strings.Count(text, "archive: shell-picker-") != 4 || strings.Count(text, "goos: linux") != 2 || strings.Count(text, "goos: windows") != 2 {
 		t.Fatal("release matrix is not exactly four platform entries")
 	}
-	start, end := strings.Index(text, "find dist -maxdepth 1"), strings.Index(text, "mkdir verify")
-	if start < 0 || end < start || !strings.Contains(text[start:end], "(cd dist && sha256sum -c checksums.txt)") {
-		t.Fatal("workflow checksum generation and verification are not wired in order")
+	requireAll(t, text, "go run ./scripts/release.go checksums dist")
+}
+
+func TestReleaseCheckDoesNotInterpolateVersion(t *testing.T) {
+	command := exec.Command("make", "-n", "release-check", "VERSION=v1;id")
+	command.Dir = ".."
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "v1;id") || strings.Contains(string(output), " id") {
+		t.Fatalf("release-check interpolated VERSION into command: %s", output)
 	}
 }
 
