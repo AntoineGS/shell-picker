@@ -3,6 +3,7 @@ package integration
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -38,13 +39,20 @@ func rejectAll(t *testing.T, text string, rejected ...string) {
 func TestCIWorkflowContract(t *testing.T) {
 	text := readWorkflow(t, "ci.yml")
 	requireAll(t, text,
-		"actions/checkout@v5", "actions/setup-go@v6", "actions/upload-artifact@v4", "actions/download-artifact@v4",
+		"actions/checkout@v5", "actions/setup-go@v6", "actions/upload-artifact@v4",
 		"go-version: 1.26.5", "ubuntu-24.04", "windows-2025", "go test -race", "if: ${{ always() }}",
 		"GOOS: linux", "GOOS: windows", "GOARCH: amd64", "GOARCH: arm64", "0.113.1", "adapters-windows",
 		"TestNushellAdapter", "TestInstalledFZFCheckVersion", "needs.adapters-windows.result", "needs.fzf-version.result",
 		"golang.org/x/sys v0.47.0")
 	rejectAll(t, text, "continue-on-error: true", "--listen", "go get")
 	requireAll(t, text, "go list -m all", "needs.cross-build.result")
+	requireAll(t, text, "SHELL_PICKER_REAL_FZF=", "TestModuleGraphExact")
+	if strings.Contains(text, "FZF_PATH=") || strings.Contains(text, "if: false") {
+		t.Fatal("stable CI contains a disconnected fzf path or disabled action")
+	}
+	if strings.Contains(text, "name: ${{ matrix.output }}") || strings.Contains(text, "name: '${{ matrix.output }}'") {
+		t.Fatal("cross-build artifact name is derived from a path")
+	}
 	start := strings.Index(text, "  adapters-windows:")
 	end := strings.Index(text, "  fzf-version:")
 	if start >= 0 && end > start && strings.Contains(text[start:end], "zsh") {
@@ -58,8 +66,13 @@ func TestCIWorkflowContract(t *testing.T) {
 func TestRealFZFWorkflowContract(t *testing.T) {
 	text := readWorkflow(t, "real-fzf.yml")
 	requireAll(t, text, "workflow_dispatch", "17 3 * * 0", "fzf_version", "0.74.1", "ubuntu-24.04", "windows-2025",
-		"SHELL_PICKER_REAL_FZF", "TestRealFZF", "/dev/ptmx", "TIOCSPTLCK", "TIOCGPTN", "pidfd_open", "17763", "CreatePseudoConsole")
+		"SHELL_PICKER_REAL_FZF", "TestRealFZF", "TestPlatformPrerequisites", "version_at_least")
+	prerequisites := readRepositoryFiles(t, "platform_prerequisites_linux_test.go", "platform_prerequisites_windows_test.go")
+	requireAll(t, prerequisites, "/dev/ptmx", "TIOCSPTLCK", "TIOCGPTN", "pidfd_open", "17763", "CreatePseudoConsole")
 	rejectAll(t, text, "continue-on-error: true")
+	if !regexp.MustCompile(`version_at_least|version.*compare|sort -V|SemVer`).MatchString(text) {
+		t.Fatal("real-fzf workflow lacks semantic version comparison")
+	}
 }
 
 func TestPerformanceWorkflowContract(t *testing.T) {
@@ -68,5 +81,31 @@ func TestPerformanceWorkflowContract(t *testing.T) {
 		"cached-navigation", "fresh-navigation", "fresh-exact-parity-navigation", "baseline-required")
 	if strings.Contains(text, "pull_request:") || strings.Contains(text, "push:") || strings.Contains(text, "ubuntu-24.04") {
 		t.Fatal("performance workflow has an unsupported trigger or runner")
+	}
+	if !strings.Contains(text, "TestPerformanceJSONOutputs") || !strings.Contains(text, "SHELL_PICKER_PERFORMANCE_OUTPUTS: 1") {
+		t.Fatal("performance workflow does not enforce real JSON outputs")
+	}
+}
+
+func readRepositoryFiles(t *testing.T, names ...string) string {
+	t.Helper()
+	var builder strings.Builder
+	for _, name := range names {
+		text, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		builder.Write(text)
+	}
+	return builder.String()
+}
+
+func TestSourceLimitContractHasNoAllowlist(t *testing.T) {
+	text, err := os.ReadFile("source_limits_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(text), "legacy") || strings.Contains(string(text), "Exceptions") {
+		t.Fatal("source-limit contract weakens coverage with an allowlist")
 	}
 }

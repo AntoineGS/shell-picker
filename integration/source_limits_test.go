@@ -24,17 +24,7 @@ func TestGoSourceLineLimits(t *testing.T) {
 	files := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
 	sort.Strings(files)
 	var offenders []string
-	legacy := map[string]bool{
-		"integration/fzf_real_preview_linux_test.go":   true,
-		"integration/fzf_real_preview_windows_test.go": true,
-		"integration/fzf_real_windows_test.go":         true,
-		"integration/nushell_adapter_test.go":          true,
-		"integration/parity_preview_linux_test.go":     true,
-	}
 	for _, relative := range files {
-		if legacy[relative] {
-			continue
-		}
 		if relative == "" || !strings.HasSuffix(relative, ".go") || strings.Contains("/"+relative+"/", "/vendor/") {
 			continue
 		}

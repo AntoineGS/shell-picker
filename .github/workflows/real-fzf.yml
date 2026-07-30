@@ -24,7 +24,18 @@ jobs:
         shell: bash
         run: |
           version='${{ inputs.fzf_version || '0.74.1' }}'
-          test "${version#v}" \>='0.74.1'
+          version="${version#v}"
+          version_at_least() {
+            local want_major=0 want_minor=74 want_patch=1 major minor patch extra
+            IFS=. read -r major minor patch extra <<< "$1"
+            case "$major.$minor.$patch$extra" in *[!0-9.]*|*..*|.*|*.) return 1 ;; esac
+            [ -z "$extra" ] || return 1
+            major=${major:-0}; minor=${minor:-0}; patch=${patch:-0}
+            [ "$major" -gt "$want_major" ] ||
+              { [ "$major" -eq "$want_major" ] && [ "$minor" -gt "$want_minor" ]; } ||
+              { [ "$major" -eq "$want_major" ] && [ "$minor" -eq "$want_minor" ] && [ "$patch" -ge "$want_patch" ]; }
+          }
+          version_at_least "$version"
           mkdir -p .ci/fzf
           if [ "$RUNNER_OS" = Linux ]; then archive="fzf-${version#v}-linux_amd64.tar.gz"; else archive="fzf-${version#v}-windows_amd64.zip"; fi
           curl -fsSL -o .ci/fzf/$archive "https://github.com/junegunn/fzf/releases/download/v${version#v}/$archive"
@@ -33,13 +44,10 @@ jobs:
           if [ "$RUNNER_OS" = Linux ]; then tar -xzf .ci/fzf/$archive -C .ci/fzf; else unzip -o .ci/fzf/$archive -d .ci/fzf; fi
       - name: Linux terminal prerequisites
         if: runner.os == 'Linux'
-        run: python3 -c 'import os; fd=os.open("/dev/ptmx", os.O_RDWR); os.close(fd); print("/dev/ptmx devpts TIOCSPTLCK TIOCGPTN pidfd_open prerequisites checked")'
+        run: go test ./integration -run TestPlatformPrerequisites -count=1
       - name: Windows pseudo console prerequisites
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          if ([Environment]::OSVersion.Version.Build -lt 17763) { throw 'Windows build 17763+ required' }
-          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class P { [DllImport("kernel32.dll")] public static extern int CreatePseudoConsole(); }'
-          Write-Host 'CreatePseudoConsole prerequisite checked'
+        run: go test ./integration -run TestPlatformPrerequisites -count=1
       - shell: bash
         run: SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf${{ runner.os == 'Windows' && '.exe' || '' }}" go test ./integration -run TestRealFZF -count=1 -v

@@ -35,6 +35,7 @@ performance-dedicated:
 	./bin/shell-picker-perf.test -test.run TestDedicatedTargets -binary ./bin/shell-picker -samples 50 -baseline host-baseline.json -output performance.json
 
 cross-build:
+	mkdir -p bin
 	GOOS=linux GOARCH=amd64 go test -exec=true ./...
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/shell-picker_linux_amd64 ./cmd/shell-picker
 	GOOS=linux GOARCH=arm64 go test -exec=true ./...

@@ -11,12 +11,34 @@ import (
 	"testing"
 )
 
-func TestWindowsTracePipeSourceUsesRandomRestrictedFirstInstance(t *testing.T) {
-	raw, err := os.ReadFile("fzf_real_windows_test.go")
-	if err != nil {
-		t.Fatal(err)
+func readWindowsContractSources(t *testing.T, names ...string) string {
+	t.Helper()
+	var builder strings.Builder
+	for _, name := range names {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		builder.Write(raw)
 	}
-	source := string(raw)
+	return builder.String()
+}
+
+func parseWindowsContractSources(t *testing.T, names ...string) []*ast.File {
+	t.Helper()
+	files := make([]*ast.File, 0, len(names))
+	for _, name := range names {
+		parsed, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, parsed)
+	}
+	return files
+}
+
+func TestWindowsTracePipeSourceUsesRandomRestrictedFirstInstance(t *testing.T) {
+	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go")
 	for _, required := range []string{"rand.Read", "FILE_FLAG_FIRST_PIPE_INSTANCE", "FILE_FLAG_OVERLAPPED", "currentUserSecurityAttributes"} {
 		if !strings.Contains(source, required) {
 			t.Errorf("Windows trace pipe source lacks %s", required)
@@ -28,20 +50,19 @@ func TestWindowsTracePipeSourceUsesRandomRestrictedFirstInstance(t *testing.T) {
 }
 
 func TestWindowsRegistersNativePreviewLifecycleTests(t *testing.T) {
-	parsed, err := parser.ParseFile(token.NewFileSet(), "fzf_real_preview_windows_test.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	parsedFiles := parseWindowsContractSources(t, "fzf_real_preview_windows_test.go", "fzf_real_preview_windows_cases_test.go")
 	want := map[string]bool{
 		"TestRealFZFPreviewReplacementKillsWholeTree":     false,
 		"TestRealFZFResizeUpdatesPreviewDimensions":       false,
 		"TestRealFZFPreviewTerminalFailuresKillWholeTree": false,
 	}
-	for _, declaration := range parsed.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if ok && function.Recv == nil {
-			if _, exists := want[function.Name.Name]; exists {
-				want[function.Name.Name] = true
+	for _, parsed := range parsedFiles {
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if ok && function.Recv == nil {
+				if _, exists := want[function.Name.Name]; exists {
+					want[function.Name.Name] = true
+				}
 			}
 		}
 	}
@@ -53,11 +74,7 @@ func TestWindowsRegistersNativePreviewLifecycleTests(t *testing.T) {
 }
 
 func TestWindowsOutputDrainUsesCancellableOverlappedIO(t *testing.T) {
-	raw, err := os.ReadFile("fzf_real_windows_test.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(raw)
+	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go")
 	start := strings.Index(source, "func (session *windowsTerminalSession) drainOutput")
 	if start < 0 {
 		t.Fatal("cannot locate Windows output drain")
@@ -73,11 +90,7 @@ func TestWindowsOutputDrainUsesCancellableOverlappedIO(t *testing.T) {
 }
 
 func TestWindowsTerminalLifecycleSourceContract(t *testing.T) {
-	raw, err := os.ReadFile("fzf_real_windows_test.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(raw)
+	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go")
 	for _, required := range []string{"waitErr", "waitDone", "DuplicateHandle", "ops.closeHandle(information.Thread)",
 		"ops.cancelIO(session.output", "ops.cancelIO(session.trace", "<-session.drainDone", "<-session.traceDone"} {
 		if !strings.Contains(source, required) {
@@ -98,46 +111,41 @@ func TestWindowsTerminalLifecycleSourceContract(t *testing.T) {
 }
 
 func TestWindowsPreviewTestsRequireTopologyAndCheckOperations(t *testing.T) {
-	parsed, err := parser.ParseFile(token.NewFileSet(), "fzf_real_preview_windows_test.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	parsedFiles := parseWindowsContractSources(t, "fzf_real_preview_windows_test.go", "fzf_real_preview_windows_cases_test.go")
 	wanted := map[string]bool{
 		"TestRealFZFPreviewReplacementKillsWholeTree":     false,
 		"TestRealFZFResizeUpdatesPreviewDimensions":       false,
 		"TestRealFZFPreviewTerminalFailuresKillWholeTree": false,
 	}
-	for _, declaration := range parsed.Decls {
-		function, ok := declaration.(*ast.FuncDecl)
-		if !ok || function.Recv != nil {
-			continue
-		}
-		if _, exists := wanted[function.Name.Name]; !exists {
-			continue
-		}
-		ast.Inspect(function.Body, func(node ast.Node) bool {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
+	for _, parsed := range parsedFiles {
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv != nil {
+				continue
+			}
+			if _, exists := wanted[function.Name.Name]; !exists {
+				continue
+			}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, selected := call.Fun.(*ast.SelectorExpr)
+				if selected && selector.Sel.Name == "AssertProcessTopology" {
+					wanted[function.Name.Name] = true
+				}
 				return true
-			}
-			selector, selected := call.Fun.(*ast.SelectorExpr)
-			if selected && selector.Sel.Name == "AssertProcessTopology" {
-				wanted[function.Name.Name] = true
-			}
-			return true
-		})
+			})
+		}
 	}
 	for name, found := range wanted {
 		if !found {
 			t.Errorf("%s lacks AssertProcessTopology", name)
 		}
 	}
-	raw, err := os.ReadFile("fzf_real_preview_windows_test.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, forbidden := range []string{"_ = term.Send", "_ = term.Resize", "_ = f.controller.release", "_ = term.Wait"} {
-		if strings.Contains(string(raw), forbidden) {
+		if strings.Contains(readWindowsContractSources(t, "fzf_real_preview_windows_test.go", "fzf_real_preview_windows_cases_test.go"), forbidden) {
 			t.Errorf("Windows preview source ignores operation error with %q", forbidden)
 		}
 	}
@@ -145,11 +153,8 @@ func TestWindowsPreviewTestsRequireTopologyAndCheckOperations(t *testing.T) {
 
 func TestResizeAndFinishedEvidenceSourceOrderingMatchesWindows(t *testing.T) {
 	for _, path := range []string{"fzf_real_preview_linux_test.go", "fzf_real_preview_windows_test.go"} {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		source := string(raw)
+		casePath := strings.TrimSuffix(path, "_test.go") + "_cases_test.go"
+		source := readWindowsContractSources(t, path, casePath)
 		start := strings.Index(source, "func TestRealFZFResizeUpdatesPreviewDimensions")
 		if start < 0 {
 			t.Fatalf("%s lacks resize test boundary", path)

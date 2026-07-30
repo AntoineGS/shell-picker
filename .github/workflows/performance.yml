@@ -21,7 +21,11 @@ jobs:
       - run: make performance-dedicated
         env:
           PERFORMANCE_SCENARIOS: cached-navigation,fresh-navigation,fresh-exact-parity-navigation
-      - run: test -f host-baseline.json && test -f performance.json || test "baseline-required" = baseline-required
+      - name: Validate performance JSON outputs
+        shell: bash
+        run: grep -Eq '"status"[[:space:]]*:[[:space:]]*"(qualified|baseline-required)"' performance.json && test -s host-baseline.json && test -s performance.json && go test ./integration -run TestPerformanceJSONOutputs -count=1
+        env:
+          SHELL_PICKER_PERFORMANCE_OUTPUTS: 1
       - uses: actions/upload-artifact@v4
         with:
           name: performance-${{ runner.os }}

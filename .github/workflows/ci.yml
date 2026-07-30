@@ -23,9 +23,12 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with: {go-version: '1.26.5'}
+      - if: matrix.os == 'windows-2025'
+        run: cargo install nu --locked --version 0.113.1
       - run: go test ./... -count=1
       - run: go vet ./...
       - run: go list -m all
+      - run: go test ./integration -run TestModuleGraphExact -count=1
 
   race-linux:
     runs-on: ubuntu-24.04
@@ -75,7 +78,7 @@ jobs:
           (cd .ci/fzf && sha256sum -c checksums.txt --ignore-missing)
           if [ "$RUNNER_OS" = Linux ]; then tar -xzf .ci/fzf/$archive -C .ci/fzf; else unzip -o .ci/fzf/$archive -d .ci/fzf; fi
       - shell: bash
-        run: FZF_PATH="$PWD/.ci/fzf/fzf${{ runner.os == 'Windows' && '.exe' || '' }}" go test ./internal/fzf -run TestInstalledFZFCheckVersion -count=1
+        run: SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf${{ runner.os == 'Windows' && '.exe' || '' }}" go test ./internal/fzf -run TestInstalledFZFCheckVersion -count=1
 
   stable-performance:
     strategy:
@@ -91,10 +94,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - {goos: linux, goarch: amd64, GOOS: linux, GOARCH: amd64, output: bin/shell-picker_linux_amd64}
-          - {goos: linux, goarch: arm64, GOOS: linux, GOARCH: arm64, output: bin/shell-picker_linux_arm64}
-          - {goos: windows, goarch: amd64, GOOS: windows, GOARCH: amd64, output: bin/shell-picker_windows_amd64.exe}
-          - {goos: windows, goarch: arm64, GOOS: windows, GOARCH: arm64, output: bin/shell-picker_windows_arm64.exe}
+          - {goos: linux, goarch: amd64, GOOS: linux, GOARCH: amd64, output: bin/shell-picker_linux_amd64, artifact: shell-picker-linux-amd64}
+          - {goos: linux, goarch: arm64, GOOS: linux, GOARCH: arm64, output: bin/shell-picker_linux_arm64, artifact: shell-picker-linux-arm64}
+          - {goos: windows, goarch: amd64, GOOS: windows, GOARCH: amd64, output: bin/shell-picker_windows_amd64.exe, artifact: shell-picker-windows-amd64}
+          - {goos: windows, goarch: arm64, GOOS: windows, GOARCH: arm64, output: bin/shell-picker_windows_arm64.exe, artifact: shell-picker-windows-arm64}
     runs-on: ubuntu-24.04
     env: {GOOS: '${{ matrix.GOOS }}', GOARCH: '${{ matrix.GOARCH }}'}
     steps:
@@ -104,9 +107,7 @@ jobs:
       - run: go test -exec=true ./...
       - run: mkdir -p bin && CGO_ENABLED=0 go build -trimpath -o "${{ matrix.output }}" ./cmd/shell-picker
       - uses: actions/upload-artifact@v4
-        with: {name: '${{ matrix.output }}', path: '${{ matrix.output }}'}
-      - uses: actions/download-artifact@v4
-        if: false
+        with: {name: '${{ matrix.artifact }}', path: '${{ matrix.output }}'}
 
   required:
     if: ${{ always() }}
