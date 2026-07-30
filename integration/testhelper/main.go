@@ -13,20 +13,25 @@ import (
 
 type message struct {
 	Event   string `json:"event"`
+	Nonce   string `json:"nonce,omitempty"`
 	PID     int    `json:"pid"`
 	Columns int    `json:"columns,omitempty"`
 	Lines   int    `json:"lines,omitempty"`
 }
 
 func main() {
-	if len(os.Args) < 3 {
+	if len(os.Args) < 4 {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
 	case "renderer":
-		os.Exit(runRenderer(os.Args[2]))
+		os.Exit(runRenderer(os.Args[2], os.Args[3], false))
+	case "overflow-renderer":
+		os.Exit(runRenderer(os.Args[2], os.Args[3], true))
 	case "grandchild":
-		os.Exit(runGrandchild(os.Args[2]))
+		os.Exit(runGrandchild(os.Args[2], os.Args[3]))
+	case "fail":
+		os.Exit(1)
 	case "sentinel":
 		if err := os.WriteFile(os.Args[2], []byte("invoked"), 0o600); err != nil {
 			os.Exit(30)
@@ -37,7 +42,7 @@ func main() {
 	}
 }
 
-func runRenderer(address string) int {
+func runRenderer(address, nonce string, overflow bool) int {
 	connection, err := net.Dial("tcp4", address)
 	if err != nil {
 		return 10
@@ -54,13 +59,21 @@ func runRenderer(address string) int {
 			}
 		}
 	}
-	if err := writeFrame(connection, message{Event: "renderer-started", PID: os.Getpid(), Columns: columns, Lines: lines}); err != nil {
+	if err := writeFrame(connection, message{Event: "renderer-started", Nonce: nonce, PID: os.Getpid(), Columns: columns, Lines: lines}); err != nil {
 		return 11
 	}
-	grandchild := exec.Command(os.Args[0], "grandchild", address)
+	grandchild := exec.Command(os.Args[0], "grandchild", address, nonce)
 	grandchild.Stdin, grandchild.Stdout, grandchild.Stderr = nil, io.Discard, io.Discard
 	if err := grandchild.Start(); err != nil {
 		return 12
+	}
+	if overflow {
+		chunk := make([]byte, 64<<10)
+		for range 80 {
+			if _, err := os.Stdout.Write(chunk); err != nil {
+				break
+			}
+		}
 	}
 	var command message
 	if err := readFrame(connection, &command); err != nil || command.Event != "release" {
@@ -70,17 +83,17 @@ func runRenderer(address string) int {
 	}
 	_ = grandchild.Process.Kill()
 	_ = grandchild.Wait()
-	_ = writeFrame(connection, message{Event: "renderer-exit", PID: os.Getpid()})
+	_ = writeFrame(connection, message{Event: "renderer-exit", Nonce: nonce, PID: os.Getpid()})
 	return 0
 }
 
-func runGrandchild(address string) int {
+func runGrandchild(address, nonce string) int {
 	connection, err := net.Dial("tcp4", address)
 	if err != nil {
 		return 20
 	}
 	defer connection.Close()
-	if err := writeFrame(connection, message{Event: "grandchild-started", PID: os.Getpid()}); err != nil {
+	if err := writeFrame(connection, message{Event: "grandchild-started", Nonce: nonce, PID: os.Getpid()}); err != nil {
 		return 21
 	}
 	var command message

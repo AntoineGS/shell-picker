@@ -224,6 +224,59 @@ func TestPickerTraceWriteFailureReportsOnceThenRemainsSecondary(t *testing.T) {
 	}
 }
 
+func TestPickerTraceFinishKeepsOutcomeWhenCloseFails(t *testing.T) {
+	var diagnostic bytes.Buffer
+	sink := &failingTraceSink{closeErr: errors.New("close failed")}
+	trace := &pickerTrace{trace: integrationpkg.NewTrace(sink, [16]byte{1}), sink: sink, diagnostic: &diagnostic}
+	want := protocol.Outcome{Status: protocol.StatusAccepted, Paths: [][]byte{[]byte("accepted")}}
+
+	got, err := trace.finish(want, nil)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("finish outcome=%+v err=%v want=%+v", got, err, want)
+	}
+	if diagnostic.String() != "shell-picker: trace disabled\n" {
+		t.Fatalf("diagnostic=%q", diagnostic.String())
+	}
+	if !bytes.Contains(sink.Bytes(), []byte(`"event":"session.close"`)) ||
+		!bytes.Contains(sink.Bytes(), []byte(`"outcome":"accepted"`)) {
+		t.Fatalf("trace=%s", sink.Bytes())
+	}
+}
+
+func TestPickerTraceFinishKeepsPrimaryErrorWhenSessionCloseWriteFails(t *testing.T) {
+	var diagnostic bytes.Buffer
+	sink := &failingTraceSink{writeErr: errors.New("write failed")}
+	trace := &pickerTrace{trace: integrationpkg.NewTrace(sink, [16]byte{1}), sink: sink, diagnostic: &diagnostic}
+	primary := errors.New("picker failed")
+
+	got, err := trace.finish(protocol.Outcome{}, primary)
+	if !reflect.DeepEqual(got, protocol.Outcome{}) || !errors.Is(err, primary) {
+		t.Fatalf("finish outcome=%+v err=%v", got, err)
+	}
+	if sink.closeCalls != 1 || diagnostic.String() != "shell-picker: trace disabled\n" {
+		t.Fatalf("close calls=%d diagnostic=%q", sink.closeCalls, diagnostic.String())
+	}
+}
+
+type failingTraceSink struct {
+	bytes.Buffer
+	writeErr   error
+	closeErr   error
+	closeCalls int
+}
+
+func (sink *failingTraceSink) Write(data []byte) (int, error) {
+	if sink.writeErr != nil {
+		return 0, sink.writeErr
+	}
+	return sink.Buffer.Write(data)
+}
+
+func (sink *failingTraceSink) Close() error {
+	sink.closeCalls++
+	return sink.closeErr
+}
+
 type appFailingTraceWriter struct{ calls int }
 
 func (writer *appFailingTraceWriter) Write([]byte) (int, error) {

@@ -3,11 +3,11 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -48,6 +48,8 @@ type terminalSession interface {
 	Send([]byte) error
 	Resize(columns, lines uint16) error
 	WaitBarrier(context.Context, barrier) traceEvent
+	TraceEvents() []traceEvent
+	AssertProcessTopology(*testing.T)
 	PID() int
 	Output() []byte
 	CloseInput() error
@@ -143,8 +145,9 @@ func (fixture *realFZFFixture) AssertAccepted(t *testing.T, term terminalSession
 		want = append(want, path...)
 		want = append(want, 0)
 	}
-	if !bytes.HasSuffix(term.Output(), want) {
-		t.Fatalf("picker output does not end with %q: %q", want, term.Output())
+	output := term.Output()
+	if bytes.Count(output, []byte{0}) != len(paths) || !bytes.HasSuffix(output, want) {
+		t.Fatalf("picker output does not contain exactly %d accepted NUL records ending with %q: %q", len(paths), want, output)
 	}
 }
 
@@ -168,6 +171,7 @@ func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	term.AssertProcessTopology(t)
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
 	if err := term.Send([]byte("created-dir")); err != nil {
@@ -206,6 +210,7 @@ func TestRealFZFInteractiveAbort(t *testing.T) {
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	term.AssertProcessTopology(t)
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	if err := term.Send([]byte("q")); err != nil {
 		t.Fatal(err)
@@ -253,7 +258,7 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		echo += ".exe"
 	}
-	ldflags := "-X=main.helperPath=" + helper + " -X=main.controller=" + sentinel + " -X=main.subcommand=sentinel"
+	ldflags := "-X=main.helperPath=" + helper + " -X=main.controller=" + sentinel + " -X=main.nonce=sentinel -X=main.subcommand=sentinel"
 	build = exec.Command("go", "build", "-o", echo, "-ldflags", ldflags, "./integration/testhelper/delegate")
 	build.Dir, build.Env = repository, append(os.Environ(), "TMPDIR="+os.Getenv("TMPDIR"))
 	if output, err := build.CombinedOutput(); err != nil {
@@ -263,6 +268,7 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	term := fixture.start(t, protocol.PickerCP, []string{"PATH=" + path})
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	term.AssertProcessTopology(t)
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
 	if err := term.Send([]byte("created")); err != nil {
@@ -289,12 +295,19 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	if _, err := os.Stat(sentinel); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("action injection sentinel exists: %v", err)
 	}
-	for _, line := range bytes.Split(term.Output(), []byte{'\n'}) {
-		var event traceEvent
-		if json.Unmarshal(line, &event) == nil && event.Event == "callback.event" &&
-			!strings.Contains(" es ma mi fw up sl hm en ", " "+event.Outcome+" ") {
-			t.Fatalf("untyped callback opcode in trace: %+v", event)
+	var callbacks []string
+	for _, event := range term.TraceEvents() {
+		if event.Event == "callback.event" {
+			callbacks = append(callbacks, event.Outcome)
 		}
+	}
+	wantCallbacks := []string{"es", "ma", "en", "up", "mi", "en"}
+	if !reflect.DeepEqual(callbacks, wantCallbacks) {
+		t.Fatalf("callback opcodes=%q want %q; events=%+v", callbacks, wantCallbacks, term.TraceEvents())
+	}
+	if output := strings.ToLower(string(term.Output())); strings.Contains(output, "callback usage") ||
+		strings.Contains(output, "parse callback") || strings.Contains(output, "invalid callback") {
+		t.Fatalf("callback parse/usage error: %q", term.Output())
 	}
 }
 
@@ -303,6 +316,7 @@ func TestRealFZFCPAcceptanceOrder(t *testing.T) {
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
+	term.AssertProcessTopology(t)
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	for count := 2; count <= 4; count++ {
 		if err := term.Send(keyDown); err != nil {

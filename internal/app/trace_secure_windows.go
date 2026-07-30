@@ -2,6 +2,11 @@
 
 package app
 
-import "os"
+import (
+	"io"
+	"os"
+)
 
-func secureTraceFile(*os.File) error { return nil }
+func openTraceSink(path string) (io.WriteCloser, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+}

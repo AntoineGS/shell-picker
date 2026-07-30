@@ -4,14 +4,14 @@ import (
 	"os"
 )
 
-var helperPath, controller string
+var helperPath, controller, nonce string
 var subcommand = "renderer"
 
 func main() {
-	if helperPath == "" || controller == "" {
+	if helperPath == "" || controller == "" || nonce == "" {
 		os.Exit(2)
 	}
-	arguments := append([]string{helperPath, subcommand, controller}, os.Args[1:]...)
+	arguments := append([]string{helperPath, subcommand, controller, nonce}, os.Args[1:]...)
 	if err := replace(helperPath, arguments, os.Environ()); err != nil {
 		os.Exit(3)
 	}

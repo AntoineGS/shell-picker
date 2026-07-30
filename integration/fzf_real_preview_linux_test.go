@@ -4,9 +4,11 @@ package integration
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -24,6 +26,7 @@ import (
 
 type controlEvent struct {
 	Event   string `json:"event"`
+	Nonce   string `json:"nonce,omitempty"`
 	PID     int    `json:"pid"`
 	Columns int    `json:"columns,omitempty"`
 	Lines   int    `json:"lines,omitempty"`
@@ -37,6 +40,7 @@ type previewController struct {
 	changed  chan struct{}
 	clients  map[int]net.Conn
 	closed   chan struct{}
+	nonce    string
 }
 
 func newPreviewController(t *testing.T) *previewController {
@@ -45,7 +49,12 @@ func newPreviewController(t *testing.T) *previewController {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rawNonce := make([]byte, 16)
+	if _, err := rand.Read(rawNonce); err != nil {
+		t.Fatal(err)
+	}
 	controller := &previewController{t: t, listener: listener, changed: make(chan struct{}), clients: make(map[int]net.Conn), closed: make(chan struct{})}
+	controller.nonce = fmt.Sprintf("%x", rawNonce)
 	go controller.accept()
 	t.Cleanup(func() { controller.close() })
 	return controller
@@ -69,6 +78,9 @@ func (controller *previewController) read(connection net.Conn) {
 	for {
 		var event controlEvent
 		if err := readControlFrame(connection, &event); err != nil {
+			return
+		}
+		if event.Nonce != controller.nonce {
 			return
 		}
 		controller.mu.Lock()
@@ -164,7 +176,7 @@ func (controller *previewController) release(pid int) error {
 	if connection == nil {
 		return errors.New("renderer connection unavailable")
 	}
-	return writeControlFrame(connection, controlEvent{Event: "release"})
+	return writeControlFrame(connection, controlEvent{Event: "release", Nonce: controller.nonce})
 }
 
 func (controller *previewController) snapshot() []controlEvent {
@@ -205,7 +217,7 @@ func newBlockingPreviewFixture(t *testing.T, fzfPath string) *blockingPreviewFix
 	}
 	buildCommand(t, repository, helper, "./integration/testhelper")
 	eza := filepath.Join(fakeBin, "eza")
-	ldflags := "-X=main.helperPath=" + helper + " -X=main.controller=" + controller.address()
+	ldflags := "-X=main.helperPath=" + helper + " -X=main.controller=" + controller.address() + " -X=main.nonce=" + controller.nonce
 	buildCommand(t, repository, eza, "-ldflags", ldflags, "./integration/testhelper/delegate")
 	return &blockingPreviewFixture{realFZFFixture: base, controller: controller, fakeBin: fakeBin, helper: helper}
 }
@@ -224,6 +236,17 @@ func buildCommand(t *testing.T, directory, output string, arguments ...string) {
 func (fixture *blockingPreviewFixture) Start(t *testing.T) terminalSession {
 	path := fixture.fakeBin + string(os.PathListSeparator) + os.Getenv("PATH")
 	return fixture.start(t, protocol.PickerCP, []string{"PATH=" + path})
+}
+
+func (fixture *blockingPreviewFixture) setRendererMode(t *testing.T, mode string) {
+	t.Helper()
+	repository, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags := "-X=main.helperPath=" + fixture.helper + " -X=main.controller=" + fixture.controller.address() +
+		" -X=main.nonce=" + fixture.controller.nonce + " -X=main.subcommand=" + mode
+	buildCommand(t, repository, filepath.Join(fixture.fakeBin, "eza"), "-ldflags", flags, "./integration/testhelper/delegate")
 }
 
 type observedPreviewTree struct {
@@ -399,6 +422,7 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 	term := fixture.Start(t)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	term.AssertProcessTopology(t)
 	first := fixture.waitTree(t, 1)
 	defer first.close()
 	assertRealSessionProcessTree(t, fixture, term, first)
@@ -421,7 +445,31 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 	if err := waitTreeExit(ctx, first); err != nil {
 		t.Fatalf("old callback/renderer/grandchild did not exit: %v", err)
 	}
+	for _, event := range fixture.controller.snapshot() {
+		if event.Event == "renderer-exit" && event.PID == first.RendererPID {
+			t.Fatalf("killed renderer claimed normal completion: %+v", event)
+		}
+	}
+	for _, event := range term.TraceEvents() {
+		if event.Event == "preview.exit" {
+			t.Fatalf("killed callback claimed finished telemetry: %+v", event)
+		}
+	}
 	if err := fixture.controller.release(second.RendererPID); err != nil {
+		t.Fatal(err)
+	}
+	finished := fixture.controller.wait(testContext(t), "renderer-exit", 1)
+	if finished.PID != second.RendererPID {
+		t.Fatalf("renderer exit=%+v want pid %d", finished, second.RendererPID)
+	}
+	if err := waitTreeExit(testContext(t), second); err != nil {
+		t.Fatalf("released preview tree did not exit: %v", err)
+	}
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	if err := term.Send([]byte("q")); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -431,14 +479,14 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	if err := os.Remove(filepath.Join(fixture.fakeBin, "eza")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("/usr/bin/false", filepath.Join(fixture.fakeBin, "eza")); err != nil {
-		t.Fatal(err)
-	}
-	ldflags := "-X=main.helperPath=" + fixture.helper + " -X=main.controller=" + fixture.controller.address()
 	repository, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
+	failFlags := "-X=main.helperPath=" + fixture.helper + " -X=main.controller=" + fixture.controller.address() +
+		" -X=main.nonce=" + fixture.controller.nonce + " -X=main.subcommand=fail"
+	buildCommand(t, repository, filepath.Join(fixture.fakeBin, "eza"), "-ldflags", failFlags, "./integration/testhelper/delegate")
+	ldflags := "-X=main.helperPath=" + fixture.helper + " -X=main.controller=" + fixture.controller.address() + " -X=main.nonce=" + fixture.controller.nonce
 	buildCommand(t, repository, filepath.Join(fixture.fakeBin, "chafa"), "-ldflags", ldflags, "./integration/testhelper/delegate")
 	for _, name := range []string{"image-a.png", "image-b.png", "image-c.png"} {
 		if err := os.WriteFile(filepath.Join(fixture.cwd, name), []byte("\x89PNG\r\n\x1a\nfixture"), 0o600); err != nil {
@@ -448,6 +496,7 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	term := fixture.Start(t)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	term.AssertProcessTopology(t)
 	if err := term.Send([]byte("image")); err != nil {
 		t.Fatal(err)
 	}
@@ -475,5 +524,80 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	}
 	if err := fixture.controller.release(third.RendererPID); err != nil {
 		t.Fatal(err)
+	}
+	finished := fixture.controller.wait(testContext(t), "renderer-exit", 1)
+	if finished.PID != third.RendererPID {
+		t.Fatalf("renderer exit=%+v want pid %d", finished, third.RendererPID)
+	}
+	for _, tree := range []observedPreviewTree{first, second, third} {
+		if err := waitTreeExit(testContext(t), tree); err != nil {
+			t.Fatalf("preview tree %+v did not exit: %v", tree, err)
+		}
+	}
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	if err := term.Send([]byte("q")); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Wait(testContext(t)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		mode  string
+		bound time.Duration
+	}{
+		{name: "deadline", mode: "renderer", bound: 15 * time.Second},
+		{name: "output-overflow", mode: "overflow-renderer", bound: 5 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newBlockingPreviewFixture(t, requireRealFZF(t))
+			fixture.setRendererMode(t, test.mode)
+			term := fixture.Start(t)
+			defer term.Close()
+			term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+			term.AssertProcessTopology(t)
+			tree := fixture.waitTree(t, 1)
+			defer tree.close()
+			ctx, cancel := context.WithTimeout(context.Background(), test.bound)
+			defer cancel()
+			if err := waitTreeExit(ctx, tree); err != nil {
+				t.Fatalf("terminal preview tree survived: %v", err)
+			}
+			controllerEvents := fixture.controller.snapshot()
+			if len(controllerEvents) != 2 || controllerEvents[0].Event != "renderer-started" ||
+				controllerEvents[1].Event != "grandchild-started" {
+				t.Fatalf("preview child budget events=%+v, want one sequential renderer and one grandchild tree", controllerEvents)
+			}
+			for _, event := range controllerEvents {
+				if event.Event == "renderer-exit" {
+					t.Fatalf("terminal renderer claimed normal completion: %+v", event)
+				}
+			}
+			dispatches := 0
+			for _, event := range term.TraceEvents() {
+				if event.Event == "preview.dispatch" {
+					dispatches++
+					if event.Renderer != "eza" {
+						t.Fatalf("native fallback or unexpected renderer: %+v", event)
+					}
+				}
+				if event.Event == "preview.exit" {
+					t.Fatalf("terminal callback claimed finished telemetry: %+v", event)
+				}
+			}
+			if dispatches != 1 {
+				t.Fatalf("preview dispatches=%d want 1; events=%+v", dispatches, term.TraceEvents())
+			}
+			sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+			if err := term.Send([]byte("q")); err != nil {
+				t.Fatal(err)
+			}
+			if err := term.Wait(testContext(t)); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

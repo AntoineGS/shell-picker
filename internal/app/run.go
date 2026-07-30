@@ -60,14 +60,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if trace != nil {
 		trace.event(integrationpkg.TraceEvent{Name: "session.start", Outcome: string(options.Picker)})
 		defer func() {
-			status := "error"
-			if err == nil {
-				status = string(outcome.Status)
-			}
-			trace.event(integrationpkg.TraceEvent{Name: "session.close", Outcome: status})
-			if closeErr := trace.close(); closeErr != nil && err == nil {
-				outcome, err = protocol.Outcome{}, closeErr
-			}
+			outcome, err = trace.finish(outcome, err)
 		}()
 	}
 
