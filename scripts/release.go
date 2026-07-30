@@ -25,6 +25,10 @@ import (
 
 const maxEntrySize = 32 << 20
 
+// maxArchiveSize bounds checksum and rebuild I/O while allowing four release
+// binaries, documentation, and archive metadata with substantial headroom.
+const maxArchiveSize int64 = 128 << 20
+
 type target struct{ goos, goarch, suffix string }
 
 var targets = []target{
@@ -261,11 +265,7 @@ func writeChecksumsTo(directory string) {
 		}
 	}()
 	for _, path := range entries {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			fatal(err.Error())
-		}
-		sum := sha256.Sum256(data)
+		sum := archiveDigest(path)
 		if _, err := fmt.Fprintf(file, "%s  %s\n", hex.EncodeToString(sum[:]), filepath.Base(path)); err != nil {
 			fatal(err.Error())
 		}
@@ -366,15 +366,7 @@ func check(version string) {
 	for _, path := range append(expectedArchivePaths(version, temporary), filepath.Join(temporary, "checksums.txt")) {
 		originalName := filepath.Base(path)
 		original := filepath.Join("dist", originalName)
-		want, err := os.ReadFile(original)
-		if err != nil {
-			fatal(err.Error())
-		}
-		got, err := os.ReadFile(path)
-		if err != nil {
-			fatal(err.Error())
-		}
-		if !bytes.Equal(want, got) {
+		if !compareRegularFiles(original, path) {
 			fatal(fmt.Sprintf("rebuild differs for %s", originalName))
 		}
 	}
@@ -442,29 +434,106 @@ func mustArchivePaths(directory string) []string {
 }
 
 func verifyChecksumsAt(directory string, archives []string) {
-	data, err := os.ReadFile(filepath.Join(directory, "checksums.txt"))
+	checksumPath := filepath.Join(directory, "checksums.txt")
+	info, err := os.Stat(checksumPath)
 	if err != nil {
 		fatal(err.Error())
 	}
-	want := strings.TrimSpace(string(data))
-	gotByName := make(map[string]string, len(archives))
+	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > 4096 {
+		fatal("invalid checksums.txt size or file type")
+	}
+	data, err := os.ReadFile(checksumPath)
+	if err != nil {
+		fatal(err.Error())
+	}
+	var expected bytes.Buffer
 	for _, path := range archives {
-		contents, err := os.ReadFile(path)
-		if err != nil {
+		sum := archiveDigest(path)
+		if _, err := fmt.Fprintf(&expected, "%s  %s\n", hex.EncodeToString(sum[:]), filepath.Base(path)); err != nil {
 			fatal(err.Error())
 		}
-		sum := sha256.Sum256(contents)
-		gotByName[filepath.Base(path)] = fmt.Sprintf("%s  %s", hex.EncodeToString(sum[:]), filepath.Base(path))
 	}
-	var got []string
-	for _, path := range archives {
-		got = append(got, gotByName[filepath.Base(path)])
-	}
-	sort.Slice(got, func(i, j int) bool {
-		return strings.TrimPrefix(got[i], strings.SplitN(got[i], "  ", 2)[0]+"  ") < strings.TrimPrefix(got[j], strings.SplitN(got[j], "  ", 2)[0]+"  ")
-	})
-	if strings.Join(got, "\n") != want {
+	if !bytes.Equal(data, expected.Bytes()) {
 		fatal("checksums.txt does not match archives")
+	}
+}
+
+func archiveDigest(path string) [32]byte {
+	info, err := os.Stat(path)
+	if err != nil {
+		fatal(err.Error())
+	}
+	if !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxArchiveSize {
+		fatal(fmt.Sprintf("archive exceeds %d-byte release limit: %s", maxArchiveSize, path))
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			fatal(err.Error())
+		}
+	}()
+	hash := sha256.New()
+	count, err := io.CopyN(hash, file, maxArchiveSize+1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		fatal(err.Error())
+	}
+	if count > maxArchiveSize {
+		fatal(fmt.Sprintf("archive exceeds %d-byte release limit: %s", maxArchiveSize, path))
+	}
+	var sum [32]byte
+	copy(sum[:], hash.Sum(nil))
+	return sum
+}
+
+func compareRegularFiles(left, right string) bool {
+	leftInfo, err := os.Stat(left)
+	if err != nil {
+		fatal(err.Error())
+	}
+	rightInfo, err := os.Stat(right)
+	if err != nil {
+		fatal(err.Error())
+	}
+	if !leftInfo.Mode().IsRegular() || !rightInfo.Mode().IsRegular() || leftInfo.Size() != rightInfo.Size() || leftInfo.Size() > maxArchiveSize {
+		return false
+	}
+	leftFile, err := os.Open(left)
+	if err != nil {
+		fatal(err.Error())
+	}
+	rightFile, err := os.Open(right)
+	if err != nil {
+		fatal(err.Error())
+	}
+	defer func() {
+		if err := leftFile.Close(); err != nil {
+			fatal(err.Error())
+		}
+	}()
+	defer func() {
+		if err := rightFile.Close(); err != nil {
+			fatal(err.Error())
+		}
+	}()
+	leftBuffer, rightBuffer := make([]byte, 32*1024), make([]byte, 32*1024)
+	for {
+		leftCount, leftErr := leftFile.Read(leftBuffer)
+		rightCount, rightErr := rightFile.Read(rightBuffer)
+		if leftCount != rightCount || !bytes.Equal(leftBuffer[:leftCount], rightBuffer[:rightCount]) {
+			return false
+		}
+		if errors.Is(leftErr, io.EOF) || errors.Is(rightErr, io.EOF) {
+			return leftErr == io.EOF && rightErr == io.EOF
+		}
+		if leftErr != nil {
+			fatal(leftErr.Error())
+		}
+		if rightErr != nil {
+			fatal(rightErr.Error())
+		}
 	}
 }
 
