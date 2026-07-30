@@ -14,11 +14,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
+	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
 )
@@ -155,14 +158,77 @@ func TestPickerCLIParsesDefaultsOverridesAndExplicitZero(t *testing.T) {
 		t.Fatalf("defaults=%+v", defaults)
 	}
 	overrides, err := parsePickerArgs([]string{"cp", "--cwd", "/work", "--home", "/home/u", "--output", "nuon",
-		"--fzf", "/bin/fzf", "--zoxide-policy", "fresh", "--zoxide-timeout", "0"}, "/bin/shell-picker")
+		"--fzf", "/bin/fzf", "--zoxide-policy", "fresh", "--zoxide-timeout", "0", "--trace", "/tmp/session.jsonl"}, "/bin/shell-picker")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if overrides.Picker != protocol.PickerCP || overrides.Output != protocol.OutputNUON || overrides.FZFPath != "/bin/fzf" ||
-		overrides.ZoxidePolicy != candidate.ZoxideFresh || overrides.ZoxideTimeout != 0 {
+		overrides.ZoxidePolicy != candidate.ZoxideFresh || overrides.ZoxideTimeout != 0 || overrides.TracePath != "/tmp/session.jsonl" {
 		t.Fatalf("overrides=%+v", overrides)
 	}
+}
+
+func TestPickerTraceCreatesPrivateFileAndRecordsLifecycle(t *testing.T) {
+	fixture := newPickerFixture(t, protocol.PickerCP)
+	fixture.options.TracePath = filepath.Join(t.TempDir(), "picker.trace.jsonl")
+	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
+		for _, value := range append(append([]string(nil), config.Environment...), config.Options...) {
+			if strings.Contains(value, fixture.options.TracePath) {
+				t.Fatalf("trace path inherited by fzf/callback: %q", value)
+			}
+		}
+		config.Runner.Observe(process.ProcessEvent{Phase: "start", PID: 42, Path: config.FZFPath})
+		return fzf.Result{Aborted: true, ExitCode: 130}, nil
+	}
+	if _, err := RunPicker(context.Background(), fixture.options, fixture.dependencies); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(fixture.options.TracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("trace mode=%#o", info.Mode().Perm())
+	}
+	raw, err := os.ReadFile(fixture.options.TracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var names []string
+	for decoder.More() {
+		var event integrationpkg.TraceRecord
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, event.Event)
+	}
+	want := []string{"session.start", "generation.publish", "fzf.start", "fzf.exit", "session.close"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("trace events=%q want %q; raw=%s", names, want, raw)
+	}
+	if bytes.Contains(raw, []byte(fixture.cwd)) || bytes.Contains(raw, []byte("SHELL_PICKER_TOKEN")) ||
+		bytes.Contains(raw, []byte("query")) || bytes.Contains(raw, []byte("record")) {
+		t.Fatalf("trace leaked sensitive value: %s", raw)
+	}
+}
+
+func TestPickerTraceWriteFailureReportsOnceThenRemainsSecondary(t *testing.T) {
+	var diagnostic bytes.Buffer
+	writer := &appFailingTraceWriter{}
+	sink := &pickerTrace{trace: integrationpkg.NewTrace(writer, [16]byte{1}), diagnostic: &diagnostic}
+	sink.event(integrationpkg.TraceEvent{Name: "session.start", Outcome: "cp"})
+	sink.event(integrationpkg.TraceEvent{Name: "session.close", Outcome: "error"})
+	if writer.calls != 1 || diagnostic.String() != "shell-picker: trace disabled\n" {
+		t.Fatalf("calls=%d diagnostic=%q", writer.calls, diagnostic.String())
+	}
+}
+
+type appFailingTraceWriter struct{ calls int }
+
+func (writer *appFailingTraceWriter) Write([]byte) (int, error) {
+	writer.calls++
+	return 0, errors.New("fixture write failure")
 }
 
 func TestPickerCLIRejectsInvalidAndDuplicateFlags(t *testing.T) {

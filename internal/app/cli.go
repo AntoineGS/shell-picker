@@ -47,7 +47,7 @@ func Main(ctx context.Context, args []string, streams Streams, build string) int
 func runPickerCLI(ctx context.Context, args []string, streams Streams, executable string, dependencies *Dependencies) int {
 	options, err := parsePickerArgs(args, executable)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "usage: shell-picker cd|cp --cwd PATH --home PATH [--output nul|nuon] [--fzf PATH] [--zoxide-policy cached|fresh] [--zoxide-timeout DURATION]")
+		fmt.Fprintln(streams.Err, "usage: shell-picker cd|cp --cwd PATH --home PATH [--output nul|nuon] [--fzf PATH] [--zoxide-policy cached|fresh] [--zoxide-timeout DURATION] [--trace FILE]")
 		return 2
 	}
 	outcome, err := RunPicker(ctx, options, *dependencies)
@@ -102,6 +102,11 @@ func parsePickerArgs(args []string, executable string) (PickerOptions, error) {
 				return PickerOptions{}, errors.New("invalid zoxide timeout")
 			}
 			options.ZoxideTimeout = timeout
+		case "--trace":
+			if value == "" {
+				return PickerOptions{}, errors.New("empty trace path")
+			}
+			options.TracePath = value
 		default:
 			return PickerOptions{}, errors.New("unknown picker flag")
 		}

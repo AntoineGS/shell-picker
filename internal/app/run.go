@@ -13,6 +13,7 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/callback"
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
 	"github.com/AntoineGS/shell-picker/internal/pathutil"
 	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
@@ -29,6 +30,7 @@ type PickerOptions struct {
 	ExecutablePath string
 	ZoxidePolicy   candidate.ZoxidePolicy
 	ZoxideTimeout  time.Duration
+	TracePath      string
 }
 
 type Dependencies struct {
@@ -43,9 +45,30 @@ type Dependencies struct {
 	launchFZF func(context.Context, fzf.Config) (fzf.Result, error)
 }
 
-func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependencies) (protocol.Outcome, error) {
+func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependencies) (outcome protocol.Outcome, err error) {
 	if err := validatePickerOptions(ctx, options); err != nil {
 		return protocol.Outcome{}, err
+	}
+	var traceID [16]byte
+	if _, err := rand.Read(traceID[:]); err != nil {
+		return protocol.Outcome{}, errors.New("generate trace session ID")
+	}
+	trace, err := openPickerTrace(options.TracePath, traceID, dependencies.TTYErr)
+	if err != nil {
+		return protocol.Outcome{}, err
+	}
+	if trace != nil {
+		trace.event(integrationpkg.TraceEvent{Name: "session.start", Outcome: string(options.Picker)})
+		defer func() {
+			status := "error"
+			if err == nil {
+				status = string(outcome.Status)
+			}
+			trace.event(integrationpkg.TraceEvent{Name: "session.close", Outcome: status})
+			if closeErr := trace.close(); closeErr != nil && err == nil {
+				outcome, err = protocol.Outcome{}, closeErr
+			}
+		}()
 	}
 
 	terminal, ownedTerminal, err := pickerTerminal(dependencies.ForegroundTTY)
@@ -87,19 +110,17 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, fmt.Errorf("build initial candidates: %w", err)
 	}
+	trace.event(integrationpkg.TraceEvent{Name: "generation.publish", Generation: initial.Snapshot.Generation(),
+		CandidateCount: len(initial.Snapshot.Records()), Outcome: "ok", Path: initialState.Location.Path})
 
 	token, err := sessionipc.NewToken()
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
-	traceID := make([]byte, 16)
-	if _, err := rand.Read(traceID); err != nil {
-		return protocol.Outcome{}, errors.New("generate trace session ID")
-	}
 	metrics := &pickerMetrics{}
-	copy(metrics.traceID[:], traceID)
+	metrics.traceID = traceID
 	metrics.recordTransition(initial)
-	backend := &pickerBackend{actor: actor, metrics: metrics}
+	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace}
 	server, err := sessionipc.Listen(ctx, token, backend)
 	if err != nil {
 		return protocol.Outcome{}, err
@@ -116,13 +137,30 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if launch == nil {
 		launch = fzf.Run
 	}
+	fzfRunner := dependencies.ProcessRunner
+	processObserver := fzfRunner.Observe
+	fzfRunner.Observe = func(event process.ProcessEvent) {
+		if processObserver != nil {
+			processObserver(event)
+		}
+		if event.Phase == "start" {
+			trace.event(integrationpkg.TraceEvent{Name: "fzf.start", Outcome: "ok"})
+		}
+	}
 	result, launchErr := launch(ctx, fzf.Config{
 		Picker: options.Picker, FZFPath: options.FZFPath, ExecutablePath: options.ExecutablePath,
 		Environment: process.SanitizeEnv(dependencies.Environment, nil), CallbackAddress: server.Address(),
 		CallbackToken: token.String(), Options: fzf.Options(options.Picker, initialState.Prompt),
-		Input: frameCandidateRecords(initial.Snapshot.Records()), Runner: dependencies.ProcessRunner,
+		Input: frameCandidateRecords(initial.Snapshot.Records()), Runner: fzfRunner,
 		ForegroundTTY: terminal, TTYOut: dependencies.TTYOut, TTYErr: dependencies.TTYErr,
 	})
+	fzfOutcome := "ok"
+	if launchErr != nil {
+		fzfOutcome = "error"
+	} else if result.Aborted {
+		fzfOutcome = "aborted"
+	}
+	trace.event(integrationpkg.TraceEvent{Name: "fzf.exit", Outcome: fzfOutcome})
 	callback.SetCursor(protocol.CursorLine)
 	closeServerErr := server.Close(context.Background())
 	serverOpen = false
@@ -133,7 +171,6 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	}
 	parentCause := context.Cause(ctx)
 
-	var outcome protocol.Outcome
 	if err == nil && parentCause == nil {
 		if result.Aborted {
 			outcome = protocol.Outcome{Status: protocol.StatusAborted}
@@ -239,6 +276,7 @@ func frameCandidateRecords(records []candidate.Record) []byte {
 type pickerBackend struct {
 	actor   *session.Actor
 	metrics *pickerMetrics
+	trace   *pickerTrace
 }
 
 func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (protocol.Effect, error) {
@@ -246,9 +284,15 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 		return protocol.Effect{}, cause
 	}
 	started := time.Now()
+	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.event", Outcome: string(event.Opcode)})
 	result, err := session.Handle(ctx, backend.actor, event)
 	if err == nil {
 		backend.metrics.recordTransition(result)
+		if result.Effect.ReloadGeneration != 0 {
+			state := result.Snapshot.State()
+			backend.trace.event(integrationpkg.TraceEvent{Name: "generation.publish", Generation: result.Snapshot.Generation(),
+				CandidateCount: len(result.Snapshot.Records()), Outcome: "ok", Path: state.Location.Path})
+		}
 	}
 	backend.metrics.recordCallback(time.Since(started))
 	return result.Effect, err
@@ -261,8 +305,10 @@ func (backend *pickerBackend) LoadGeneration(ctx context.Context, generation uin
 	started := time.Now()
 	snapshot, err := backend.actor.Snapshot(ctx, generation)
 	if err != nil {
+		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: generation, Outcome: "error"})
 		return nil, err
 	}
+	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: generation, Outcome: "ok"})
 	backend.metrics.recordLoad(time.Since(started))
 	return frameCandidateRecords(snapshot.Records()), nil
 }
@@ -296,6 +342,9 @@ func (backend *pickerBackend) RecordPreview(ctx context.Context, request session
 		return cause
 	}
 	started := time.Now()
+	if request.Phase == "started" {
+		backend.trace.event(integrationpkg.TraceEvent{Name: "preview.dispatch", Renderer: request.Renderer, Outcome: "ok"})
+	}
 	if err := backend.metrics.recordPreview(request); err != nil {
 		return err
 	}

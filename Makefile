@@ -1,9 +1,13 @@
-.PHONY: fmt test check
+.PHONY: fmt test check real-fzf
 
 fmt:
-	gofmt -w cmd internal
+	gofmt -w cmd internal integration
 
 test:
 	go test ./... -count=1
 
 check: test
+
+real-fzf:
+	test -n "$(SHELL_PICKER_REAL_FZF)"
+	go test ./integration -run TestRealFZF -count=1 -v
