@@ -20,7 +20,7 @@ jobs:
         with: {go-version: 1.26.5}
       - run: make performance-dedicated
         env:
-          PERFORMANCE_SCENARIOS: cached-navigation,fresh-navigation,fresh-exact-parity-navigation
+          PERFORMANCE_SCENARIOS: navigation-local-only
       - name: Validate performance JSON outputs
         shell: bash
         run: grep -Eq '"status"[[:space:]]*:[[:space:]]*"(qualified|baseline-required)"' performance.json && test -s host-baseline.json && test -s performance.json && go test ./integration -run TestPerformanceJSONOutputs -count=1

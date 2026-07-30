@@ -271,30 +271,31 @@ func testCandidateProcessBudget(t *testing.T, policy string, picker protocol.Pic
 		if err != nil {
 			t.Fatal(err)
 		}
-		outcome := result.Metrics.ZoxideOutcome
-		if picker == protocol.PickerCD && policy == "cached" && generation > 0 {
-			outcome = "ok"
-			if result.Metrics.ZoxideOutcome != "cached" || result.Metrics.ZoxideAttempts != 0 || result.Metrics.ZoxideStarts != 0 {
-				t.Fatalf("cached generation %d metrics=%+v", generation+1, result.Metrics)
+		if generation > 0 {
+			if result.Metrics.ZoxideOutcome != "not-run" || result.Metrics.ZoxideAttempts != 0 ||
+				result.Metrics.ZoxideStarts != 0 || result.Metrics.ZoxideExits != 0 || result.Metrics.ZoxideProcesses != 0 ||
+				result.Metrics.ZoxideLive != 0 || result.Metrics.ZoxideMaxLive != 0 {
+				t.Fatalf("generation %d metrics=%+v", generation+1, result.Metrics)
 			}
+			continue
 		}
-		if outcome != wantedOutcome {
-			t.Fatalf("generation %d outcome=%q metrics=%+v", generation+1, outcome, result.Metrics)
+		if result.Metrics.ZoxideOutcome != wantedOutcome {
+			t.Fatalf("generation %d outcome=%q metrics=%+v", generation+1, result.Metrics.ZoxideOutcome, result.Metrics)
 		}
-		if picker == protocol.PickerCD && (policy == "fresh" || generation == 0) &&
-			(result.Metrics.ZoxideAttempts != 1 || result.Metrics.ZoxideStarts != 1 || result.Metrics.ZoxideMaxLive != 1) {
+		if picker == protocol.PickerCD && (result.Metrics.ZoxideAttempts != 1 || result.Metrics.ZoxideStarts != 1 ||
+			result.Metrics.ZoxideExits != 1 || result.Metrics.ZoxideProcesses != 1 || result.Metrics.ZoxideLive != 0 ||
+			result.Metrics.ZoxideMaxLive != 1) {
 			t.Fatalf("generation %d metrics=%+v", generation+1, result.Metrics)
 		}
-		if picker == protocol.PickerCP && (result.Metrics.ZoxideAttempts != 0 || result.Metrics.ZoxideStarts != 0 || result.Metrics.ZoxideMaxLive != 0) {
+		if picker == protocol.PickerCP && (result.Metrics.ZoxideAttempts != 0 || result.Metrics.ZoxideStarts != 0 ||
+			result.Metrics.ZoxideExits != 0 || result.Metrics.ZoxideProcesses != 0 || result.Metrics.ZoxideLive != 0 ||
+			result.Metrics.ZoxideMaxLive != 0) {
 			t.Fatalf("cp generation %d metrics=%+v", generation+1, result.Metrics)
 		}
 	}
 	processes := 0
 	if picker == protocol.PickerCD {
-		processes = generations
-		if policy == "cached" {
-			processes = 1
-		}
+		processes = 1
 	}
 	counts.assert(t, processes, processes, processes, min(processes, 1))
 }
@@ -334,7 +335,7 @@ func BenchmarkCandidatePerformanceScenarios(b *testing.B) {
 		{name: "cached-repeated", policy: "cached", mode: "present", picker: protocol.PickerCD,
 			generations: 3, timeout: time.Second, attempts: 1, starts: 1},
 		{name: "fresh-repeated", policy: "fresh", mode: "present", picker: protocol.PickerCD,
-			generations: 3, timeout: time.Second, attempts: 3, starts: 3},
+			generations: 3, timeout: time.Second, attempts: 1, starts: 1},
 		{name: "timeout-discard", policy: "cached", mode: "timeout", picker: protocol.PickerCD,
 			generations: 1, timeout: candidate.DefaultZoxideTimeout(), attempts: 1, starts: 1},
 		{name: "missing", policy: "cached", mode: "missing", picker: protocol.PickerCD,
@@ -388,6 +389,11 @@ func benchmarkCandidateScenario(b *testing.B, policy, mode string, picker protoc
 				Location: pathutil.Filesystem([]byte(root)), Initial: generation == 0, StatWorkers: 2})
 			if err != nil {
 				b.Fatal(err)
+			}
+			if generation > 0 && (result.Metrics.ZoxideOutcome != "not-run" || result.Metrics.ZoxideAttempts != 0 ||
+				result.Metrics.ZoxideStarts != 0 || result.Metrics.ZoxideExits != 0 || result.Metrics.ZoxideProcesses != 0 ||
+				result.Metrics.ZoxideLive != 0 || result.Metrics.ZoxideMaxLive != 0) {
+				b.Fatalf("generation %d metrics=%+v", generation+1, result.Metrics)
 			}
 			if mode == "records-10000" && len(result.Records) < 10_000 {
 				b.Fatalf("10,000-row fixture produced %d merged records", len(result.Records))

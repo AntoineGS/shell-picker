@@ -10,13 +10,12 @@ import (
 func TestBenchmarkDefaultsToExactlyFiftySamplesAndUsesNearestRank(t *testing.T) {
 	calls := 0
 	report, err := RunBenchmark(context.Background(), BenchmarkOptions{
-		Scenario: "cached-navigation",
+		Scenario: "navigation-local-only",
 		Policy:   "cached",
 		Timeout:  75 * time.Millisecond,
 		Measure: func(context.Context) (BenchmarkSample, error) {
 			calls++
-			return BenchmarkSample{Duration: time.Duration(calls) * time.Microsecond, BenchmarkCounters: BenchmarkCounters{
-				ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideMaxLive: 1, ZoxideProcesses: 1}}, nil
+			return BenchmarkSample{Duration: time.Duration(calls) * time.Microsecond}, nil
 		},
 	})
 	if err != nil {
@@ -29,10 +28,11 @@ func TestBenchmarkDefaultsToExactlyFiftySamplesAndUsesNearestRank(t *testing.T) 
 
 func TestBenchmarkRejectsCounterDriftInEverySample(t *testing.T) {
 	_, err := RunBenchmark(context.Background(), BenchmarkOptions{
-		Scenario: "cached-navigation", Samples: 2, Policy: "cached",
-		Expected: &BenchmarkCounters{ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideMaxLive: 1, ZoxideProcesses: 1},
+		Scenario: "navigation-local-only", Samples: 2, Policy: "cached",
+		Expected: &BenchmarkCounters{},
 		Measure: func(context.Context) (BenchmarkSample, error) {
-			return BenchmarkSample{Duration: time.Microsecond, BenchmarkCounters: BenchmarkCounters{ZoxideAttempts: 1}}, nil
+			return BenchmarkSample{Duration: time.Microsecond, BenchmarkCounters: BenchmarkCounters{
+				ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideMaxLive: 1, ZoxideProcesses: 1}}, nil
 		},
 	})
 	if !errors.Is(err, ErrBenchmarkCounters) {
@@ -43,10 +43,11 @@ func TestBenchmarkRejectsCounterDriftInEverySample(t *testing.T) {
 func TestBenchmarkEnforcesExplicitAllZeroCounters(t *testing.T) {
 	expected := BenchmarkCounters{}
 	_, err := RunBenchmark(context.Background(), BenchmarkOptions{
-		Scenario: "cached-navigation", Samples: 1, Policy: "cached", Expected: &expected,
+		Scenario: "navigation-local-only", Samples: 1, Policy: "cached", Expected: &expected,
 		Measure: func(context.Context) (BenchmarkSample, error) {
 			return BenchmarkSample{Duration: time.Microsecond,
-				BenchmarkCounters: BenchmarkCounters{ZoxideAttempts: 1}}, nil
+				BenchmarkCounters: BenchmarkCounters{
+					ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideMaxLive: 1, ZoxideProcesses: 1}}, nil
 		},
 	})
 	if !errors.Is(err, ErrBenchmarkCounters) {
@@ -57,7 +58,10 @@ func TestBenchmarkEnforcesExplicitAllZeroCounters(t *testing.T) {
 func TestBenchmarkRejectsUnboundedScenarioAndPolicyEnums(t *testing.T) {
 	for _, options := range []BenchmarkOptions{
 		{Scenario: "../../token-query-record", Measure: func(context.Context) (BenchmarkSample, error) { return BenchmarkSample{}, nil }},
-		{Scenario: "cached-navigation", Policy: "attacker-controlled", Measure: func(context.Context) (BenchmarkSample, error) { return BenchmarkSample{}, nil }},
+		{Scenario: "navigation-local-only", Policy: "attacker-controlled", Measure: func(context.Context) (BenchmarkSample, error) { return BenchmarkSample{}, nil }},
+		{Scenario: "cached-navigation", Measure: func(context.Context) (BenchmarkSample, error) { return BenchmarkSample{}, nil }},
+		{Scenario: "fresh-navigation", Measure: func(context.Context) (BenchmarkSample, error) { return BenchmarkSample{}, nil }},
+		{Scenario: "fresh-exact-parity-navigation", Measure: func(context.Context) (BenchmarkSample, error) { return BenchmarkSample{}, nil }},
 	} {
 		if _, err := RunBenchmark(context.Background(), options); err == nil {
 			t.Fatalf("invalid options accepted: %+v", options)

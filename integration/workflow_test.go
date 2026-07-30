@@ -79,7 +79,8 @@ func TestRealFZFWorkflowContract(t *testing.T) {
 func TestPerformanceWorkflowContract(t *testing.T) {
 	text := readWorkflow(t, "performance.yml")
 	requireAll(t, text, "workflow_dispatch", "self-hosted", "shell-picker-perf", "SHELL_PICKER_DEDICATED_PERF: 1",
-		"cached-navigation", "fresh-navigation", "fresh-exact-parity-navigation", "baseline-required")
+		"navigation-local-only", "baseline-required")
+	rejectAll(t, text, "cached-navigation", "fresh-navigation", "fresh-exact-parity-navigation")
 	if strings.Contains(text, "pull_request:") || strings.Contains(text, "push:") || strings.Contains(text, "ubuntu-24.04") {
 		t.Fatal("performance workflow has an unsupported trigger or runner")
 	}

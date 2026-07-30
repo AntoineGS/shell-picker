@@ -47,14 +47,28 @@ func TestDedicatedHarnessDefaultsAndValidation(t *testing.T) {
 func TestDedicatedTraceCountersRequireMeasuredExitAndNoLiveRemainder(t *testing.T) {
 	valid := []traceEvent{{Event: "generation.publish", ZoxideAttempts: 1, ZoxideStarts: 1,
 		ZoxideExits: 1, ZoxideProcesses: 1, ZoxideLive: 0, ZoxideMaxLive: 1}}
-	counters, err := traceBenchmarkCounters(valid)
+	counters, err := traceBenchmarkCounters(valid, 0)
 	if err != nil || counters.ZoxideExits != 1 || counters.ZoxideProcesses != 1 {
 		t.Fatalf("valid counters=%+v err=%v", counters, err)
 	}
 	mutated := []traceEvent{{Event: "generation.publish", ZoxideAttempts: 1, ZoxideStarts: 1,
 		ZoxideExits: 0, ZoxideProcesses: 1, ZoxideLive: 1, ZoxideMaxLive: 1}}
-	if _, err := traceBenchmarkCounters(mutated); err == nil {
+	if _, err := traceBenchmarkCounters(mutated, 0); err == nil {
 		t.Fatal("missing measured exit and live remainder accepted")
+	}
+}
+
+func TestDedicatedNavigationCountersUseMeasuredGeneration(t *testing.T) {
+	events := []traceEvent{{Event: "generation.publish", Generation: 1, ZoxideOutcome: "ok", ZoxideAttempts: 1,
+		ZoxideStarts: 1, ZoxideExits: 1, ZoxideProcesses: 1, ZoxideMaxLive: 1},
+		{Event: "generation.publish", Generation: 2, ZoxideOutcome: "not-run"}}
+	counters, err := traceBenchmarkCounters(events, 2)
+	if err != nil || counters != (integrationpkg.BenchmarkCounters{}) {
+		t.Fatalf("navigation counters=%+v err=%v", counters, err)
+	}
+	events[1].ZoxideOutcome = "ok"
+	if _, err := traceBenchmarkCounters(events, 2); err == nil {
+		t.Fatal("measured navigation generation without not-run outcome accepted")
 	}
 }
 
@@ -119,6 +133,7 @@ type dedicatedTargetOutput struct {
 type dedicatedScenario struct {
 	name, policy, zoxideMode, action string
 	timeout                          time.Duration
+	generation                       uint64
 	expected                         integrationpkg.BenchmarkCounters
 }
 
@@ -146,12 +161,8 @@ func TestDedicatedTargets(t *testing.T) {
 			expected: zoxideCounters(1, 0)},
 		{name: "startup-zoxide-timeout", policy: "cached", zoxideMode: "timeout", timeout: defaultTimeout,
 			expected: zoxideCounters(1, 1)},
-		{name: "cached-navigation", policy: "cached", zoxideMode: "present", action: "event", timeout: defaultTimeout,
-			expected: zoxideCounters(1, 1)},
-		{name: "fresh-navigation", policy: "fresh", zoxideMode: "present", action: "event", timeout: defaultTimeout,
-			expected: zoxideCounters(2, 2)},
-		{name: "fresh-exact-parity-navigation", policy: "fresh", zoxideMode: "present", action: "event", timeout: 0,
-			expected: zoxideCounters(2, 2)},
+		{name: "navigation-local-only", policy: "cached", zoxideMode: "present", action: "event", timeout: defaultTimeout, generation: 2,
+			expected: integrationpkg.BenchmarkCounters{}},
 		{name: "preview-dispatch", policy: "cached", zoxideMode: "present", action: "preview", timeout: defaultTimeout,
 			expected: zoxideCounters(1, 1)},
 	}
@@ -246,7 +257,7 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 	if countTraceEvents(events, "session.close") != 1 {
 		return integrationpkg.BenchmarkSample{}, errors.New("dedicated sample did not close session")
 	}
-	counters, err := traceBenchmarkCounters(events)
+	counters, err := traceBenchmarkCounters(events, scenario.generation)
 	if err != nil {
 		return integrationpkg.BenchmarkSample{}, err
 	}
@@ -282,10 +293,18 @@ func countTraceEvents(events []traceEvent, name string) int {
 	return count
 }
 
-func traceBenchmarkCounters(events []traceEvent) (integrationpkg.BenchmarkCounters, error) {
+func traceBenchmarkCounters(events []traceEvent, generation uint64) (integrationpkg.BenchmarkCounters, error) {
 	counters := integrationpkg.BenchmarkCounters{}
+	foundGeneration := generation == 0
 	for _, event := range events {
 		if event.Event == "generation.publish" {
+			if generation != 0 && event.Generation != generation {
+				continue
+			}
+			foundGeneration = true
+			if generation != 0 && event.ZoxideOutcome != "not-run" {
+				return integrationpkg.BenchmarkCounters{}, errors.New("measured navigation generation ran zoxide")
+			}
 			if event.ZoxideExits != event.ZoxideStarts || event.ZoxideProcesses != event.ZoxideStarts || event.ZoxideLive != 0 {
 				return integrationpkg.BenchmarkCounters{}, errors.New("zoxide trace has unmatched process lifecycle")
 			}
@@ -299,6 +318,9 @@ func traceBenchmarkCounters(events []traceEvent) (integrationpkg.BenchmarkCounte
 			counters.PreviewStarts += event.ChildStarts
 			counters.PreviewMaxLive = max(counters.PreviewMaxLive, event.MaxLiveChildren)
 		}
+	}
+	if !foundGeneration {
+		return integrationpkg.BenchmarkCounters{}, errors.New("missing measured navigation generation")
 	}
 	return counters, nil
 }
@@ -372,7 +394,7 @@ func enforceDedicatedGoals(t *testing.T, reports []integrationpkg.BenchmarkRepor
 		switch {
 		case strings.HasPrefix(report.Scenario, "startup-"):
 			limit = startup
-		case report.Scenario == "cached-navigation":
+		case report.Scenario == "navigation-local-only":
 			limit = navigation
 		case report.Scenario == "preview-dispatch":
 			limit = preview

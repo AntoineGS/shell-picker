@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,6 +49,11 @@ func TestDedicatedCandidateScenarioCoverageAndExplicitCounters(t *testing.T) {
 			t.Fatalf("cp expected counters=%+v", *scenario.expected)
 		}
 	}
+	for _, scenario := range scenarios[2:4] {
+		if *scenario.expected != zoxideCounters(1, 1) {
+			t.Fatalf("repeated CD expected counters=%+v", *scenario.expected)
+		}
+	}
 }
 
 func dedicatedCandidateScenarios(defaultTimeout time.Duration) []dedicatedCandidateScenario {
@@ -59,7 +65,7 @@ func dedicatedCandidateScenarios(defaultTimeout time.Duration) []dedicatedCandid
 		candidateScenario("candidate-cached-repeated", "cached", "present", protocol.PickerCD, 3,
 			time.Second, zoxideCounters(1, 1)),
 		candidateScenario("candidate-fresh-repeated", "fresh", "present", protocol.PickerCD, 3,
-			time.Second, zoxideCounters(3, 3)),
+			time.Second, zoxideCounters(1, 1)),
 		candidateScenario("candidate-missing", "cached", "missing", protocol.PickerCD, 1,
 			time.Second, zoxideCounters(1, 0)),
 		candidateScenario("candidate-spawn-failure", "cached", "spawn-failure", protocol.PickerCD, 1,
@@ -131,6 +137,11 @@ func measureDedicatedCandidateSample(t *testing.T, scenario dedicatedCandidateSc
 			Location: pathutil.Filesystem([]byte(root)), Initial: generation == 0, StatWorkers: 2})
 		if err != nil {
 			return integrationpkg.BenchmarkSample{}, err
+		}
+		if generation > 0 && (result.Metrics.ZoxideOutcome != "not-run" || result.Metrics.ZoxideAttempts != 0 ||
+			result.Metrics.ZoxideStarts != 0 || result.Metrics.ZoxideExits != 0 || result.Metrics.ZoxideProcesses != 0 ||
+			result.Metrics.ZoxideLive != 0 || result.Metrics.ZoxideMaxLive != 0) {
+			return integrationpkg.BenchmarkSample{}, fmt.Errorf("generation %d metrics=%+v", generation+1, result.Metrics)
 		}
 		if scenario.mode == "records-10000" && len(result.Records) < 10_000 {
 			return integrationpkg.BenchmarkSample{}, errors.New("10,000-row candidate fixture was not merged")

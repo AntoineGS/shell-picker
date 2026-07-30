@@ -37,6 +37,7 @@ type traceEvent struct {
 	Outcome         string `json:"outcome,omitempty"`
 	Path            string `json:"path,omitempty"`
 	ZoxidePolicy    string `json:"zoxide_policy,omitempty"`
+	ZoxideOutcome   string `json:"zoxide_outcome,omitempty"`
 	ZoxideAttempts  int    `json:"zoxide_attempts,omitempty"`
 	ZoxideStarts    int    `json:"zoxide_starts,omitempty"`
 	ZoxideExits     int    `json:"zoxide_exits,omitempty"`

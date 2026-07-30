@@ -137,7 +137,7 @@ func RunBenchmark(ctx context.Context, options BenchmarkOptions) (BenchmarkRepor
 func validBenchmarkScenario(value string) bool {
 	switch value {
 	case "startup-local-only", "startup-zoxide-present", "startup-zoxide-missing", "startup-zoxide-spawn-failure",
-		"startup-zoxide-timeout", "cached-navigation", "fresh-navigation", "fresh-exact-parity-navigation", "preview-dispatch",
+		"startup-zoxide-timeout", "navigation-local-only", "preview-dispatch",
 		"candidate-initial-cached-overlap-10000", "candidate-timeout-discard", "candidate-cached-repeated",
 		"candidate-fresh-repeated", "candidate-missing", "candidate-spawn-failure", "candidate-cp-cached", "candidate-cp-fresh":
 		return true
