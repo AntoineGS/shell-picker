@@ -1,0 +1,7 @@
+# Performance and trace interpretation
+
+Benchmark schema 1 reports `attempts`, `starts`, `exits`, total `processes`, and `zoxide_max_live`, plus preview start/live counters. Assertions require no live remainder. Cached navigation has one session attempt and no later attempts. Fresh navigation has one attempt per completed fresh generation, zero or one successful start, and max-live one per session Builder. Sessions remain independently concurrent. Every `cp` counter is zero; missing or spawn failure is attempt 1/start 0.
+
+Scenario IDs include `cached-navigation`, `fresh-navigation`, and `fresh-exact-parity-navigation`; the last uses fresh plus timeout zero. The initial-overlap fixture contains exactly 10,000 zoxide records. Preview budgets measure one steady renderer and two replacements, including sequential/live counters. External PTY/ConPTY measurement records cancellation-to-tree-exit.
+
+Reports use 50 samples by default and nearest rank `ceil(p*n)` for p50/p95/p99. A comparison is qualified only when host metadata and the baseline fingerprint match and child-spawn, loopback-http, and warm-readdir-1000 baselines have acceptable variation. Trace records provide observation, not a latency guarantee or benchmark claim. The dedicated goals are startup local-only, present/missing/spawn-failure/timeout zoxide, navigation policy, and preview dispatch; interpret them only with their metadata and baseline.
