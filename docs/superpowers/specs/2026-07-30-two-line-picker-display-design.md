@@ -61,11 +61,11 @@ Ordinary navigation callbacks already receive the new full header in their event
 
 ## Width Handling
 
-Read `FZF_COLUMNS` and `FZF_PREVIEW_COLUMNS` as positive decimal integers no greater than 1000. With the configured visible right preview, the main-pane content width is `FZF_COLUMNS - FZF_PREVIEW_COLUMNS - 8`: each full-style pane uses four columns for its borders and horizontal content padding. If fzf reports no preview width, use `FZF_COLUMNS - 4`. Reject a result that is not positive. The real-fzf test fixes this accounting against fzf 0.74.1.
+Read `FZF_COLUMNS` as a required positive decimal integer no greater than 1000. Read `FZF_PREVIEW_COLUMNS` as either empty or zero when no preview width is available, or as a positive decimal integer no greater than 1000. With the configured visible right preview, the main-pane content width is `FZF_COLUMNS - FZF_PREVIEW_COLUMNS - 8`: each full-style pane uses four columns for its borders and horizontal content padding. Without a reported preview width, use `FZF_COLUMNS - 4`. Reject a result that is not positive. The real-fzf test fixes this accounting against fzf 0.74.1.
 
 Truncation operates on the escaped display string and never cuts within a UTF-8 encoding. Count ASCII graphic runes as one terminal cell and non-ASCII graphic runes conservatively as two. Overestimating width may omit extra prefix text but must not let fzf clip the retained path tail on the right. Roots, `Drives/`, Windows roots, trailing separators, escaped invalid bytes, and very small widths retain valid display text.
 
-Missing, malformed, zero, negative, or unreasonably large dimensions produce no header action. fzf therefore retains the previous header; at startup, the complete initial header remains available as the fallback. A display IPC failure has the same no-action behavior and does not mutate session state.
+A missing, malformed, zero, negative, or over-limit `FZF_COLUMNS`, a malformed, negative, or over-limit `FZF_PREVIEW_COLUMNS`, or a nonpositive derived content width produces no header action. fzf therefore retains the previous header; at startup, the complete initial header remains available as the fallback. A display IPC failure has the same no-action behavior and does not mutate session state.
 
 ## Finder Information
 
