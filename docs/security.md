@@ -4,7 +4,7 @@
 
 Reduction is pure reduction: no filesystem inspection or creation occurs in `Reduce`. It uses cloned AddIntent base/query bytes and lexical-only reduction. Complete absolute base ancestry and query traversal checks occur only in `CreateDirectoryTree`; partial creates are cleaned up while pre-existing parents are preserved. Error-prompt-only Add proposals retain no created tree. Handle owns ordered rollback until ownership transfers to Actor.Apply; publication keeps it, otherwise generation completion before rollback prevents a rollback race. Build-failure, caller-cancel, session-cancel, stale, supersede, and close cases are tested.
 
-The unavoidable TOCTOU boundary is concurrent namespace replacement by another process. Trace output is a caller-authorized trace sink: the caller vouches for every ancestor and target; elevated wrappers must never accept an untrusted trace path. The internal trace ID and path fields are redacted. Final-component no-follow/type/restrictive-DACL validation is defense in depth, not anchored traversal. This uses complete absolute base ancestry before creation.
+The unavoidable TOCTOU boundary is same-user namespace replacement by another process between validation and use. Trace output is a caller-authorized trace sink: the caller vouches for every ancestor and target; elevated wrappers must never accept an untrusted trace path. The internal trace ID and path fields are redacted. Final-component no-follow/type/restrictive-DACL validation is defense in depth, not anchored traversal. This uses complete absolute base ancestry before creation.
 
 ## Candidate and zoxide boundary
 
@@ -21,3 +21,5 @@ Direct files are caller-owned. Eligible pumped closers need stable pointer ident
 FreeBSD kqueue validates event count plus `EV_ERROR` and `Data errno`; observer errors never become reaping. An unsupported Unix host rejects before launch. Preview containment, deadlines, output/archive/artifact limits, atomic no-replace cache publication, and validated winners bound external tools.
 
 Every `sessionipc.Backend` method is a cooperative backend and must promptly honor its request context. Server close marks closing, cancels base/handlers, closes its listener, performs bounded Shutdown/Close, waits for tracked handlers, and does not detach backend calls. A backend that ignores cancellation violates this precondition: Go cannot forcibly stop it without a goroutine leak. This does not alter process-global signal disposition. Normal Run has no fzf version probe.
+
+Foreground fzf uses a parent terminal fd, whereas `Setctty` is a child-fd operation; the separate child fd 3 mapping is restored independently. The locked-thread `PthreadSigmask` sequence blocks SIGTTOU only around bounded foreground restoration and restores the exact saved mask. On FreeBSD kqueue is an observer, never a reaper, and validates event count plus `EV_ERROR`/`Data` errno. Unsupported Unix fails before launch.

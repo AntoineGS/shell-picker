@@ -22,12 +22,16 @@ shell-picker probe --json
 
 Both picker commands require absolute `--cwd` and `--home`; output is `nul` by default or `nuon` for Nushell.
 
-```sh
+```sh example
 shell-picker cd --cwd "$PWD" --home "$HOME" --output nul
 shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 ```
 
-Mode keys are implemented by the callback protocol: insert (`mi`), Add (`ma`), escape (`es`), forward (`fw`), parent (`up`), slash (`sl`), home (`hm`), and enter (`en`). Add proposals are validated and created transactionally; abort produces no selected output. Do not treat a displayed virtual record as a path: at a Windows drive or UNC share root, virtual `..` navigates to Drives, is neither previewable nor acceptable as filesystem output, and does not appear in Drives itself.
+### Picker keys
+
+These are user-facing fzf bindings, not callback opcodes: Enter accepts; Esc and `q` abort; `i` changes to insert mode; `a` starts Add; Ctrl-L, Tab, or Right navigates forward; Ctrl-H or Left goes to parent; `/` enters slash navigation; `~` goes home; `j`/`k` move selection and `h`/`l` trigger parent/forward. In `cd`, Space clears any mark and toggles the single selection; in `cp`, Space toggles marks. `cd` sorts and has one selectable item; `cp` preserves source order and supports multiple items. Add proposals are validated and created transactionally; abort produces no selected output. Internal callback opcodes are specified only in [the protocol reference](docs/protocol.md).
+
+Do not treat a displayed virtual record as a path: at a Windows drive or UNC share root, virtual `..` navigates to Drives, is neither previewable nor acceptable as filesystem output, and does not appear in Drives itself.
 
 ### zoxide policy
 
