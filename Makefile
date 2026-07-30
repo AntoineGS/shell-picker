@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check test check real-fzf security-gate performance-stable performance-dedicated cross-build
+.PHONY: fmt fmt-check test check real-fzf security-gate performance-stable performance-dedicated cross-build release-snapshot release-check
 
 fmt:
 	gofmt -w cmd internal integration
@@ -44,3 +44,10 @@ cross-build:
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/shell-picker_windows_amd64.exe ./cmd/shell-picker
 	GOOS=windows GOARCH=arm64 go test -exec=true ./...
 	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o bin/shell-picker_windows_arm64.exe ./cmd/shell-picker
+
+release-snapshot:
+	test -n "$(VERSION)"
+	go run ./scripts/release.go snapshot "$(VERSION)"
+
+release-check:
+	go run ./scripts/release.go check "$(VERSION)"

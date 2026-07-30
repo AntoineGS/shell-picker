@@ -34,6 +34,14 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
+func TestVersionCommandUsesDefaultWhenBuildVersionIsEmpty(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := Main(context.Background(), []string{"version"}, Streams{Out: &stdout, Err: &stderr}, "")
+	if code != 0 || stdout.String() != "shell-picker dev\n" || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestProbeCLIEmitsDeterministicJSONWithoutRawDependencyPaths(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runProbeCLI(context.Background(), []string{"probe", "--json"}, Streams{Out: &stdout, Err: &stderr}, "v1.2.3",

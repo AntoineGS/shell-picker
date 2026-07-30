@@ -1,8 +1,10 @@
 package app
 
+const DefaultVersion = "dev"
+
 func Version(build string) string {
 	if build == "" {
-		return "dev"
+		return DefaultVersion
 	}
 	return build
 }

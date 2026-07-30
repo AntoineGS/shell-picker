@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64, archive: shell-picker-linux-amd64}
+          - {goos: linux, goarch: arm64, archive: shell-picker-linux-arm64}
+          - {goos: windows, goarch: amd64, archive: shell-picker-windows-amd64}
+          - {goos: windows, goarch: arm64, archive: shell-picker-windows-arm64}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - name: Build deterministic archive
+        run: |
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$GITHUB_REF_NAME^{commit}")"
+          go run ./scripts/release.go snapshot "$GITHUB_REF_NAME" "${{ matrix.goos }}" "${{ matrix.goarch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: dist/shell-picker_*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with: {fetch-depth: 0}
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shell-picker-*
+          path: dist
+          merge-multiple: true
+      - name: Verify and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          test "${GITHUB_REF_TYPE}" = tag
+          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" = 4
+          test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' | sort -u | wc -l)" = 4
+          find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' | sort | while read -r name; do sha256sum "dist/$name"; done > dist/checksums.txt
+          (cd dist && sha256sum -c checksums.txt)
+          mkdir verify
+          tar -xzf "$(find dist -name 'shell-picker_*_linux_amd64.tar.gz' -print -quit)" -C verify
+          test "$(./verify/shell-picker version)" = "shell-picker $GITHUB_REF_NAME"
+          cp dist/checksums.txt checksums.txt
+          rm dist/checksums.txt
+          gh release create "$GITHUB_REF_NAME" dist/* checksums.txt --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

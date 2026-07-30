@@ -6,7 +6,7 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/app"
 )
 
-var version = "dev"
+var version = app.DefaultVersion
 
 func main() {
 	ctx, cancel := signalContext()
