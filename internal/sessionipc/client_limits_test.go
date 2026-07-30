@@ -58,6 +58,14 @@ func TestClientBoundsEveryResponseClassAtLimitAndLimitPlusOne(t *testing.T) {
 			},
 		},
 		{
+			name: "display JSON", limit: 64 << 10, status: http.StatusOK, contentType: "application/json",
+			prefix: `{"header":"/"}`, fill: ' ',
+			call: func(ctx context.Context, client *Client) (int, error) {
+				_, err := client.Display(ctx)
+				return 0, err
+			},
+		},
+		{
 			name: "preview JSON", limit: 64 << 10, status: http.StatusOK, contentType: "application/json",
 			prefix: `{"kind":"file","path_base64":"L3RtcC94","size":0,"mod_time_unix_nano":0,"mode":0}`, fill: ' ',
 			call: func(ctx context.Context, client *Client) (int, error) {

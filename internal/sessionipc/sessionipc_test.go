@@ -21,6 +21,7 @@ type backendStub struct {
 	loadGeneration func(context.Context, uint64) ([]byte, error)
 	resolvePreview func(context.Context, []byte) (protocol.ResolvedCandidate, error)
 	recordPreview  func(context.Context, PreviewRequest) error
+	currentHeader  func(context.Context) (string, error)
 }
 
 func (b backendStub) HandleEvent(ctx context.Context, event protocol.Event) (protocol.Effect, error) {
@@ -39,6 +40,10 @@ func (b backendStub) RecordPreview(ctx context.Context, request PreviewRequest) 
 	return b.recordPreview(ctx, request)
 }
 
+func (b backendStub) CurrentHeader(ctx context.Context) (string, error) {
+	return b.currentHeader(ctx)
+}
+
 func benignBackend() backendStub {
 	return backendStub{
 		handleEvent: func(_ context.Context, event protocol.Event) (protocol.Effect, error) {
@@ -51,6 +56,7 @@ func benignBackend() backendStub {
 			return protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte("/tmp/preview"), Size: 7, Mode: 0o644}, nil
 		},
 		recordPreview: func(context.Context, PreviewRequest) error { return nil },
+		currentHeader: func(context.Context) (string, error) { return "/", nil },
 	}
 }
 
@@ -157,6 +163,16 @@ func TestServerAuthenticatesAndPreservesOpaqueBytes(t *testing.T) {
 	_, err = client.Event(context.Background(), eventRequest())
 	if !errors.Is(err, ErrUnauthorized) || strings.Contains(err.Error(), client.token.String()) {
 		t.Fatalf("forged bearer error=%v", err)
+	}
+}
+
+func TestDisplayReturnsCurrentHeaderFromStrictEmptyRequest(t *testing.T) {
+	backend := benignBackend()
+	backend.currentHeader = func(context.Context) (string, error) { return "/work/", nil }
+	_, client := startServer(t, backend)
+	response, err := client.Display(context.Background())
+	if err != nil || response.Header != "/work/" {
+		t.Fatalf("response=%+v err=%v", response, err)
 	}
 }
 
@@ -284,21 +300,21 @@ func TestPreviewValidationAndTelemetry(t *testing.T) {
 	}
 }
 
-func TestEventContextCancellationFlowsToBackend(t *testing.T) {
+func TestDisplayContextCancellationFlowsToBackend(t *testing.T) {
 	entered := make(chan struct{})
 	cancelled := make(chan error, 1)
 	backend := benignBackend()
-	backend.handleEvent = func(ctx context.Context, _ protocol.Event) (protocol.Effect, error) {
+	backend.currentHeader = func(ctx context.Context) (string, error) {
 		close(entered)
 		<-ctx.Done()
 		cancelled <- context.Cause(ctx)
-		return protocol.Effect{}, context.Cause(ctx)
+		return "", context.Cause(ctx)
 	}
 	_, client := startServer(t, backend)
 	ctx, cancel := context.WithCancelCause(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := client.Event(ctx, eventRequest())
+		_, err := client.Display(ctx)
 		done <- err
 	}()
 	<-entered
@@ -307,7 +323,7 @@ func TestEventContextCancellationFlowsToBackend(t *testing.T) {
 		t.Fatal("backend did not receive caller cancellation")
 	}
 	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled event err=%v", err)
+		t.Fatalf("cancelled display err=%v", err)
 	}
 }
 
@@ -316,14 +332,14 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 	release := make(chan struct{})
 	exited := make(chan struct{}, 16)
 	backend := benignBackend()
-	backend.handleEvent = func(ctx context.Context, _ protocol.Event) (protocol.Effect, error) {
+	backend.currentHeader = func(ctx context.Context) (string, error) {
 		entered <- struct{}{}
 		select {
 		case <-release:
 		case <-ctx.Done():
 		}
 		exited <- struct{}{}
-		return protocol.Effect{}, context.Cause(ctx)
+		return "", context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
 	var wg sync.WaitGroup
@@ -331,13 +347,13 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = client.Event(context.Background(), eventRequest())
+			_, _ = client.Display(context.Background())
 		}()
 	}
 	for range 16 {
 		<-entered
 	}
-	if _, err := client.Event(context.Background(), eventRequest()); !errors.Is(err, ErrTooManyRequests) {
+	if _, err := client.Display(context.Background()); !errors.Is(err, ErrTooManyRequests) {
 		t.Fatalf("seventeenth request err=%v", err)
 	}
 
@@ -350,7 +366,7 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 		<-exited
 	}
 	wg.Wait()
-	if _, err := client.Event(context.Background(), eventRequest()); err == nil {
+	if _, err := client.Display(context.Background()); err == nil {
 		t.Fatal("closed endpoint accepted request")
 	}
 	close(release)

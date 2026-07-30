@@ -49,6 +49,52 @@ func TestServerRejectsNoncanonicalRouteTargetsBeforeBackend(t *testing.T) {
 	}
 }
 
+func TestDisplayRejectsInvalidRequestsBeforeBackend(t *testing.T) {
+	var calls atomic.Int32
+	backend := benignBackend()
+	backend.currentHeader = func(context.Context) (string, error) {
+		calls.Add(1)
+		return "/work/", nil
+	}
+	server, _ := startServer(t, backend)
+	tests := []struct {
+		name       string
+		target     string
+		body       []byte
+		authorized bool
+		want       int
+	}{
+		{name: "query", target: "/v1/display?x=1", body: []byte(`{}`), authorized: true, want: http.StatusNotFound},
+		{name: "trailing slash", target: "/v1/display/", body: []byte(`{}`), authorized: true, want: http.StatusNotFound},
+		{name: "nonempty object", target: "/v1/display", body: []byte(`{"extra":1}`), authorized: true, want: http.StatusBadRequest},
+		{name: "missing authorization", target: "/v1/display", body: []byte(`{}`), want: http.StatusUnauthorized},
+		{name: "oversized body", target: "/v1/display", body: bytes.Repeat([]byte{'x'}, (64<<10)+1), authorized: true, want: http.StatusRequestEntityTooLarge},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.Address()+test.target, bytes.NewReader(test.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			if test.authorized {
+				request.Header.Set("Authorization", "Bearer "+fixedToken(7).String())
+			}
+			response, err := (&http.Client{Transport: &http.Transport{Proxy: nil}}).Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != test.want {
+				t.Fatalf("status=%d want=%d", response.StatusCode, test.want)
+			}
+		})
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("invalid display requests invoked backend %d times", calls.Load())
+	}
+}
+
 func TestServerAcceptsOnlyOneExactRawAuthorizationValue(t *testing.T) {
 	var calls atomic.Int32
 	backend := benignBackend()

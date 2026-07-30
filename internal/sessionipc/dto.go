@@ -32,6 +32,12 @@ type LoadRequest struct {
 	Generation uint64 `json:"generation"`
 }
 
+type DisplayRequest struct{}
+
+type DisplayResponse struct {
+	Header string `json:"header"`
+}
+
 type PreviewRequest struct {
 	Phase             string `json:"phase"`
 	CurrentItemBase64 string `json:"current_item_base64"`
@@ -53,6 +59,7 @@ type PreviewResponse struct {
 type Backend interface {
 	HandleEvent(context.Context, protocol.Event) (protocol.Effect, error)
 	LoadGeneration(context.Context, uint64) ([]byte, error)
+	CurrentHeader(context.Context) (string, error)
 	ResolvePreview(context.Context, []byte) (protocol.ResolvedCandidate, error)
 	RecordPreview(context.Context, PreviewRequest) error
 }

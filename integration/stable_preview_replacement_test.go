@@ -32,6 +32,10 @@ func (backend *stablePreviewBackend) LoadGeneration(context.Context, uint64) ([]
 	return nil, nil
 }
 
+func (backend *stablePreviewBackend) CurrentHeader(context.Context) (string, error) {
+	return "", nil
+}
+
 func (backend *stablePreviewBackend) ResolvePreview(context.Context, []byte) (protocol.ResolvedCandidate, error) {
 	info, err := os.Stat(backend.path)
 	if err != nil {

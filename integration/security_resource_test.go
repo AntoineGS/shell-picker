@@ -168,6 +168,9 @@ func (backend *task20BlockingBackend) HandleEvent(context.Context, protocol.Even
 func (backend *task20BlockingBackend) LoadGeneration(context.Context, uint64) ([]byte, error) {
 	return nil, nil
 }
+func (backend *task20BlockingBackend) CurrentHeader(context.Context) (string, error) {
+	return "", nil
+}
 func (backend *task20BlockingBackend) RecordPreview(context.Context, sessionipc.PreviewRequest) error {
 	return nil
 }

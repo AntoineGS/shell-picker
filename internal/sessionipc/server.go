@@ -133,6 +133,8 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		server.handleEvent(response, request, body)
 	case "/v1/load":
 		server.handleLoad(response, request, body)
+	case "/v1/display":
+		server.handleDisplay(response, request, body)
 	case "/v1/preview":
 		server.handlePreview(response, request, body)
 	}
@@ -198,6 +200,20 @@ func (server *Server) handleLoad(response http.ResponseWriter, request *http.Req
 	response.Header().Set("Content-Type", "application/octet-stream")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(data)
+}
+
+func (server *Server) handleDisplay(response http.ResponseWriter, request *http.Request, body []byte) {
+	var input DisplayRequest
+	if decodeObject(body, &input) != nil {
+		writeError(response, http.StatusBadRequest)
+		return
+	}
+	header, err := server.backend.CurrentHeader(request.Context())
+	if err != nil {
+		writeBackendError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, DisplayResponse{Header: header})
 }
 
 func (server *Server) handlePreview(response http.ResponseWriter, request *http.Request, body []byte) {
@@ -281,7 +297,7 @@ func canonicalRoute(request *http.Request) (string, bool) {
 		return "", false
 	}
 	switch request.RequestURI {
-	case "/v1/event", "/v1/load", "/v1/preview":
+	case "/v1/event", "/v1/load", "/v1/display", "/v1/preview":
 		return request.RequestURI, true
 	default:
 		return "", false

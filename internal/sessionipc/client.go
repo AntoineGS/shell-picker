@@ -77,6 +77,12 @@ func (client *Client) Event(ctx context.Context, request EventRequest) (EventRes
 	return response, err
 }
 
+func (client *Client) Display(ctx context.Context) (DisplayResponse, error) {
+	var response DisplayResponse
+	err := client.doJSON(ctx, "/v1/display", DisplayRequest{}, &response)
+	return response, err
+}
+
 func (client *Client) Load(ctx context.Context, request LoadRequest) ([]byte, error) {
 	ctx, cancel := requestContext(ctx, 10*time.Second)
 	defer cancel()

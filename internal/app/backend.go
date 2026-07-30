@@ -55,6 +55,17 @@ func (backend *pickerBackend) LoadGeneration(ctx context.Context, generation uin
 	return frameCandidateRecords(snapshot.Records()), nil
 }
 
+func (backend *pickerBackend) CurrentHeader(ctx context.Context) (string, error) {
+	if cause := context.Cause(ctx); cause != nil {
+		return "", cause
+	}
+	snapshot, err := backend.actor.Current(ctx)
+	if err != nil {
+		return "", err
+	}
+	return pathutil.PromptDisplay(snapshot.State().Location), nil
+}
+
 func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte) (protocol.ResolvedCandidate, error) {
 	if cause := context.Cause(ctx); cause != nil {
 		return protocol.ResolvedCandidate{}, cause
