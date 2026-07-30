@@ -9,19 +9,21 @@ Event JSON is `opcode`, `key`, `query_base64`, and `current_item_base64`; load J
 ## Loopback IPC
 
 ```trace-schema
-event,outcome,generation,renderer,counters
-session.start,cd|cp,0,,0
-generation.start,ok,nonzero,,0
-generation.publish,ok,nonzero,optional,validated
-generation.discard,cancelled|error|stale|superseded,nonzero,,validated
-fzf.start,ok,0,,0
-fzf.exit,ok|aborted|error,0,,0
-callback.event,mi|ma|es|fw|up|sl|hm|en,0,,0
-callback.load,ok|error,nonzero,,0
-preview.dispatch|preview.finished,ok|error,0,validated,validated
-preview.cancel,cancelled,0,validated,0
-preview.exit,ok|error,0,validated,validated
-session.close,accepted|aborted|error,0,,0
+event,outcomes,generation,renderer,counters,optional_fields
+@renderers,bat|bat-fallback|chafa|chafa-fallback|exiftool|exiftool-fallback|eza|eza-fallback|ffmpeg|ffmpeg-fallback|ffmpegthumbnailer|ffmpegthumbnailer-fallback|file|file-fallback|glow|glow-fallback|gzip|gzip-fallback|kitten|kitten-fallback|native|pdftoppm|pdftoppm-fallback|tar|tar-fallback|unzip|unzip-fallback|xz|xz-fallback,,,,
+session.start,cd|cp,0,none,0/0,
+generation.start,ok,0|nonzero,none,0/0,
+generation.publish,ok,0|nonzero,none,0/0,actor_queue_wait_us|candidate_count|local_us|path|transform_us|zoxide_*:policy+outcome
+generation.discard,cancelled|error|stale|superseded,0|nonzero,none,0/0,actor_queue_wait_us|local_us|transform_us|zoxide_*:policy+outcome
+fzf.start,ok,0,none,0/0,
+fzf.exit,aborted|error|ok,0,none,0/0,
+callback.event,en|es|fw|hm|ma|mi|sl|up,0,none,0/0,callback_ipc_us
+callback.load,error|ok,0|nonzero,none,0/0,load_us
+preview.dispatch,error|ok,0,required:@renderers,0/0,
+preview.finished,error|ok,0,required:@renderers,native=0/0;non-native=0/0|1/0|1/1|2/0|2/1|3/0|3/1,
+preview.cancel,cancelled,0,required:@renderers,0/0,
+preview.exit,error|ok,0,required:@renderers,native=0/0;non-native=0/0|1/0|1/1|2/0|2/1|3/0|3/1,
+session.close,aborted|accepted|error,0,none,0/0,
 ```
 
 The listener binds `127.0.0.1:0`. Routes use the literal `RequestURI` `/v1/event`, `/v1/load`, or `/v1/preview`; `RawQuery` and `RawPath` must both be empty. Before constant-time token comparison, the server requires exactly one Authorization field with exactly one value in the grammar `Authorization: Bearer <token>`.
@@ -30,4 +32,4 @@ Only POST with `Content-Type: application/json` is admitted. JSON event, preview
 
 Trace is newline-delimited JSON schema 1. Every record has `schema`, `time`, `session`, `event`, `generation`, `candidate_count`, `renderer`, `child_starts`, `max_live_children`, and `outcome`; optional fields are `path`, `zoxide_policy`, `zoxide_attempts`, `zoxide_starts`, `zoxide_exits`, `zoxide_processes`, `zoxide_live`, `zoxide_max_live`, `actor_queue_wait_us`, `callback_ipc_us`, `local_us`, `zoxide_us`, `zoxide_outcome`, `transform_us`, and `load_us`. Events are `session.start`, `generation.start`, `generation.publish`, `generation.discard`, `fzf.start`, `fzf.exit`, `callback.event`, `callback.load`, `preview.dispatch`, `preview.finished`, `preview.cancel`, `preview.exit`, and `session.close`. Session and path values are truncated SHA-256 redactions; paths and credentials are not emitted. Trace is diagnostic observation, not a performance guarantee, authorization record, or unredacted audit log.
 
-The field-to-event rules are strict: generation is nonzero only for generation start/publish/discard and callback load; candidate count and path apply only to generation publish; generation timings apply only to publish/discard, callback IPC only to callback event, and load timing only to callback load. Renderer is one of native, eza, glow, bat, kitten, chafa, unzip, gzip, xz, tar, file, pdftoppm, ffmpegthumbnailer, ffmpeg, or exiftool (or its non-native `-fallback`) and only preview events carry it. Child starts are 0..3, max live is 0..1 and never exceeds starts; native has zero children. Zoxide fields occur only on generation publish/discard, policy is cached/fresh, and outcome is ok, missing, process-error, malformed, timeout, cancelled, not-run, or cached. Attempts bound starts; exits and processes equal starts; live is zero and `zoxide_max_live` does not exceed starts. Valid event/outcome pairs are: session.start cd/cp; generation.start ok; generation.publish ok; generation.discard cancelled/error/stale/superseded; fzf.start ok; fzf.exit ok/aborted/error; callback.event the eight opcodes; callback.load ok/error; preview.dispatch/finished ok/error; preview.cancel cancelled; preview.exit ok/error; session.close accepted/aborted/error.
+The machine table is the validator contract. `@renderers` is the exact renderer set; every preview event requires one of those values, while every non-preview event requires an empty renderer. A generation may be nonzero only for generation start/publish/discard and callback load; zero remains validator-valid for those events. Candidate count and path apply only to generation publish. Generation timings apply only to publish/discard, callback IPC only to callback event, and load timing only to callback load. The `zoxide_*` bundle means policy plus outcome and may include zoxide counters/duration; it occurs only on generation publish/discard. Policy is cached/fresh, and zoxide outcome is ok, missing, process-error, malformed, timeout, cancelled, not-run, or cached. Attempts bound starts; exits and processes equal starts; live is zero and `zoxide_max_live` does not exceed starts. Child counters are always zero except on preview.finished and preview.exit; there child starts are 0..3, max live is 0..1 and never exceeds starts, and native remains 0/0.

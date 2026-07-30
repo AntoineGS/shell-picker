@@ -1,0 +1,167 @@
+package integration
+
+import (
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/AntoineGS/shell-picker/internal/fzf"
+	"github.com/AntoineGS/shell-picker/internal/protocol"
+)
+
+func TestDocumentedModeTableMatchesFZFBindings(t *testing.T) {
+	want := map[string][]string{}
+	for _, mode := range []protocol.Mode{protocol.ModeInsert, protocol.ModeNormal, protocol.ModeAdd} {
+		want[modeTitle(mode)] = []string{
+			modeTitle(mode),
+			formatBindings(activeModeBindings(t, protocol.PickerCD, mode)),
+			formatBindings(activeModeBindings(t, protocol.PickerCP, mode)),
+		}
+	}
+	got := parseModeTable(t, readDoc(t, "README.md"))
+	if strings.Join(flattenModeRows(got), "\n") != strings.Join(flattenModeRows(want), "\n") {
+		t.Fatalf("README mode table differs from fzf bindings\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestArchitectureDocumentsActualOwnership(t *testing.T) {
+	document := readDoc(t, "docs/architecture.md")
+	required := []string{
+		"Ready --> Pending: ProposedTransition",
+		"`Handle` resolves each `AddIntent` before calling `Actor.Apply`; only the resulting `ProposedTransition` can become pending.",
+		"Ignored events are ordinary `ProposedTransition` values carrying `Effect.Ignore`.",
+		"Every preview child uses `ContainmentInheritTree` under its callback tree.",
+		"Zoxide uses `ContainmentOwnTree`.",
+		"Fzf uses `ContainmentForegroundTree`.",
+	}
+	for _, value := range required {
+		if !strings.Contains(document, value) {
+			t.Errorf("architecture missing runtime ownership statement %q", value)
+		}
+	}
+	for _, stale := range []*regexp.Regexp{
+		regexp.MustCompile(`(?i)Pending[^\n]*(?:XOR|or)[^\n]*AddIntent|AddIntent\s*(?:->|\x{2192}|enters|reaches)\s*Pending`),
+		regexp.MustCompile(`(?i)preview[^\n]*(?:own|either own)[^\n]*(?:tree|callback)`),
+		regexp.MustCompile(`(?i)ignored event[^\n]*(?:neither|no side effect)`),
+	} {
+		if match := stale.FindString(document); match != "" {
+			t.Errorf("architecture contains stale statement %q", match)
+		}
+	}
+}
+
+func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode) []string {
+	t.Helper()
+	options := fzf.Options(picker, "[I] /work/ ")
+	type binding struct {
+		keys   []string
+		render string
+	}
+	bindings := []binding{}
+	active := map[string]bool{}
+	for _, option := range options {
+		if !strings.HasPrefix(option, "--bind=") {
+			continue
+		}
+		render := strings.TrimPrefix(option, "--bind=")
+		keys, _, ok := strings.Cut(render, ":")
+		if !ok || keys == "start" {
+			continue
+		}
+		parts := strings.Split(keys, ",")
+		bindings = append(bindings, binding{keys: parts, render: render})
+		for _, key := range parts {
+			active[key] = true
+		}
+	}
+	effect, err := fzf.RenderEffect(protocol.Effect{Rebind: mode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, match := range regexp.MustCompile(`(rebind|unbind)\(([^)]*)\)`).FindAllStringSubmatch(effect, -1) {
+		for _, key := range strings.Split(match[2], ",") {
+			active[key] = match[1] == "rebind"
+		}
+	}
+	result := []string{}
+	for _, binding := range bindings {
+		allActive := true
+		for _, key := range binding.keys {
+			allActive = allActive && active[key]
+		}
+		if allActive {
+			result = append(result, binding.render)
+		}
+	}
+	return result
+}
+
+func parseModeTable(t *testing.T, document string) map[string][]string {
+	t.Helper()
+	lines := strings.Split(document, "\n")
+	for index, line := range lines {
+		if line != "| Mode | cd active fzf bindings | cp active fzf bindings |" {
+			continue
+		}
+		if index+4 >= len(lines) || lines[index+1] != "| --- | --- | --- |" {
+			t.Fatal("README mode table has invalid header")
+		}
+		rows := map[string][]string{}
+		for _, line := range lines[index+2 : index+5] {
+			cells := strings.Split(strings.Trim(line, "|"), "|")
+			if len(cells) != 3 {
+				t.Fatalf("invalid mode row %q", line)
+			}
+			for cell := range cells {
+				cells[cell] = strings.TrimSpace(cells[cell])
+			}
+			rows[cells[0]] = cells
+		}
+		if index+5 < len(lines) && strings.HasPrefix(lines[index+5], "|") {
+			t.Fatalf("README mode table has unexpected extra row %q", lines[index+5])
+		}
+		return rows
+	}
+	t.Fatal("README has no exact mode table")
+	return nil
+}
+
+func modeTitle(mode protocol.Mode) string {
+	value := string(mode)
+	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+func formatBindings(bindings []string) string {
+	quoted := make([]string, len(bindings))
+	for index, binding := range bindings {
+		quoted[index] = "`" + binding + "`"
+	}
+	return strings.Join(quoted, "<br>")
+}
+
+func flattenModeRows(rows map[string][]string) []string {
+	result := []string{}
+	for _, mode := range []string{"Insert", "Normal", "Add"} {
+		result = append(result, strings.Join(rows[mode], "|"))
+	}
+	return result
+}
+
+func TestDocumentedPlatformTimeoutsMatchAuthority(t *testing.T) {
+	authority, err := os.ReadFile(filepath.Join("..", "internal/candidate/zoxide.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme := readDoc(t, "README.md")
+	for _, timeout := range []string{"150 * time.Millisecond", "75 * time.Millisecond"} {
+		if !strings.Contains(string(authority), timeout) {
+			t.Fatalf("missing timeout authority %s", timeout)
+		}
+		value := strings.ReplaceAll(strings.ReplaceAll(timeout, " * time.Millisecond", "ms"), " ", "")
+		if !strings.Contains(readme, value) {
+			t.Errorf("README does not document %s", value)
+		}
+	}
+}

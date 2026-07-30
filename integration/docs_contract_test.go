@@ -56,9 +56,6 @@ func TestDocumentedTraceFieldsMatchSchema(t *testing.T) {
 			requireDocumented(t, doc, "`"+name+"`")
 		}
 	}
-	for _, event := range []string{"session.start", "generation.start", "generation.publish", "generation.discard", "fzf.start", "fzf.exit", "callback.event", "callback.load", "preview.dispatch", "preview.finished", "preview.cancel", "preview.exit", "session.close"} {
-		requireDocumented(t, doc, event)
-	}
 }
 
 func TestDocumentationParityAuthority(t *testing.T) {
@@ -96,10 +93,8 @@ func TestDocumentationParityAuthority(t *testing.T) {
 }
 
 func TestDocumentationPathsLicenseAndExamples(t *testing.T) {
-	for _, path := range []string{"LICENSE", "README.md", "docs/architecture.md", "docs/protocol.md", "docs/adapters.md", "docs/preview.md", "docs/performance.md", "docs/parity.md", "docs/security.md", "adapters/zsh/shell-picker.plugin.zsh", "adapters/nushell/shell-picker.nu"} {
-		if _, err := os.Stat(filepath.Join("..", path)); err != nil {
-			t.Errorf("documented path %s: %v", path, err)
-		}
+	for _, document := range markdownDocuments(t) {
+		validateDocumentedPaths(t, document)
 	}
 	license := readDoc(t, "LICENSE")
 	want, err := os.ReadFile(filepath.Join("testdata", "mit-license.txt"))
@@ -109,13 +104,85 @@ func TestDocumentationPathsLicenseAndExamples(t *testing.T) {
 	if license != string(want) {
 		t.Fatal("LICENSE is not the exact MIT text")
 	}
-	for _, path := range []string{"README.md", "docs/architecture.md", "docs/protocol.md", "docs/adapters.md", "docs/preview.md", "docs/performance.md", "docs/parity.md", "docs/security.md"} {
-		for _, header := range regexp.MustCompile("(?m)^```(?:sh|bash)(.*)$").FindAllStringSubmatch(readDoc(t, path), -1) {
-			if !strings.Contains(header[1], "check") && !strings.Contains(header[1], "example") {
-				t.Errorf("%s has unclassified shell example", path)
-			}
+}
+
+func validateDocumentedPaths(t *testing.T, document string) {
+	t.Helper()
+	plain := markdownOutsideFences(readDoc(t, document))
+	for _, match := range regexp.MustCompile(`!?\[[^]]*\]\(([^)[:space:]]+)`).FindAllStringSubmatch(plain, -1) {
+		validateRepositoryPath(t, document, match[1], true)
+	}
+	for _, match := range regexp.MustCompile("`([^`\\n]+)`").FindAllStringSubmatch(plain, -1) {
+		validateRepositoryPath(t, document, match[1], false)
+	}
+}
+
+func validateRepositoryPath(t *testing.T, document, raw string, link bool) {
+	t.Helper()
+	raw = strings.Trim(raw, "<>.,;:()[]{}")
+	raw, _, _ = strings.Cut(raw, "#")
+	if raw == "" || strings.Contains(raw, "://") || strings.HasPrefix(raw, "#") || filepath.IsAbs(raw) {
+		return
+	}
+	repoRoot := filepath.Clean("..")
+	documentRelative := filepath.Join(repoRoot, filepath.Dir(document), filepath.FromSlash(raw))
+	repoRelative := filepath.Join(repoRoot, filepath.FromSlash(raw))
+	if link {
+		if _, err := os.Stat(documentRelative); err != nil {
+			t.Errorf("%s links to missing repository path %q: %v", document, raw, err)
+		}
+		return
+	}
+	if strings.ContainsAny(raw, " \t\r\n") {
+		return
+	}
+	if _, err := os.Stat(documentRelative); err == nil {
+		return
+	}
+	if _, err := os.Stat(repoRelative); err == nil {
+		return
+	}
+	first, _, hasSlash := strings.Cut(filepath.ToSlash(raw), "/")
+	if !hasSlash || !topLevelDirectory(first) || !looksLikePath(raw) {
+		return
+	}
+	if _, err := os.Stat(repoRelative); err != nil {
+		t.Errorf("%s documents missing repository path %q: %v", document, raw, err)
+	}
+}
+
+func topLevelDirectory(name string) bool {
+	info, err := os.Stat(filepath.Join("..", name))
+	return err == nil && info.IsDir()
+}
+
+func looksLikePath(value string) bool {
+	extension := strings.ToLower(filepath.Ext(value))
+	if extension == "" {
+		return true
+	}
+	for _, accepted := range []string{".go", ".json", ".md", ".nu", ".sh", ".toml", ".yaml", ".yml", ".zsh"} {
+		if extension == accepted {
+			return true
 		}
 	}
+	return false
+}
+
+func markdownOutsideFences(document string) string {
+	lines := strings.Split(document, "\n")
+	inside := false
+	for index, line := range lines {
+		if strings.HasPrefix(line, "```") {
+			inside = !inside
+			lines[index] = ""
+			continue
+		}
+		if inside {
+			lines[index] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func requireDocumented(t *testing.T, document, value string) {

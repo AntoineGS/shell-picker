@@ -8,25 +8,30 @@ Candidate records carry an authoritative target independently of their wire payl
 
 ## State and Add ownership
 
-Reduction is a pure reduction by deliberate design. Exclusive `Reduction` branches consume cloned `AddIntent` data and read exactly one immutable snapshot. Reduce exactly once, CreateDirectoryTree exactly once for Add, and Apply exactly once. The invariant is no unresolved AddIntent reaching the actor.
+Reduction is deliberately pure. Its exclusive branches contain either a cloned `AddIntent` or a complete `ProposedTransition`, and each reduction reads exactly one immutable snapshot. The event path calls `Reduce` exactly once, `CreateDirectoryTree` exactly once for Add, and `Actor.Apply` exactly once. No unresolved intent is passed to the actor.
 
-`Reduce` performs no filesystem inspection or call, rollback, actor call, goroutine, or mutation. Discarding an intent creates nothing. Handle resolves AddIntent and creates its tree before only ProposedTransition enters Actor.Apply/pending; Handle owns rollback before Apply and ownership transfers to `Actor.Apply`. Ignored events are ordinary proposals carrying `Effect.Ignore`, not an unresolved intent. The actor retains a published tree or waits for generation completion before rollback; cancellation ordering is cancel, wait, then rollback/reply/replacement. The service is read-only during generation and publishes synchronous transforms.
+`Reduce` performs no filesystem inspection or call, rollback, actor call, goroutine, or mutation. Discarding an intent creates nothing. `Handle` resolves each `AddIntent` before calling `Actor.Apply`; only the resulting `ProposedTransition` can become pending. `Handle` owns rollback before Apply, then ownership transfers to `Actor.Apply`. Ignored events are ordinary `ProposedTransition` values carrying `Effect.Ignore`. The actor retains a published tree or waits for generation completion before rollback.
 
-The proposal carries base generation, next state, optional build request, effect, and optionally created tree. The actor keeps one pending transition with its reply channel, effect/build state, cancellation cause, and retiring/replacement state; snapshot and resolve requests remain read-only while a build runs. A replacement first cancels the pending build, waits for completion, rolls back an unowned tree, replies to the prior caller, then starts the replacement. This ordering prevents a generator from observing a removed tree.
+A proposal carries the base generation, next state, optional build request, effect, and optional created tree. A build proposal may become the actor's one pending transition, which owns its reply channel, effect/build state, cancellation cause, and retiring/replacement state. Snapshot and resolve requests remain read-only while a build runs. Replacement ordering is cancel, wait, rollback an unowned tree, reply to the prior caller, then start the replacement. This prevents a generator from observing a removed tree; synchronous proposals publish without entering build-pending state.
 
 ```stateDiagram
 [*] --> Ready
-Ready --> Pending: ordinary proposal XOR AddIntent
-Pending --> Ready: cancel → wait → rollback → reply → replacement
+Ready --> Ready: ProposedTransition without build
+Ready --> Pending: ProposedTransition
+Pending --> Ready: cancel, wait, rollback, reply, replacement
 Pending --> Published: build completes, effect publishes
 Published --> Ready
 ```
 
-`Reduction` has exclusive branches: an ordinary proposal XOR AddIntent, never both; a reduction that is applicable has one of those branches, while an ignored event has neither and no side effect. Pending state owns the proposal/build context, pending reply, cancellation function, accepted generation, retiring flag, and replacement cause. Reads use the immutable published snapshot while Pending is active.
+Pending state owns the proposal/build context, pending reply, cancellation function, accepted generation, retiring flag, and replacement cause. Reads use the immutable published snapshot while Pending is active.
 
-Containment is explicit: picker fzf uses a foreground tree, zoxide uses its own tree, and preview children either own or inherit the callback tree as required. This separates cancellation scope from ordinary parent process lifetime.
+Every preview child uses `ContainmentInheritTree` under its callback tree.
 
-The concrete modes are `ContainmentForegroundTree` for fzf, `ContainmentOwnTree` for zoxide and independent preview converters, and `ContainmentInheritTree` for callback renderers that must remain in their callback tree. Preview retains one `TreeHandle` on first child start; cancellation kills that tree, and close releases its handle after the callback has terminated.
+Zoxide uses `ContainmentOwnTree`.
+
+Fzf uses `ContainmentForegroundTree`.
+
+These modes keep callback cancellation, independent query cancellation, and terminal foreground ownership distinct. Preview retains one `TreeHandle` on first child start; cancellation kills that callback tree, and close releases its handle after the callback has terminated.
 
 ## Process and terminal boundaries
 

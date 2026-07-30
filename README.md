@@ -22,7 +22,7 @@ shell-picker probe --json
 
 Both picker commands require absolute `--cwd` and `--home`; output is `nul` by default or `nuon` for Nushell.
 
-```sh example
+```text
 shell-picker cd --cwd "$PWD" --home "$HOME" --output nul
 shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 ```
@@ -31,11 +31,13 @@ shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 
 The table is user-facing fzf behavior, not callback opcode names. In `cd`, Space clears any mark and toggles the single selection; in `cp`, Space toggles marks. `cd` sorts and has one selectable item; `cp` preserves source order and supports multiple items. Internal callback opcodes are specified only in [the protocol reference](docs/protocol.md).
 
-| Mode | Keys | Result |
+| Mode | cd active fzf bindings | cp active fzf bindings |
 | --- | --- | --- |
-| Insert | `i`; Enter; Esc | `i` enters Insert; Enter accepts the current valid selection; Esc emits the escape transition. |
-| Normal | `a`, Ctrl-L/Tab/Right, Ctrl-H/Left, `/`, `~`, `j`/`k`, `h`/`l`, Enter, `q` | `a` enters Add; Enter accepts; `q` is bound in Normal and aborts fzf. |
-| Add | Add-mode static keys only | Add unbinds normal/navigation groups. Enter creates and loads the proposed directory tree rather than accepting picker output; Esc emits the escape transition. |
+| Insert | `enter:transform(e:en)`<br>`esc:transform(e:es)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)` | `enter:transform(e:en)`<br>`esc:transform(e:es)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)` |
+| Normal | `enter:transform(e:en)`<br>`esc:transform(e:es)`<br>`i:transform(e:mi)`<br>`a:transform(e:ma)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`j:down`<br>`k:up`<br>`h:trigger(ctrl-h)`<br>`l:trigger(tab)`<br>`q:abort`<br>`space:clear-multi+toggle` | `enter:transform(e:en)`<br>`esc:transform(e:es)`<br>`i:transform(e:mi)`<br>`a:transform(e:ma)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`j:down`<br>`k:up`<br>`h:trigger(ctrl-h)`<br>`l:trigger(tab)`<br>`q:abort`<br>`space:toggle` |
+| Add | `enter:transform(e:en)`<br>`esc:transform(e:es)` | `enter:transform(e:en)`<br>`esc:transform(e:es)` |
+
+Normal `i` enters Insert and Normal `a` enters Add. Insert keeps only the static Enter/Esc callbacks and the actual navigation bindings shown above; it does not bind `i`. Add has no normal or navigation bindings: Enter creates and loads the proposed directory tree rather than accepting picker output, while Esc returns to Normal.
 
 Do not treat a displayed virtual record as a path: at a Windows drive or UNC share root, virtual `..` navigates to Drives, is neither previewable nor acceptable as filesystem output, and does not appear in Drives itself.
 
