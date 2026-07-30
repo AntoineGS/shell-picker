@@ -91,9 +91,19 @@ func TestDocumentationStatesLaunchOnlyZoxideContract(t *testing.T) {
 	}
 }
 
+func TestDocumentationStatesCurrentRuntimeContracts(t *testing.T) {
+	documentation := readDoc(t, "README.md") + readDoc(t, "docs/protocol.md") +
+		readDoc(t, "docs/architecture.md") + readDoc(t, "docs/security.md")
+	for _, required := range []string{"i:cd", "i:cp", "change-header", "two-line layout"} {
+		if !strings.Contains(documentation, required) {
+			t.Errorf("current documentation missing runtime contract %q", required)
+		}
+	}
+}
+
 func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode) []string {
 	t.Helper()
-	options := fzf.Options(picker, "[I] /work/ ")
+	options := fzf.Options(picker, "[I] ", "/work/")
 	type binding struct {
 		keys   []string
 		render string
@@ -106,7 +116,7 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 		}
 		render := strings.TrimPrefix(option, "--bind=")
 		keys, _, ok := strings.Cut(render, ":")
-		if !ok || keys == "start" {
+		if !ok || keys == "start" || keys == "resize" {
 			continue
 		}
 		parts := strings.Split(keys, ",")

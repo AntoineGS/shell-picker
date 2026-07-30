@@ -200,7 +200,7 @@ func testConfig() Config {
 		Environment:     []string{"PATH=/bin", "FZF_DEFAULT_OPTS=forged", "SHELL_PICKER_ADDR=http://forged", "SHELL_PICKER_TOKEN=forged"},
 		CallbackAddress: "http://127.0.0.1:4321",
 		CallbackToken:   "controlled-token",
-		Options:         Options(protocol.PickerCP, "[N] /work/ "),
+		Options:         Options(protocol.PickerCP, "[N] ", "/work/"),
 		Input:           []byte("record\x00"),
 		Runner:          processpkg.Runner{},
 		ForegroundTTY:   nonTerminalFile(),

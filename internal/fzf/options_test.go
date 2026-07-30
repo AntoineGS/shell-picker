@@ -10,28 +10,31 @@ import (
 )
 
 func TestPickerOptions(t *testing.T) {
-	common := []string{
-		"--ansi", "--style=full", "--layout=reverse", "--delimiter=\t", "--with-nth=2", "--read0", "--print0",
-		"--prompt=[I] /work/ ", "--preview=p", "--preview-window=right:50%:wrap",
-		"--bind=enter:transform(e:en)", "--bind=esc:transform(e:es)", "--bind=i:transform(e:mi)",
-		"--bind=a:transform(e:ma)", "--bind=ctrl-l,tab,right:transform(e:fw)",
-		"--bind=ctrl-h,left:transform(e:up)", "--bind=/:transform(e:sl)", "--bind=~:transform(e:hm)",
-		"--bind=j:down", "--bind=k:up", "--bind=h:trigger(ctrl-h)", "--bind=l:trigger(tab)", "--bind=q:abort",
-		"--bind=start:unbind(h,j,k,l,i,a,q,space)",
+	common := func(infoCommand string) []string {
+		return []string{
+			"--ansi", "--style=full", "--layout=reverse", "--delimiter=\t", "--with-nth=2", "--read0", "--print0",
+			"--prompt=[I] ", "--header=/work/", "--header-first", infoCommand,
+			"--preview=p", "--preview-window=right:50%:wrap",
+			"--bind=enter:transform(e:en)", "--bind=esc:transform(e:es)", "--bind=i:transform(e:mi)",
+			"--bind=a:transform(e:ma)", "--bind=ctrl-l,tab,right:transform(e:fw)",
+			"--bind=ctrl-h,left:transform(e:up)", "--bind=/:transform(e:sl)", "--bind=~:transform(e:hm)",
+			"--bind=j:down", "--bind=k:up", "--bind=h:trigger(ctrl-h)", "--bind=l:trigger(tab)", "--bind=q:abort",
+			"--bind=start:unbind(h,j,k,l,i,a,q,space)+transform(d)", "--bind=resize:transform(d)",
+		}
 	}
-	cdWant := append(append([]string{}, common...), "--bind=space:clear-multi+toggle", "--sort", "--print-query", "--multi=1")
-	cpWant := append(append([]string{}, common...), "--bind=space:toggle", "--no-sort", "--multi")
-	if got := Options(protocol.PickerCD, "[I] /work/ "); !reflect.DeepEqual(got, cdWant) {
+	cdWant := append(common("--info-command=i:cd"), "--bind=space:clear-multi+toggle", "--sort", "--print-query", "--multi=1")
+	cpWant := append(common("--info-command=i:cp"), "--bind=space:toggle", "--no-sort", "--multi")
+	if got := Options(protocol.PickerCD, "[I] ", "/work/"); !reflect.DeepEqual(got, cdWant) {
 		t.Fatalf("cd options:\n got=%q\nwant=%q", got, cdWant)
 	}
-	if got := Options(protocol.PickerCP, "[I] /work/ "); !reflect.DeepEqual(got, cpWant) {
+	if got := Options(protocol.PickerCP, "[I] ", "/work/"); !reflect.DeepEqual(got, cpWant) {
 		t.Fatalf("cp options:\n got=%q\nwant=%q", got, cpWant)
 	}
 }
 
 func TestOptionsHaveNoListenOrDuplicateBindings(t *testing.T) {
 	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
-		options := Options(picker, "prompt")
+		options := Options(picker, "prompt", "header")
 		keys := map[string]struct{}{}
 		for _, option := range options {
 			if strings.HasPrefix(option, "--listen") {

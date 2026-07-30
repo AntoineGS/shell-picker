@@ -88,7 +88,7 @@ func exerciseParityZshAdapter(t *testing.T, picker protocol.Picker) zshParityEvi
 		output = append(output, 0)
 	}
 	result, err := fzf.ParseOutput(picker, output, 0)
-	options := fzf.Options(picker, "[N] portable")
+	options := fzf.Options(picker, "[N] ", "portable/")
 	accepted := 0
 	if err == nil && result.Key == "enter" {
 		accepted = boolInt(picker == protocol.PickerCD)

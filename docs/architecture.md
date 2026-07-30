@@ -37,6 +37,8 @@ These modes keep callback cancellation, independent query cancellation, and term
 
 There is one picker parent and one fzf child. Unix foreground TTY setup uses parent-fd `Ctty`; separate child fd 3 is supplied through `ExtraFiles`, with its lifetime and restoration handled separately. `Foreground` uses a parent fd while `Setctty` uses a child fd.
 
+Fzf renders a two-line layout with a bounded mode-only prompt and a separate location header. Startup and resize invoke the typed `d` display callback; picker-specific `i:cd` and `i:cp` commands render info text. Navigation effects carry the full escaped location, and the terminal adapter emits the final width-aware `change-header` action.
+
 Foreground restoration locks the OS thread, uses `unix.PthreadSigmask` to save the exact prior thread mask, blocks SIGTTOU, performs bounded `TIOCSPGRP`, restores the exact prior thread mask on every path, then unlocks. It does not change process-global signal disposition or caller notification state.
 
 Direct files stay caller-owned. Pumped streams require identifiable closers: stable pointer identity supports shared-pointer deduplication and emergency closure; non-identifiable closers are rejected before an attempt and never structurally compared. A nonclosable blocked forever case is explicitly outside the resource guarantee. Unsupported Unix rejects before launch. FreeBSD kqueue observes but does not reap, validates event count and `EV_ERROR`/`Data`, and shutdown is ordered IPC before actor.

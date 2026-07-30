@@ -16,6 +16,7 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/callback"
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	"github.com/AntoineGS/shell-picker/internal/pathutil"
 	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
@@ -27,7 +28,9 @@ func TestRunPickerOwnsOneSessionAndOneFZF(t *testing.T) {
 	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
 		launches++
 		if config.CallbackAddress == "" || config.CallbackToken == "" || config.CallbackToken == "forged" ||
-			!contains(config.Options, "--preview=p") {
+			!contains(config.Options, "--preview=p") || !contains(config.Options, "--prompt=[I] ") ||
+			!contains(config.Options, "--header="+pathutil.PromptDisplay(pathutil.Filesystem(fixture.options.CWD))) ||
+			!contains(config.Options, "--header-first") || !contains(config.Options, "--info-command=i:cd") {
 			t.Fatalf("callback/options config=%+v", config)
 		}
 		for _, entry := range config.Environment {

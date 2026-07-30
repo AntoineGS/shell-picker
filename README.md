@@ -27,6 +27,15 @@ shell-picker cd --cwd "$PWD" --home "$HOME" --output nul
 shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 ```
 
+The picker uses a two-line layout: the escaped current location is the header, while the prompt contains only the mode and query. Long headers are left-truncated to fit.
+
+```text
+··/long/path/to/current/
+[I] query                         7/42
+```
+
+For `cp`, the info text appends ` (N)` only while a selection is active. `cd` never shows a selection count.
+
 ### Picker keys
 
 The table is user-facing fzf behavior, not callback opcode names. In `cd`, Space clears any mark and toggles the single selection; in `cp`, Space toggles marks. `cd` sorts and has one selectable item; `cp` preserves source order and supports multiple items. Internal callback opcodes are specified only in [the protocol reference](docs/protocol.md).

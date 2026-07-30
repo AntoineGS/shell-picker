@@ -98,10 +98,12 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		}
 	}()
 
+	initialLocation := pathutil.Filesystem(options.CWD)
+	initialPrompt := "[I] "
+	initialHeader := pathutil.PromptDisplay(initialLocation)
 	initialState := session.State{
 		Picker: options.Picker, Mode: protocol.ModeInsert,
-		Location: pathutil.Filesystem(options.CWD), Home: pathutil.Filesystem(options.Home),
-		Prompt: "[I] " + pathutil.PromptDisplay(pathutil.Filesystem(options.CWD)) + " ",
+		Location: initialLocation, Home: pathutil.Filesystem(options.Home), Prompt: initialPrompt,
 	}
 	initial, err := actor.Apply(ctx, session.ProposedTransition{
 		State: initialState,
@@ -152,7 +154,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	result, launchErr := launch(ctx, fzf.Config{
 		Picker: options.Picker, FZFPath: options.FZFPath, ExecutablePath: options.ExecutablePath,
 		Environment: process.SanitizeEnv(dependencies.Environment, nil), CallbackAddress: server.Address(),
-		CallbackToken: token.String(), Options: fzf.Options(options.Picker, initialState.Prompt),
+		CallbackToken: token.String(), Options: fzf.Options(options.Picker, initialPrompt, initialHeader),
 		Input: frameCandidateRecords(initial.Snapshot.Records()), Runner: fzfRunner,
 		ForegroundTTY: terminal, TTYOut: dependencies.TTYOut, TTYErr: dependencies.TTYErr,
 	})

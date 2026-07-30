@@ -14,7 +14,7 @@ The full-record authorization is required. The virtual records are navigation on
 
 ## IPC, process, and preview boundaries
 
-Loopback bearer authentication uses exact routing, one Authorization value, constant-time comparison, limit plus one decoding/draining, unconditional body closure, and no connection reuse after overlimit. Token-canary tests cover arguments, stderr, logs, traces, preview/cache/temp, and noncallback environments. Controlled callback credentials are inherited only after environment sanitization; typed action/prompt grammar limits callback interpretation.
+Loopback bearer authentication uses exact routing, one Authorization value, constant-time comparison, limit plus one decoding/draining, unconditional body closure, and no connection reuse after overlimit. Token-canary tests cover arguments, stderr, logs, traces, preview/cache/temp, and noncallback environments. Controlled callback credentials are inherited only after environment sanitization. The mode prompt has a bounded closed vocabulary; arbitrary escaped location text crosses the terminal boundary only as the final validated `change-header` action. Callback interpretation is limited to the closed `e:*`, `p`, `l:*`, `d`, `i:cd`, and `i:cp` grammar.
 
 Direct files are caller-owned. Eligible pumped closers need stable pointer identity, grant emergency cleanup permission only, and a shared pointer is registered/closed once. Value and other non-identifiable closers reject before attempt/start and are never structurally compared; ordinary completion preserves ownership. Blocking closer tests return pumps/resources to baseline, while arbitrary nonclosable methods blocked forever are outside the resource guarantee.
 
