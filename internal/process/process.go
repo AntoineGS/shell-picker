@@ -25,9 +25,9 @@ type Spec struct {
 	Args []string
 	Env  []string
 	Dir  string
-	// Non-file streams must be finite/cooperative, or implement io.Closer
-	// whose Close promptly unblocks pending I/O. Cancellation and WaitDelay
-	// may close such streams; ordinary completion does not.
+	// Non-file streams must be cooperative or promptly closable. Pumped closers
+	// require stable pointer identity and are never structurally compared.
+	// Emergency cleanup closes them once; direct files remain caller-owned.
 	Stdin         io.Reader
 	Stdout        io.Writer
 	Stderr        io.Writer
