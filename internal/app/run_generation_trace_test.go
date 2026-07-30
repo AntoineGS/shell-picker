@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
@@ -19,7 +18,7 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
 )
 
-func TestConcurrentQueuedTransitionTraceGenerationsAreUniqueAndTerminal(t *testing.T) {
+func TestTransitionTraceGenerationsAreUniqueAndTerminal(t *testing.T) {
 	fixture := newPickerFixture(t, protocol.PickerCD)
 	fixture.options.ZoxidePolicy = candidate.ZoxideFresh
 	fixture.options.TracePath = filepath.Join(t.TempDir(), "generation.trace.jsonl")
@@ -35,49 +34,20 @@ func TestConcurrentQueuedTransitionTraceGenerationsAreUniqueAndTerminal(t *testi
 	fixture.dependencies.Environment = append(fixture.dependencies.Environment,
 		"GO_TEST_COUNTER="+counter, "GO_TEST_PATH="+fixture.cwd)
 
-	started := make(chan struct{}, 3)
 	var starts atomic.Int32
 	fixture.dependencies.ProcessRunner.Observe = func(event process.ProcessEvent) {
 		if event.Phase == "start" {
 			starts.Add(1)
-			started <- struct{}{}
-		}
-	}
-	waitStarts := func(want int32) {
-		t.Helper()
-		deadline := time.NewTimer(3 * time.Second)
-		defer deadline.Stop()
-		for starts.Load() < want {
-			select {
-			case <-started:
-			case <-deadline.C:
-				t.Fatalf("process starts=%d want %d", starts.Load(), want)
-			}
 		}
 	}
 	fixture.dependencies.launchFZF = func(ctx context.Context, config fzf.Config) (fzf.Result, error) {
 		client := callbackClient(t, config)
 		defer client.CloseIdleConnections()
-		firstDone := make(chan error, 1)
-		go func() {
-			_, err := client.Event(ctx, sessionipc.EventRequest{Opcode: protocol.OpParent, Key: "left"})
-			firstDone <- err
-		}()
-		waitStarts(2)
-		secondDone := make(chan sessionipc.EventResponse, 1)
-		secondErr := make(chan error, 1)
-		go func() {
+		for generation := uint64(2); generation <= 3; generation++ {
 			response, err := client.Event(ctx, sessionipc.EventRequest{Opcode: protocol.OpParent, Key: "left"})
-			secondDone <- response
-			secondErr <- err
-		}()
-		waitStarts(3)
-		if err := <-firstDone; err == nil {
-			t.Fatal("retired transition unexpectedly succeeded")
-		}
-		response, err := <-secondDone, <-secondErr
-		if err != nil || response.Effect.ReloadGeneration != 3 {
-			t.Fatalf("replacement response=%+v err=%v", response, err)
+			if err != nil || response.Effect.ReloadGeneration != generation {
+				t.Fatalf("generation %d response=%+v err=%v", generation, response, err)
+			}
 		}
 		return fzf.Result{Aborted: true, ExitCode: 130}, nil
 	}
@@ -92,6 +62,7 @@ func TestConcurrentQueuedTransitionTraceGenerationsAreUniqueAndTerminal(t *testi
 	defer file.Close()
 	startsByGeneration := make(map[uint64]int)
 	terminalsByGeneration := make(map[uint64]int)
+	publicationsByGeneration := make(map[uint64]integrationpkg.TraceRecord)
 	var orderedStarts []uint64
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -103,7 +74,10 @@ func TestConcurrentQueuedTransitionTraceGenerationsAreUniqueAndTerminal(t *testi
 		case "generation.start":
 			orderedStarts = append(orderedStarts, record.Generation)
 			startsByGeneration[record.Generation]++
-		case "generation.publish", "generation.discard":
+		case "generation.publish":
+			publicationsByGeneration[record.Generation] = record
+			terminalsByGeneration[record.Generation]++
+		case "generation.discard":
 			terminalsByGeneration[record.Generation]++
 		}
 	}
@@ -117,5 +91,15 @@ func TestConcurrentQueuedTransitionTraceGenerationsAreUniqueAndTerminal(t *testi
 		if startsByGeneration[generation] != 1 || terminalsByGeneration[generation] != 1 {
 			t.Fatalf("generation %d starts/terminal=%d/%d", generation, startsByGeneration[generation], terminalsByGeneration[generation])
 		}
+	}
+	for generation := uint64(2); generation <= 3; generation++ {
+		publication, ok := publicationsByGeneration[generation]
+		if !ok || publication.ZoxideOutcome != "not-run" || publication.ZoxideAttempts != 0 ||
+			publication.ZoxideStarts != 0 || publication.ZoxideProcesses != 0 {
+			t.Fatalf("generation %d publication=%+v present=%v", generation, publication, ok)
+		}
+	}
+	if got := starts.Load(); got != 1 {
+		t.Fatalf("helper process starts=%d want 1", got)
 	}
 }

@@ -369,6 +369,8 @@ func TestParityZoxideCachedAndFreshContracts(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, "local"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	localDisplays := []string{".", "..", "local"}
+	mergedDisplays := []string{".", "..", "local", filepath.Join(root, "visible"), filepath.Join(root, "zoxide-one"), filepath.Join(root, "zoxide-two")}
 	request := candidate.BuildRequest{Picker: protocol.PickerCD, Location: pathutil.Filesystem([]byte(root)), Initial: true}
 	newCache := func(runner processpkg.Runner, path string) *candidate.ZoxideCache {
 		cache, err := candidate.NewZoxideCache(runner, path, replaceEnvironment(os.Environ(), parityHelperEnvironment+"=zoxide-ok", "PARITY_TEST_ROOT="+root), 0)
@@ -395,8 +397,12 @@ func TestParityZoxideCachedAndFreshContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(parityDisplays(first.Records), parityDisplays(second.Records)) || countProcessPhase(cachedEvents, "attempt") != 1 ||
-		countProcessPhase(cachedEvents, "start") != 1 || second.Metrics.ZoxideOutcome != "cached" {
+	if !reflect.DeepEqual(parityDisplays(first.Records), mergedDisplays) || countRecordKind(first.Records, protocol.KindZoxide) != 3 ||
+		first.Metrics.ZoxideAttempts != 1 || first.Metrics.ZoxideStarts != 1 {
+		t.Fatalf("cached initial=%+v", first)
+	}
+	assertLocalOnlyNotRun(t, second, localDisplays)
+	if countProcessPhase(cachedEvents, "attempt") != 1 || countProcessPhase(cachedEvents, "start") != 1 {
 		t.Fatalf("cached first=%+v second=%+v events=%+v", first, second, cachedEvents)
 	}
 
@@ -414,16 +420,41 @@ func TestParityZoxideCachedAndFreshContracts(t *testing.T) {
 	freshRunner := processpkg.Runner{Observe: func(event processpkg.ProcessEvent) { freshEvents = append(freshEvents, event) }}
 	fresh := candidate.Builder{}
 	fresh.ConfigureFresh(func() (*candidate.ZoxideCache, error) { return newCache(freshRunner, paritySelfExecutable(t)), nil })
-	for _, initial := range []bool{true, false} {
-		request.Initial = initial
-		result, err := fresh.Build(context.Background(), request)
-		if err != nil || result.Metrics.ZoxideAttempts != 1 || result.Metrics.ZoxideStarts != 1 || result.Metrics.ZoxideMaxLive != 1 {
-			t.Fatalf("fresh initial=%v result=%+v err=%v", initial, result, err)
-		}
+	request.Initial = true
+	freshInitial, err := fresh.Build(context.Background(), request)
+	if err != nil || !reflect.DeepEqual(parityDisplays(freshInitial.Records), mergedDisplays) || countRecordKind(freshInitial.Records, protocol.KindZoxide) != 3 ||
+		freshInitial.Metrics.ZoxideAttempts != 1 || freshInitial.Metrics.ZoxideStarts != 1 {
+		t.Fatalf("fresh initial=%+v err=%v", freshInitial, err)
 	}
-	if countProcessPhase(freshEvents, "attempt") != 2 || countProcessPhase(freshEvents, "start") != 2 {
+	request.Initial = false
+	freshNavigation, err := fresh.Build(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalOnlyNotRun(t, freshNavigation, localDisplays)
+	if countProcessPhase(freshEvents, "attempt") != 1 || countProcessPhase(freshEvents, "start") != 1 {
 		t.Fatalf("fresh events=%+v", freshEvents)
 	}
+}
+
+func assertLocalOnlyNotRun(t *testing.T, result candidate.BuildResult, wantDisplays []string) {
+	t.Helper()
+	metrics := result.Metrics
+	if !reflect.DeepEqual(parityDisplays(result.Records), wantDisplays) || countRecordKind(result.Records, protocol.KindZoxide) != 0 || result.ZoxideDiscarded ||
+		metrics.ZoxideOutcome != "not-run" || metrics.ZoxideAttempts != 0 || metrics.ZoxideStarts != 0 ||
+		metrics.ZoxideExits != 0 || metrics.ZoxideProcesses != 0 || metrics.ZoxideLive != 0 || metrics.ZoxideMaxLive != 0 {
+		t.Fatalf("local-only result=%+v", result)
+	}
+}
+
+func countRecordKind(records []candidate.Record, kind protocol.Kind) int {
+	count := 0
+	for _, record := range records {
+		if record.Kind == kind {
+			count++
+		}
+	}
+	return count
 }
 
 func countProcessPhase(events []processpkg.ProcessEvent, phase string) int {

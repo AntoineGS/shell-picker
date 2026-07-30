@@ -54,8 +54,9 @@ var task20GateManifest = []task20GatePackage{
 		"TestFinishedTelemetryExactChildBounds",
 	}},
 	{path: "./internal/candidate", selectedUnix: 17, selectedWindows: 18, tests: []string{
-		"TestCachedPolicyAttemptsOnceForSessionAndLaterReportsCached",
-		"TestFreshZeroTimeoutIsAuthoritativeUnlimitedPerGeneration",
+		"TestCachedPolicyNoninitialBuildIsLocalOnlyWithoutReadyCache",
+		"TestFreshPolicyNoninitialBuildSkipsFactoryPermitAndProcess",
+		"TestFreshZeroTimeoutIsAuthoritativeForInitialBuild",
 		"TestFreshBuilderSerializesSessionQueriesAndCancelledWaiterDoesNotAttempt",
 		"TestIndependentFreshSessionBuildersMayQueryConcurrently",
 		"TestCPNeverLoadsCacheOrInvokesFreshFactory",
@@ -120,12 +121,13 @@ var task20GateManifest = []task20GatePackage{
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 19, selectedWindows: 17, tests: []string{
+	{path: "./internal/app", selectedUnix: 20, selectedWindows: 18, tests: []string{
 		"TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks",
 		"TestPickerBackendRejectsAuthorizedVirtualBeforeFilesystemAndOutput",
 		"TestRunPickerClosesCallbackEndpointBeforeReturning",
 		"TestRunPickerAppliesZoxidePolicyProcessBudgets",
-		"TestRunPickerParentCancellationStopsActiveCallbackGenerationBeforeFZFReturns",
+		"TestRunPickerParentCancellationStopsInitialZoxideBeforeFZFLaunch",
+		"TestRunPickerNavigationRemovesZoxideCandidates",
 	}},
 	{path: "./internal/pathutil", selectedUnix: 3, selectedWindows: 7, tests: []string{
 		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",

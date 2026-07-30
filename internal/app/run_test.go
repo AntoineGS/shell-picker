@@ -209,7 +209,7 @@ func TestRunPickerAppliesZoxidePolicyProcessBudgets(t *testing.T) {
 		starts   int
 	}{
 		{"cached-cd", protocol.PickerCD, candidate.ZoxideCached, 1, 1},
-		{"fresh-cd", protocol.PickerCD, candidate.ZoxideFresh, 3, 3},
+		{"fresh-cd", protocol.PickerCD, candidate.ZoxideFresh, 1, 1},
 		{"cached-cp", protocol.PickerCP, candidate.ZoxideCached, 0, 0},
 		{"fresh-cp", protocol.PickerCP, candidate.ZoxideFresh, 0, 0},
 	}
@@ -226,6 +226,19 @@ func TestRunPickerAppliesZoxidePolicyProcessBudgets(t *testing.T) {
 					response, err := client.Event(ctx, sessionipc.EventRequest{Opcode: protocol.OpParent, Key: "left", QueryBase64: "", CurrentItemBase64: ""})
 					if err != nil || response.Effect.ReloadGeneration == 0 {
 						t.Fatalf("parent transform=%+v err=%v", response, err)
+					}
+					generation, err := client.Load(ctx, sessionipc.LoadRequest{Generation: response.Effect.ReloadGeneration})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, raw := range bytes.Split(bytes.TrimSuffix(generation, []byte{0}), []byte{0}) {
+						wire, err := protocol.ParseRecord(raw)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if wire.Kind == protocol.KindZoxide {
+							t.Fatalf("navigation generation retained zoxide record %q", raw)
+						}
 					}
 				}
 				return fzf.Result{Aborted: true, ExitCode: 130}, nil

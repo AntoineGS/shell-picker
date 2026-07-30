@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
@@ -119,10 +120,10 @@ func TestLinuxAuthorityDifferential(t *testing.T) {
 	if replacements != 6 {
 		t.Fatalf("semantic replacements=%d, want 6", replacements)
 	}
-	assertAuthorityFreshZoxide(t)
+	assertAuthorityFreshLaunchZoxide(t)
 }
 
-func assertAuthorityFreshZoxide(t *testing.T) {
+func assertAuthorityFreshLaunchZoxide(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "local"), 0o755); err != nil {
@@ -136,14 +137,19 @@ func assertAuthorityFreshZoxide(t *testing.T) {
 			replaceEnvironment(os.Environ(), parityHelperEnvironment+"=zoxide-ok", "PARITY_TEST_ROOT="+root), 0)
 	})
 	request := candidate.BuildRequest{Picker: protocol.PickerCD, Location: pathutil.Filesystem([]byte(root)), Initial: true}
-	for _, initial := range []bool{true, false} {
-		request.Initial = initial
-		result, err := builder.Build(context.Background(), request)
-		if err != nil || result.Metrics.ZoxideAttempts != 1 || result.Metrics.ZoxideStarts != 1 || result.Metrics.ZoxideMaxLive != 1 {
-			t.Fatalf("fresh authority initial=%v result=%+v err=%v", initial, result, err)
-		}
+	initial, err := builder.Build(context.Background(), request)
+	mergedDisplays := []string{".", "..", "local", filepath.Join(root, "visible"), filepath.Join(root, "zoxide-one"), filepath.Join(root, "zoxide-two")}
+	if err != nil || !reflect.DeepEqual(parityDisplays(initial.Records), mergedDisplays) || countRecordKind(initial.Records, protocol.KindZoxide) != 3 ||
+		initial.Metrics.ZoxideAttempts != 1 || initial.Metrics.ZoxideStarts != 1 || initial.Metrics.ZoxideMaxLive != 1 {
+		t.Fatalf("fresh authority initial=%+v err=%v", initial, err)
 	}
-	if countProcessPhase(events, "attempt") != 2 || countProcessPhase(events, "start") != 2 {
+	request.Initial = false
+	navigation, err := builder.Build(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertLocalOnlyNotRun(t, navigation, []string{".", "..", "local"})
+	if countProcessPhase(events, "attempt") != 1 || countProcessPhase(events, "start") != 1 {
 		t.Fatalf("fresh authority events=%+v", events)
 	}
 }
