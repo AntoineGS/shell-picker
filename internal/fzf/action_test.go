@@ -7,11 +7,26 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
 
-func TestRenderNavigationEffect(t *testing.T) {
-	got, err := RenderEffect(protocol.Effect{Mode: protocol.ModeNormal, Prompt: `[N] a\)b/ `, ClearMulti: true, ClearQuery: true, ReloadGeneration: 7})
-	want := `clear-multi+reload-sync(l:7)+clear-query+wait+first+change-prompt:[N] a\)b/ `
+func TestRenderNavigationEffectEndsWithHeader(t *testing.T) {
+	effect := protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Header: `a\)b/`,
+		ClearMulti: true, ClearQuery: true, ReloadGeneration: 7}
+	got, err := RenderEffect(effect)
+	want := `clear-multi+reload-sync(l:7)+clear-query+wait+first+change-prompt([N] )+change-header:a\)b/`
 	if err != nil || got != want {
 		t.Fatalf("got=%q want=%q err=%v", got, want, err)
+	}
+}
+
+func TestModePromptActionAcceptsOnlyClosedVocabulary(t *testing.T) {
+	for _, prompt := range []string{"[I] ", "[N] ", "[A] ", "[A!] "} {
+		if _, err := changeModePrompt(prompt); err != nil {
+			t.Fatalf("prompt %q: %v", prompt, err)
+		}
+	}
+	for _, prompt := range []string{"", "[I] > ", "[I] /work/ ", "x)+abort"} {
+		if _, err := changeModePrompt(prompt); err == nil {
+			t.Fatalf("accepted prompt %q", prompt)
+		}
 	}
 }
 
@@ -21,12 +36,12 @@ func TestRenderModeEffects(t *testing.T) {
 		effect protocol.Effect
 		want   string
 	}{
-		{"insert", protocol.Effect{Search: "on", Rebind: protocol.ModeInsert, Prompt: "[I] /work/ "},
-			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(h,j,k,l,i,a,q,space)+change-prompt:[I] /work/ "},
-		{"normal", protocol.Effect{Search: "off", Rebind: protocol.ModeNormal, Prompt: "[N] /work/ "},
-			"disable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+change-prompt:[N] /work/ "},
-		{"add", protocol.Effect{Search: "on", Rebind: protocol.ModeAdd, Prompt: "[A] /work/ ", ClearQuery: true},
-			"enable-search+unbind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+clear-query+change-prompt:[A] /work/ "},
+		{"insert", protocol.Effect{Search: "on", Rebind: protocol.ModeInsert, Prompt: "[I] ", Header: "/work/"},
+			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(h,j,k,l,i,a,q,space)+change-prompt([I] )+change-header:/work/"},
+		{"normal", protocol.Effect{Search: "off", Rebind: protocol.ModeNormal, Prompt: "[N] ", Header: "/work/"},
+			"disable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+change-prompt([N] )+change-header:/work/"},
+		{"add", protocol.Effect{Search: "on", Rebind: protocol.ModeAdd, Prompt: "[A] ", Header: "/work/", ClearQuery: true},
+			"enable-search+unbind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+clear-query+change-prompt([A] )+change-header:/work/"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -61,7 +76,7 @@ func TestRenderTerminalEffects(t *testing.T) {
 
 func TestActionArgumentsRejectControlsAndPutVocabulary(t *testing.T) {
 	for _, raw := range []string{"x\rdown", "x\naccept", "x\x00y"} {
-		if _, err := changePrompt(raw); err == nil {
+		if _, err := changeHeader(raw); err == nil {
 			t.Fatalf("accepted control input %q", raw)
 		}
 	}
@@ -76,11 +91,11 @@ func TestActionArgumentDelimiterCorpusCannotInjectAction(t *testing.T) {
 	for _, raw := range []string{
 		"x)+execute(id)", `x\\)+reload(e:en)`, "x,y:z", "{q}", "$(id)", "transform(e:en)", "accept+abort",
 	} {
-		action, err := changePrompt(raw)
+		action, err := changeHeader(raw)
 		if err != nil {
-			t.Fatalf("changePrompt(%q): %v", raw, err)
+			t.Fatalf("changeHeader(%q): %v", raw, err)
 		}
-		assertTerminalPromptAction(t, action.text, raw)
+		assertTerminalHeaderAction(t, action.text, raw)
 	}
 }
 
@@ -89,7 +104,7 @@ func FuzzActionArgumentsRejectInjection(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {
-		action, err := changePrompt(raw)
+		action, err := changeHeader(raw)
 		if strings.ContainsAny(raw, "\r\n\x00") {
 			if err == nil {
 				t.Fatalf("accepted control input %q as %q", raw, action.text)
@@ -97,22 +112,22 @@ func FuzzActionArgumentsRejectInjection(f *testing.F) {
 			return
 		}
 		if err == nil {
-			assertTerminalPromptAction(t, action.text, raw)
+			assertTerminalHeaderAction(t, action.text, raw)
 		}
 	})
 }
 
 func TestWindowsPromptBackslashIsPreservedByTerminalAction(t *testing.T) {
-	got, err := changePrompt(`[N] C:\ `)
+	got, err := changeHeader(`C:\ `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTerminalPromptAction(t, got.text, `[N] C:\ `)
+	assertTerminalHeaderAction(t, got.text, `C:\ `)
 }
 
-func assertTerminalPromptAction(t *testing.T, rendered, prompt string) {
+func assertTerminalHeaderAction(t *testing.T, rendered, header string) {
 	t.Helper()
-	if want := "change-prompt:" + prompt; rendered != want {
+	if want := "change-header:" + header; rendered != want {
 		t.Fatalf("action=%q want terminal action=%q", rendered, want)
 	}
 }

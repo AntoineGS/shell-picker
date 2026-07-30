@@ -86,11 +86,23 @@ func reload(generation uint64) action {
 	return action{text: fmt.Sprintf("reload-sync(l:%d)", generation)}
 }
 
-func changePrompt(prompt string) (action, error) {
-	if err := validateActionArgument(prompt); err != nil {
+func changeModePrompt(prompt string) (action, error) {
+	switch prompt {
+	case "[I] ", "[N] ", "[A] ", "[A!] ":
+		return action{text: "change-prompt(" + prompt + ")"}, nil
+	default:
+		return action{}, errors.New("fzf: invalid mode prompt")
+	}
+}
+
+func changeHeader(header string) (action, error) {
+	if header == "" {
+		return action{}, errors.New("fzf: empty header")
+	}
+	if err := validateActionArgument(header); err != nil {
 		return action{}, err
 	}
-	return action{text: "change-prompt:" + prompt}, nil
+	return action{text: "change-header:" + header}, nil
 }
 
 func put(text string) (action, error) {
@@ -160,11 +172,18 @@ func RenderEffect(effect protocol.Effect) (string, error) {
 		actions = append(actions, wait(), first())
 	}
 	if effect.Prompt != "" {
-		prompt, err := changePrompt(effect.Prompt)
+		prompt, err := changeModePrompt(effect.Prompt)
 		if err != nil {
 			return "", err
 		}
 		actions = append(actions, prompt)
+	}
+	if effect.Header != "" {
+		header, err := changeHeader(effect.Header)
+		if err != nil {
+			return "", err
+		}
+		actions = append(actions, header)
 	}
 	return sequence(actions...), nil
 }

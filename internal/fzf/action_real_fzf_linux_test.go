@@ -30,7 +30,7 @@ func TestInstalledFZFActionSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prompts := []string{
+	headers := []string{
 		`[windows] C:\ end `,
 		`[unix] escaped\\name end `,
 		`[close-plus] x)+execute(id) end `,
@@ -38,23 +38,24 @@ func TestInstalledFZFActionSemantics(t *testing.T) {
 		`[substitution] {q} $(id) end `,
 		`[actions] transform(e:en)+abort end `,
 	}
-	for _, prompt := range prompts {
-		t.Run(prompt, func(t *testing.T) {
-			action, err := changePrompt(prompt)
+	for _, header := range headers {
+		t.Run(header, func(t *testing.T) {
+			action, err := changeHeader(header)
 			if err != nil {
 				t.Fatal(err)
 			}
-			screen := runFZFUntilPrompt(t, path, action.text, prompt)
-			if !bytes.Contains(screen, []byte(strings.TrimSuffix(prompt, " "))) {
-				t.Fatalf("prompt %q not rendered unchanged; terminal output=%q", prompt, screen)
+			expected := strings.TrimSuffix(header, " ")
+			screen := runFZFUntilText(t, path, action.text, expected)
+			if !bytes.Contains(screen, []byte(expected)) {
+				t.Fatalf("header %q not rendered unchanged; terminal output=%q", header, screen)
 			}
 		})
 	}
 }
 
-func runFZFUntilPrompt(t *testing.T, path, actionText, prompt string) []byte {
+func runFZFUntilText(t *testing.T, path, actionText, text string) []byte {
 	t.Helper()
-	target := []byte(strings.TrimSuffix(prompt, " "))
+	target := []byte(text)
 	master, slave := openTestPTY(t)
 	defer master.Close()
 	defer slave.Close()
@@ -106,11 +107,11 @@ func runFZFUntilPrompt(t *testing.T, path, actionText, prompt string) []byte {
 				return latest
 			}
 			if update.err != nil && !errors.Is(update.err, os.ErrClosed) {
-				t.Fatalf("fzf exited before rendering prompt %q: %v; output=%q", prompt, update.err, latest)
+				t.Fatalf("fzf exited before rendering text %q: %v; output=%q", text, update.err, latest)
 			}
 		case <-timer.C:
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			t.Fatalf("timed out waiting for prompt %q; output=%q", prompt, latest)
+			t.Fatalf("timed out waiting for text %q; output=%q", text, latest)
 		}
 	}
 }
