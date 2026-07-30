@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -103,45 +104,53 @@ func resourceDifference(baseline, current resourceSnapshot) string {
 		return "artifact identities differ"
 	}
 	var extras []string
-	for signature, count := range current.goroutineStacks {
-		if extra := count - baseline.goroutineStacks[signature]; extra > 0 {
+	for id, signature := range current.goroutineStacks {
+		if _, existed := baseline.goroutineStacks[id]; !existed {
 			digest := sha256.Sum256([]byte(signature))
 			firstFrame := strings.SplitN(signature, "\n", 3)
 			frame := firstFrame[0]
 			if len(firstFrame) > 1 {
 				frame = firstFrame[1]
 			}
-			extras = append(extras, fmt.Sprintf("%x:+%d:%s", digest[:8], extra, frame))
+			extras = append(extras, fmt.Sprintf("id=%d:%x:%s", id, digest[:8], frame))
 		}
 	}
 	if len(extras) != 0 {
 		sort.Strings(extras)
-		return "new goroutine stack signatures " + strings.Join(extras, ",")
+		return "new goroutine identities " + strings.Join(extras, ",")
 	}
 	return ""
 }
 
 var (
-	goroutineID  = regexp.MustCompile(`goroutine [0-9]+`)
+	goroutineID  = regexp.MustCompile(`^goroutine ([0-9]+) `)
 	stackAddress = regexp.MustCompile(`0x[0-9a-fA-F]+`)
 	stackLine    = regexp.MustCompile(`:[0-9]+`)
 )
 
-func snapshotGoroutineStacks() map[string]int {
+func snapshotGoroutineStacks() map[uint64]string {
 	size := 1 << 20
 	for {
 		buffer := make([]byte, size)
 		written := runtime.Stack(buffer, true)
 		if written < len(buffer) {
-			stacks := make(map[string]int)
+			stacks := make(map[uint64]string)
 			for _, stack := range strings.Split(strings.TrimSpace(string(buffer[:written])), "\n\n") {
 				if strings.Contains(stack, "integration.snapshotGoroutineStacks") {
 					continue // Exclude the observer goroutine whose caller differs by sample site.
 				}
-				normalized := goroutineID.ReplaceAllString(stack, "goroutine #")
+				match := goroutineID.FindStringSubmatch(stack)
+				if len(match) != 2 {
+					continue
+				}
+				id, err := strconv.ParseUint(match[1], 10, 64)
+				if err != nil {
+					continue
+				}
+				normalized := goroutineID.ReplaceAllString(stack, "goroutine # ")
 				normalized = stackAddress.ReplaceAllString(normalized, "0x#")
 				normalized = stackLine.ReplaceAllString(normalized, ":#")
-				stacks[normalized]++
+				stacks[id] = normalized
 			}
 			return stacks
 		}
@@ -188,5 +197,13 @@ func TestResourceSnapshotDetectsDescriptorFreeBlockedGoroutine(t *testing.T) {
 	<-done
 	if diff == "" {
 		t.Fatal("descriptor-free blocked goroutine escaped resource comparison")
+	}
+}
+
+func TestResourceSnapshotDetectsSameSignatureGoroutineReplacement(t *testing.T) {
+	baseline := resourceSnapshot{goroutineStacks: map[uint64]string{41: "same signature"}}
+	current := resourceSnapshot{goroutineStacks: map[uint64]string{42: "same signature"}}
+	if diff := resourceDifference(baseline, current); diff == "" {
+		t.Fatal("same-signature goroutine replacement escaped identity comparison")
 	}
 }

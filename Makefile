@@ -9,7 +9,7 @@ test:
 check: test
 
 security-gate:
-	./scripts/security-gate.sh $(GO_TEST_ARGS)
+	./scripts/security-gate.sh -race -count=10 -p=1 -timeout=10m
 
 real-fzf:
 	test -n "$(SHELL_PICKER_REAL_FZF)"

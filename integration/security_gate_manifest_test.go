@@ -3,9 +3,11 @@ package integration
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -131,13 +133,14 @@ var task20GateManifest = []task20GatePackage{
 		"TestCreateDirectoryTreeRejectsJunctionInBaseAncestry",
 		"TestCreateDirectoryTreeRejectsJunctionInQueryComponent",
 	}},
-	{path: "./integration", selectedUnix: 23, selectedWindows: 21, tests: []string{
+	{path: "./integration", selectedUnix: 25, selectedWindows: 25, tests: []string{
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
 		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",
 		"TestCancelledNavigationAndPreviewLeakNothing",
 		"TestResourceSnapshotFingerprintsArtifactReplacement",
 		"TestResourceSnapshotDetectsDescriptorFreeBlockedGoroutine",
+		"TestResourceSnapshotDetectsSameSignatureGoroutineReplacement",
 		"TestPreviewCategoryMatrix",
 		"TestParityPreviewResourceProcess",
 		"TestRealFZFPreviewReplacementKillsWholeTree",
@@ -147,6 +150,8 @@ var task20GateManifest = []task20GatePackage{
 		"TestWindowsResourceSnapshotUsesExactHandleIdentities",
 		"TestWindowsOwnedProcessHandleRegistryReturnsToBaseline",
 		"TestWindowsResourceSnapshotFingerprintsDirectoryReplacement",
+		"TestWindowsHandleIdentityIncludesObjectForReusedSlot",
+		"TestWindowsTask20HandleScopeLifecycleOrdering",
 	}},
 }
 
@@ -190,6 +195,70 @@ func TestSecurityGateRunnerMatchesManifest(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `go test "$@" $TASK20_PACKAGES -run "$TASK20_PATTERN"`) {
 		t.Fatal("checked-in gate does not execute the manifest with forwarded go test arguments")
+	}
+	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(makefile), "GO_TEST_ARGS") {
+		t.Fatal("Makefile security gate interpolates GO_TEST_ARGS")
+	}
+	if !strings.Contains(string(makefile), "./scripts/security-gate.sh -race -count=10 -p=1") {
+		t.Fatal("Makefile security gate does not use fixed required arguments")
+	}
+	if !strings.Contains(string(data), `for argument in "$@"`) || !strings.Contains(string(data), `exit 2`) {
+		t.Fatal("checked-in security gate does not validate direct arguments")
+	}
+}
+
+func TestSecurityGateRejectsUnsafeArgumentsAndForwardsSafeArguments(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX security gate is compile-only on Windows")
+	}
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	logPath := filepath.Join(bin, "go-arguments")
+	marker := filepath.Join(bin, "injection-ran")
+	fakeGo := filepath.Join(bin, "go")
+	fake := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\n", logPath)
+	if err := os.WriteFile(fakeGo, []byte(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "scripts", "security-gate.sh")
+	unsafe := [][]string{{"; id > " + marker}, {"-exec=true"}, {"-args"}, {"./internal/process"}, {"--"}, {"-run=TestAnything"}, {"-timeout=1s;id"}}
+	for _, arguments := range unsafe {
+		t.Run(arguments[0], func(t *testing.T) {
+			_ = os.Remove(logPath)
+			command := exec.Command(script, arguments...)
+			command.Env = append(os.Environ(), "PATH="+bin)
+			if err := command.Run(); err == nil {
+				t.Fatalf("unsafe arguments %q succeeded", arguments)
+			}
+			if _, err := os.Stat(logPath); !os.IsNotExist(err) {
+				t.Fatalf("unsafe arguments reached go: %v", err)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("shell metacharacter injection ran: %v", err)
+			}
+		})
+	}
+
+	command := exec.Command(script, "-race", "-count=10", "-p=1", "-timeout=1m30s")
+	command.Env = append(os.Environ(), "PATH="+bin)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("safe arguments failed: %v: %s", err, output)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := strings.Split(strings.TrimSpace(string(data)), "\n")
+	wantPrefix := []string{"test", "-race", "-count=10", "-p=1", "-timeout=1m30s"}
+	if len(arguments) < len(wantPrefix) || !reflect.DeepEqual(arguments[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("safe arguments did not reach go test intact: %q", arguments)
 	}
 }
 

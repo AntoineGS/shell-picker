@@ -182,17 +182,17 @@ func (backend *task20BlockingBackend) ResolvePreview(ctx context.Context, _ []by
 
 func runTask20CancelledPreviewHandler(t *testing.T) {
 	t.Helper()
-	handleScope := beginTask20HandleScope(t, "server")
 	token, err := sessionipc.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	handleScope.Capture(t)
 	backend := &task20BlockingBackend{started: make(chan struct{}), returned: make(chan struct{})}
+	handleScope := beginTask20HandleScope(t, "server")
 	server, err := sessionipc.Listen(context.Background(), token, backend)
 	if err != nil {
 		t.Fatal(err)
 	}
+	handleScope.Capture(t)
 	client, err := sessionipc.NewClientFromEnv(func(key string) string {
 		if key == "SHELL_PICKER_ADDR" {
 			return server.Address()
@@ -238,7 +238,6 @@ func runTask20CancelledPreviewHandler(t *testing.T) {
 
 func runTask20CancelledExternalPreview(t *testing.T, tools, fixture, cacheRoot string) {
 	t.Helper()
-	handleScope := beginTask20HandleScope(t, "process/job")
 	processLog := filepath.Join(tools, "processes.log")
 	environmentLog := filepath.Join(tools, "environment.log")
 	_ = os.Remove(processLog)
@@ -249,6 +248,7 @@ func runTask20CancelledExternalPreview(t *testing.T, tools, fixture, cacheRoot s
 	}
 	defer readCancel.Close()
 	defer writeCancel.Close()
+	handleScope := beginTask20HandleScope(t, "process/job")
 	events := make(chan process.ProcessEvent, 4)
 	runner := process.Runner{Observe: func(event process.ProcessEvent) { events <- event }}
 	done := make(chan error, 1)

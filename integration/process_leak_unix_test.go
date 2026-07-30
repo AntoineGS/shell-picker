@@ -13,7 +13,7 @@ import (
 
 type resourceSnapshot struct {
 	descriptors     map[string]struct{}
-	goroutineStacks map[string]int
+	goroutineStacks map[uint64]string
 	artifacts       map[string]artifactFingerprint
 }
 
