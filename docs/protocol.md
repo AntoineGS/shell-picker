@@ -8,6 +8,22 @@ Event JSON is `opcode`, `key`, `query_base64`, and `current_item_base64`; load J
 
 ## Loopback IPC
 
+```trace-schema
+event,outcome,generation,renderer,counters
+session.start,cd|cp,0,,0
+generation.start,ok,nonzero,,0
+generation.publish,ok,nonzero,optional,validated
+generation.discard,cancelled|error|stale|superseded,nonzero,,validated
+fzf.start,ok,0,,0
+fzf.exit,ok|aborted|error,0,,0
+callback.event,mi|ma|es|fw|up|sl|hm|en,0,,0
+callback.load,ok|error,nonzero,,0
+preview.dispatch|preview.finished,ok|error,0,validated,validated
+preview.cancel,cancelled,0,validated,0
+preview.exit,ok|error,0,validated,validated
+session.close,accepted|aborted|error,0,,0
+```
+
 The listener binds `127.0.0.1:0`. Routes use the literal `RequestURI` `/v1/event`, `/v1/load`, or `/v1/preview`; `RawQuery` and `RawPath` must both be empty. Before constant-time token comparison, the server requires exactly one Authorization field with exactly one value in the grammar `Authorization: Bearer <token>`.
 
 Only POST with `Content-Type: application/json` is admitted. JSON event, preview, and error bodies are limited to 64 KiB. Load `application/octet-stream` responses are limited to 64 MiB, and telemetry-empty client responses to 1 KiB. Decoding and draining use limit plus one bytes to distinguish overlimit input; every body is closed, and an overlimit response is not eligible for connection reuse. The server also disables keep-alives and bounds concurrent handlers.

@@ -9,9 +9,9 @@ import (
 
 func TestRoundTwoDocumentationContracts(t *testing.T) {
 	checks := map[string][]string{
-		"README.md":            {"| Mode | Keys | Result |", "Insert", "Normal", "Add", "Enter creates", "Esc"},
-		"docs/protocol.md":     {"generation.discard", "process-error", "preview.finished", "zoxide_max_live", "native", "field-to-event"},
-		"docs/architecture.md": {"stateDiagram", "ordinary proposal XOR AddIntent", "pending reply", "cancel → wait → rollback → reply → replacement", "ContainmentForegroundTree", "ContainmentOwnTree", "ContainmentInheritTree", "TreeHandle"},
+		"README.md":            {"| Mode | Keys | Result |", "Add unbinds", "Enter creates", "Esc"},
+		"docs/protocol.md":     {"trace-schema", "generation.discard", "process-error", "preview.finished", "zoxide_max_live", "native", "field-to-event"},
+		"docs/architecture.md": {"stateDiagram", "Handle resolves AddIntent", "only ProposedTransition enters Actor.Apply", "Effect.Ignore", "cancel → wait → rollback → reply → replacement", "ContainmentForegroundTree", "ContainmentOwnTree", "ContainmentInheritTree", "TreeHandle"},
 		"docs/security.md":     {"WaitDelay", "drain", "same-user namespace replacement", "stable pointer identity"},
 	}
 	for name, values := range checks {

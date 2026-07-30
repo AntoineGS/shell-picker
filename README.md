@@ -29,13 +29,13 @@ shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 
 ### Picker keys
 
-These are user-facing fzf bindings, not callback opcodes: Enter accepts; Esc and `q` abort; `i` changes to insert mode; `a` starts Add; Ctrl-L, Tab, or Right navigates forward; Ctrl-H or Left goes to parent; `/` enters slash navigation; `~` goes home; `j`/`k` move selection and `h`/`l` trigger parent/forward. In `cd`, Space clears any mark and toggles the single selection; in `cp`, Space toggles marks. `cd` sorts and has one selectable item; `cp` preserves source order and supports multiple items. Add proposals are validated and created transactionally; abort produces no selected output. Internal callback opcodes are specified only in [the protocol reference](docs/protocol.md).
+The table is user-facing fzf behavior, not callback opcode names. In `cd`, Space clears any mark and toggles the single selection; in `cp`, Space toggles marks. `cd` sorts and has one selectable item; `cp` preserves source order and supports multiple items. Internal callback opcodes are specified only in [the protocol reference](docs/protocol.md).
 
 | Mode | Keys | Result |
 | --- | --- | --- |
-| Insert | `i`; Enter; Esc | `i` enters Insert; Enter accepts the current valid selection; Esc returns to Normal rather than aborting. |
-| Normal | `a`, movement/navigation keys, Enter, `q` | `a` enters Add; Enter accepts; `q` is bound here and aborts fzf. |
-| Add | Enter, Esc, navigation keys | Enter creates the proposed directory tree and navigates to it (it does not accept picker output); Esc cancels the Add proposal and returns to Normal. |
+| Insert | `i`; Enter; Esc | `i` enters Insert; Enter accepts the current valid selection; Esc emits the escape transition. |
+| Normal | `a`, Ctrl-L/Tab/Right, Ctrl-H/Left, `/`, `~`, `j`/`k`, `h`/`l`, Enter, `q` | `a` enters Add; Enter accepts; `q` is bound in Normal and aborts fzf. |
+| Add | Add-mode static keys only | Add unbinds normal/navigation groups. Enter creates and loads the proposed directory tree rather than accepting picker output; Esc emits the escape transition. |
 
 Do not treat a displayed virtual record as a path: at a Windows drive or UNC share root, virtual `..` navigates to Drives, is neither previewable nor acceptable as filesystem output, and does not appear in Drives itself.
 
