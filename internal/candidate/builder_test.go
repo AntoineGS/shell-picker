@@ -98,28 +98,17 @@ func TestInitialBuilderOverlapsCacheLoadAndMergesLocalFirst(t *testing.T) {
 	}
 }
 
-func TestCachedPolicyAttemptsOnceForSessionAndLaterReportsCached(t *testing.T) {
-	cache, counts := newObservedCache(t, "printf '/z/one\\n'\n", time.Second, nil)
+func TestCachedPolicyNoninitialBuildIsLocalOnlyWithoutReadyCache(t *testing.T) {
+	cache, _ := newObservedCache(t, "printf '/z/one\\n'\n", time.Second, nil)
 	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
-	first, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-	if err != nil {
-		t.Fatal(err)
+	got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false))
+	if err != nil || !reflect.DeepEqual(paths(got.Records), []string{"/local", "/z/same"}) {
+		t.Fatalf("got=%+v err=%v", got, err)
 	}
-	for range 2 {
-		got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.Metrics.ZoxideOutcome != "cached" || got.Metrics.ZoxideAttempts != 0 || got.Metrics.ZoxideStarts != 0 ||
-			got.Metrics.ZoxideExits != 0 || got.Metrics.ZoxideProcesses != 0 || got.Metrics.ZoxideLive != 0 {
-			t.Fatalf("later metrics=%+v", got.Metrics)
-		}
-	}
-	if first.Metrics.ZoxideOutcome != "ok" {
-		t.Fatalf("first metrics=%+v", first.Metrics)
-	}
-	if attempts, starts, maxLive, exits := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 {
-		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
+	if got.ZoxideDiscarded || got.Metrics.ZoxideOutcome != "not-run" || got.Metrics.ZoxideAttempts != 0 ||
+		got.Metrics.ZoxideStarts != 0 || got.Metrics.ZoxideExits != 0 || got.Metrics.ZoxideProcesses != 0 ||
+		got.Metrics.ZoxideLive != 0 || got.Metrics.ZoxideMaxLive != 0 {
+		t.Fatalf("noninitial metrics=%+v discarded=%v", got.Metrics, got.ZoxideDiscarded)
 	}
 }
 
@@ -148,28 +137,47 @@ func TestExplicitPolicyConfigurationClearsStaleStateAndSuppliesOneFreshPermit(t 
 	}
 }
 
-func TestFreshPolicyAttemptsEveryCDGeneration(t *testing.T) {
-	name, environment := zoxideExecutable(t, "printf '/z/one\\n'\n")
-	counts := new(processCounts)
+func TestFreshPolicyNoninitialBuildSkipsFactoryPermitAndProcess(t *testing.T) {
+	var factoryCalls atomic.Int32
 	builder := &Builder{enumerate: testLocal}
 	builder.ConfigureFresh(func() (*ZoxideCache, error) {
-		return NewZoxideCache(process.Runner{Observe: counts.observe}, name, environment, time.Second)
+		factoryCalls.Add(1)
+		t.Error("fresh factory called for noninitial build")
+		return nil, errors.New("fresh factory called for noninitial build")
 	})
-	for _, initial := range []bool{true, false} {
-		got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, initial))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.Metrics.ZoxideAttempts != 1 || got.Metrics.ZoxideStarts != 1 || got.Metrics.ZoxideMaxLive != 1 {
-			t.Fatalf("metrics=%+v", got.Metrics)
-		}
+	<-builder.freshPermit
+	type buildResponse struct {
+		result BuildResult
+		err    error
 	}
-	if attempts, starts, maxLive, exits := counts.values(); attempts != 2 || starts != 2 || maxLive != 1 || exits != 2 {
-		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
+	done := make(chan buildResponse, 1)
+	go func() {
+		result, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false))
+		done <- buildResponse{result: result, err: err}
+	}()
+	var response buildResponse
+	select {
+	case response = <-done:
+	case <-time.After(100 * time.Millisecond):
+		builder.freshPermit <- struct{}{}
+		<-done
+		t.Fatal("noninitial build blocked on fresh permit")
+	}
+	if response.err != nil || !reflect.DeepEqual(paths(response.result.Records), []string{"/local", "/z/same"}) {
+		t.Fatalf("got=%+v err=%v", response.result, response.err)
+	}
+	got := response.result
+	if got.ZoxideDiscarded || got.Metrics.ZoxideOutcome != "not-run" || got.Metrics.ZoxideAttempts != 0 ||
+		got.Metrics.ZoxideStarts != 0 || got.Metrics.ZoxideExits != 0 || got.Metrics.ZoxideProcesses != 0 ||
+		got.Metrics.ZoxideLive != 0 || got.Metrics.ZoxideMaxLive != 0 {
+		t.Fatalf("noninitial metrics=%+v discarded=%v", got.Metrics, got.ZoxideDiscarded)
+	}
+	if factoryCalls.Load() != 0 {
+		t.Fatalf("factory calls=%d", factoryCalls.Load())
 	}
 }
 
-func TestFreshZeroTimeoutIsAuthoritativeUnlimitedPerGeneration(t *testing.T) {
+func TestFreshZeroTimeoutIsAuthoritativeForInitialBuild(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell timing fixture")
 	}
@@ -179,14 +187,12 @@ func TestFreshZeroTimeoutIsAuthoritativeUnlimitedPerGeneration(t *testing.T) {
 	builder.ConfigureFresh(func() (*ZoxideCache, error) {
 		return NewZoxideCache(process.Runner{Observe: counts.observe}, name, environment, 0)
 	})
-	for _, initial := range []bool{true, false} {
-		got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, initial))
-		if err != nil || !reflect.DeepEqual(paths(got.Records), []string{"/local", "/z/same", "/z/one"}) {
-			t.Fatalf("got=%+v err=%v", got, err)
-		}
+	got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
+	if err != nil || !reflect.DeepEqual(paths(got.Records), []string{"/local", "/z/same", "/z/one"}) {
+		t.Fatalf("got=%+v err=%v", got, err)
 	}
-	if attempts, starts, maxLive, _ := counts.values(); attempts != 2 || starts != 2 || maxLive != 1 {
-		t.Fatalf("counts=(%d,%d,%d)", attempts, starts, maxLive)
+	if attempts, starts, maxLive, exits := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 {
+		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
 	}
 }
 
@@ -223,7 +229,7 @@ func TestFreshBuilderSerializesSessionQueriesAndCancelledWaiterDoesNotAttempt(t 
 	waiterCtx := &causeCheckedContext{Context: cancellable, checked: make(chan struct{})}
 	waiterDone := make(chan error, 1)
 	go func() {
-		_, err := builder.Build(waiterCtx, testRequest(protocol.PickerCD, false))
+		_, err := builder.Build(waiterCtx, testRequest(protocol.PickerCD, true))
 		waiterDone <- err
 	}()
 	<-waiterCtx.checked
@@ -252,7 +258,7 @@ func TestFreshBuilderSerializesSessionQueriesAndCancelledWaiterDoesNotAttempt(t 
 	}
 	nextDone := make(chan error, 1)
 	go func() {
-		_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false))
+		_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
 		nextDone <- err
 	}()
 	<-started

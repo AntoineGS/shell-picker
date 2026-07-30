@@ -61,21 +61,15 @@ func (builder *Builder) Build(ctx context.Context, request BuildRequest) (BuildR
 	if cause := context.Cause(ctx); cause != nil {
 		return BuildResult{}, cause
 	}
+	if request.Picker != protocol.PickerCD && request.Picker != protocol.PickerCP {
+		return BuildResult{}, fmt.Errorf("unsupported picker %q", request.Picker)
+	}
 	enumerate := builder.enumerate
 	if enumerate == nil {
 		enumerate = EnumerateLocal
 	}
-	if request.Picker == protocol.PickerCP {
-		started := time.Now()
-		records, err := enumerate(ctx, request.Picker, request.Location, LocalOptions{StatWorkers: request.StatWorkers})
-		metrics := SourceMetrics{LocalDuration: time.Since(started), ZoxideOutcome: "not-run"}
-		if cause := context.Cause(ctx); cause != nil {
-			return BuildResult{}, cause
-		}
-		return BuildResult{Records: records, Metrics: metrics}, err
-	}
-	if request.Picker != protocol.PickerCD {
-		return BuildResult{}, fmt.Errorf("unsupported picker %q", request.Picker)
+	if request.Picker == protocol.PickerCP || !request.Initial {
+		return buildLocalOnly(ctx, request, enumerate)
 	}
 
 	if builder.Policy == ZoxideFresh {
@@ -90,12 +84,9 @@ func (builder *Builder) Build(ctx context.Context, request BuildRequest) (BuildR
 		if cache == nil {
 			return BuildResult{}, errors.New("create fresh zoxide cache: nil cache")
 		}
-		return buildWithZoxide(ctx, request, enumerate, cache, true)
+		return buildWithZoxide(ctx, request, enumerate, cache)
 	}
-	if request.Initial {
-		return buildWithZoxide(ctx, request, enumerate, builder.Cache, true)
-	}
-	return builder.buildCachedNavigation(ctx, request, enumerate)
+	return buildWithZoxide(ctx, request, enumerate, builder.Cache)
 }
 
 func (builder *Builder) acquireFreshPermit(ctx context.Context) error {
@@ -137,12 +128,25 @@ type localBuildResult struct {
 	err      error
 }
 
+func buildLocalOnly(
+	ctx context.Context,
+	request BuildRequest,
+	enumerate func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error),
+) (BuildResult, error) {
+	started := time.Now()
+	records, err := enumerate(ctx, request.Picker, request.Location, LocalOptions{StatWorkers: request.StatWorkers})
+	metrics := SourceMetrics{LocalDuration: time.Since(started), ZoxideOutcome: "not-run"}
+	if cause := context.Cause(ctx); cause != nil {
+		return BuildResult{}, cause
+	}
+	return BuildResult{Records: records, Metrics: metrics}, err
+}
+
 func buildWithZoxide(
 	ctx context.Context,
 	request BuildRequest,
 	enumerate func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error),
 	cache *ZoxideCache,
-	reportAttempt bool,
 ) (BuildResult, error) {
 	buildCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
@@ -167,14 +171,6 @@ func buildWithZoxide(
 	zoxideErr := <-zoxideDone
 	records, metrics, recordsErr := cache.Records()
 	metrics.LocalDuration = local.duration
-	if !reportAttempt {
-		metrics.ZoxideAttempts = 0
-		metrics.ZoxideStarts = 0
-		metrics.ZoxideExits = 0
-		metrics.ZoxideProcesses = 0
-		metrics.ZoxideLive = 0
-		metrics.ZoxideMaxLive = 0
-	}
 	if metrics.ZoxideOutcome == "cancelled" {
 		if zoxideErr != nil {
 			return BuildResult{}, zoxideErr
@@ -191,39 +187,6 @@ func buildWithZoxide(
 		ZoxideDiscarded: metrics.ZoxideOutcome != "ok" && metrics.ZoxideOutcome != "cached",
 		Metrics:         metrics,
 	}, nil
-}
-
-func (builder *Builder) buildCachedNavigation(
-	ctx context.Context,
-	request BuildRequest,
-	enumerate func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error),
-) (BuildResult, error) {
-	started := time.Now()
-	local, err := enumerate(ctx, request.Picker, request.Location, LocalOptions{StatWorkers: request.StatWorkers})
-	localDuration := time.Since(started)
-	if err != nil {
-		return BuildResult{}, err
-	}
-	if cause := context.Cause(ctx); cause != nil {
-		return BuildResult{}, cause
-	}
-	zoxide, metrics, err := builder.Cache.Records()
-	if metrics.ZoxideOutcome == "cancelled" {
-		return BuildResult{}, err
-	}
-	if errors.Is(err, errZoxideNotReady) {
-		return BuildResult{}, err
-	}
-	metrics.LocalDuration = localDuration
-	metrics.ZoxideOutcome = "cached"
-	metrics.ZoxideDuration = 0
-	metrics.ZoxideAttempts = 0
-	metrics.ZoxideStarts = 0
-	metrics.ZoxideExits = 0
-	metrics.ZoxideProcesses = 0
-	metrics.ZoxideLive = 0
-	metrics.ZoxideMaxLive = 0
-	return BuildResult{Records: MergeRecords(local, zoxide), Metrics: metrics}, nil
 }
 
 // MergeRecords returns local-first records with authoritative target deduplication.

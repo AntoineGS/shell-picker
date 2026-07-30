@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"os"
@@ -277,6 +278,45 @@ func TestRunPickerMissingZoxideAttemptsWithoutStarting(t *testing.T) {
 	attempts, starts, maxLive := counts.values()
 	if attempts != 1 || starts != 0 || maxLive != 0 {
 		t.Fatalf("attempts=%d starts=%d maxLive=%d", attempts, starts, maxLive)
+	}
+}
+
+func TestRunPickerNavigationRemovesZoxideCandidates(t *testing.T) {
+	fixture := newPickerFixture(t, protocol.PickerCD)
+	zoxideTarget := t.TempDir()
+	fixture.dependencies.ZoxidePath = zoxideFixture(t, zoxideTarget)
+	fixture.dependencies.launchFZF = func(ctx context.Context, config fzf.Config) (fzf.Result, error) {
+		zoxideRecord := recordForPath(t, config.Input, zoxideTarget)
+		wire, err := protocol.ParseRecord(zoxideRecord)
+		if err != nil || wire.Kind != protocol.KindZoxide {
+			t.Fatalf("zoxide record=%q kind=%q err=%v", zoxideRecord, wire.Kind, err)
+		}
+		childRecord := recordForPath(t, config.Input, fixture.child)
+		client := callbackClient(t, config)
+		response, err := client.Event(ctx, sessionipc.EventRequest{
+			Opcode:            protocol.OpForward,
+			CurrentItemBase64: base64.StdEncoding.EncodeToString(childRecord),
+		})
+		if err != nil || response.Effect.ReloadGeneration == 0 {
+			t.Fatalf("forward transform=%+v err=%v", response, err)
+		}
+		generation, err := client.Load(ctx, sessionipc.LoadRequest{Generation: response.Effect.ReloadGeneration})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, raw := range bytes.Split(bytes.TrimSuffix(generation, []byte{0}), []byte{0}) {
+			wire, err := protocol.ParseRecord(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wire.Kind == protocol.KindZoxide {
+				t.Fatalf("navigation generation retained zoxide record %q", raw)
+			}
+		}
+		return fzf.Result{Aborted: true, ExitCode: 130}, nil
+	}
+	if _, err := RunPicker(context.Background(), fixture.options, fixture.dependencies); err != nil {
+		t.Fatal(err)
 	}
 }
 
