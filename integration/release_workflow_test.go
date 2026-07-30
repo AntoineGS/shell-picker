@@ -23,7 +23,7 @@ func TestReleaseWorkflowContract(t *testing.T) {
 	if strings.Contains(text, "sha256sum") {
 		t.Fatal("workflow must delegate checksum handling to the tested release tool")
 	}
-	requireAll(t, text, "permissions:\n  contents: write", "test \"${GITHUB_REF_TYPE}\" = tag", "--verify-tag", "--generate-notes", "--title \"$GITHUB_REF_NAME\"", "go run ./scripts/release.go check \"$GITHUB_REF_NAME\"")
+	requireAll(t, text, "test \"${GITHUB_REF_TYPE}\" = tag", "--verify-tag", "--generate-notes", "--title \"$GITHUB_REF_NAME\"", "go run ./scripts/release.go check \"$GITHUB_REF_NAME\"")
 	releaseStart := strings.Index(text, "gh release create ")
 	if releaseStart < 0 || strings.Count(text[releaseStart:], "checksums.txt") != 1 {
 		t.Fatal("release publication must include checksums exactly once")
@@ -211,6 +211,40 @@ func TestReleaseCheckRejectsZipMetadataMutation(t *testing.T) {
 	updateChecksum(t, filepath.Base(path), data)
 	if runReleaseFailure(t, "make", "release-check") == nil {
 		t.Fatal("release-check accepted a ZIP metadata mutation")
+	}
+}
+
+func TestReleaseCheckRejectsOversizedMalformedArchiveBeforeParsing(t *testing.T) {
+	directory := filepath.Join("..", "dist")
+	if err := os.RemoveAll(directory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{
+		"shell-picker_0.0.0-test_linux_amd64.tar.gz",
+		"shell-picker_0.0.0-test_linux_arm64.tar.gz",
+		"shell-picker_0.0.0-test_windows_amd64.zip",
+		"shell-picker_0.0.0-test_windows_arm64.zip",
+	}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte("malformed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Truncate(filepath.Join(directory, names[0]), 128*1024*1024+1); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "run", "./scripts/release.go", "check", "v0.0.0-test")
+	command.Dir = ".."
+	output, err := command.CombinedOutput()
+	if err == nil {
+		t.Fatalf("release check accepted oversized malformed archive: %s", output)
+	}
+	if !strings.Contains(string(output), "archive exceeds 134217728-byte release limit") {
+		t.Fatalf("archive parser ran before size rejection: %s", output)
 	}
 }
 

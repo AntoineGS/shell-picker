@@ -165,3 +165,77 @@ func TestDocumentedPlatformTimeoutsMatchAuthority(t *testing.T) {
 		}
 	}
 }
+
+func TestDocumentationMatchesPreviewCacheHandleRelativePrimitives(t *testing.T) {
+	document := readDoc(t, "docs/preview.md")
+	for _, stale := range []string{"Lstat", "MoveFileExW"} {
+		if strings.Contains(document, stale) {
+			t.Errorf("preview documentation names stale cache primitive %s", stale)
+		}
+	}
+	claims := []struct {
+		document   string
+		source     string
+		primitives []string
+	}{
+		{
+			document:   "root, component, entry, temporary, publication, timestamp, and prune operations are anchored to opened directory handles",
+			source:     "internal/preview/cache_posix.go",
+			primitives: []string{"openCacheRoot", "openFileAt", "createFileAt", "unix.Linkat", "unix.Futimes"},
+		},
+		{
+			document:   "`openat`/`mkdirat`",
+			source:     "internal/preview/cache_posix.go",
+			primitives: []string{"unix.Openat", "unix.Mkdirat", "unix.O_NOFOLLOW"},
+		},
+		{
+			document:   "`linkat`",
+			source:     "internal/preview/cache_posix.go",
+			primitives: []string{"unix.Linkat", "validateOpenFile(temp, 2", "validateOpenFile(temp, 1"},
+		},
+		{
+			document:   "`renameat`/`unlinkat`-style quarantine and pruning",
+			source:     "internal/preview/cache_quarantine_linux.go",
+			primitives: []string{"unix.Renameat2", "unix.RENAME_NOREPLACE", "unix.Unlinkat"},
+		},
+		{
+			document:   "stable device/inode identity and expected link count",
+			source:     "internal/preview/cache_posix.go",
+			primitives: []string{"stat.Dev", "stat.Ino", "stat.Nlink", "info.Mode().IsRegular()"},
+		},
+		{
+			document:   "NT handle-relative `NtCreateFile`",
+			source:     "internal/preview/cache_windows_nt.go",
+			primitives: []string{"RootDirectory: root", "windows.OBJ_DONT_REPARSE", "windows.FILE_OPEN_REPARSE_POINT", "windows.NtCreateFile"},
+		},
+		{
+			document:   "handle-relative `NtSetInformationFile` publication",
+			source:     "internal/preview/cache_windows_nt.go",
+			primitives: []string{"info.RootDirectory", "windows.NtSetInformationFile", "windows.FileRenameInformation"},
+		},
+		{
+			document:   "volume/file-index identity and expected link count",
+			source:     "internal/preview/cache_windows_nt.go",
+			primitives: []string{"info.VolumeSerialNumber", "info.FileIndexHigh", "info.NumberOfLinks", "windows.FILE_ATTRIBUTE_REPARSE_POINT"},
+		},
+		{
+			document:   "handle-based timestamp refresh",
+			source:     "internal/preview/cache_windows.go",
+			primitives: []string{"windows.SetFileTime", "validateHandle"},
+		},
+	}
+	for _, claim := range claims {
+		if !strings.Contains(document, claim.document) {
+			t.Errorf("preview documentation missing %q", claim.document)
+		}
+		source, err := os.ReadFile(filepath.Join("..", claim.source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, primitive := range claim.primitives {
+			if !strings.Contains(string(source), primitive) {
+				t.Errorf("%s does not support documented claim %q: missing %s", claim.source, claim.document, primitive)
+			}
+		}
+	}
+}

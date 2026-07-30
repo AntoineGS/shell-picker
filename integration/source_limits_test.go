@@ -15,7 +15,7 @@ import (
 
 func TestGoSourceLineLimits(t *testing.T) {
 	root := filepath.Clean("..")
-	list := exec.Command("git", "ls-files", "-z", "--cached", "--", "cmd", "internal", "integration")
+	list := exec.Command("git", "ls-files", "-z", "--cached", "--", "cmd", "internal", "integration", "scripts")
 	list.Dir = root
 	output, err := list.Output()
 	if err != nil {

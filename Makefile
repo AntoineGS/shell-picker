@@ -1,7 +1,7 @@
 .PHONY: fmt fmt-check test check real-fzf security-gate performance-stable performance-dedicated cross-build release-snapshot release-check
 
 fmt:
-	gofmt -w cmd internal integration
+	gofmt -w cmd internal integration scripts
 
 test:
 	go test ./... -count=1
@@ -12,7 +12,7 @@ check: test
 	$(MAKE) performance-stable
 
 fmt-check:
-	test -z "$(gofmt -l cmd internal integration)"
+	test -z "$$(gofmt -l cmd internal integration scripts)"
 
 security-gate:
 	./scripts/security-gate.sh -race -count=10 -p=1 -timeout=10m

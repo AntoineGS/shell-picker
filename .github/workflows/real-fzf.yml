@@ -22,22 +22,26 @@ jobs:
         with: {go-version: 1.26.5}
       - name: Install official fzf archive
         shell: bash
+        env:
+          FZF_VERSION: ${{ inputs.fzf_version || '0.74.1' }}
         run: |
-          version='${{ inputs.fzf_version || '0.74.1' }}'
-          version="${version#v}"
+          set -euo pipefail
+          if [[ ! "$FZF_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf 'fzf_version must be numeric MAJOR.MINOR.PATCH\n' >&2
+            exit 2
+          fi
+          version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
           version_at_least() {
-            local want_major=0 want_minor=74 want_patch=1 major minor patch extra
-            IFS=. read -r major minor patch extra <<< "$1"
-            case "$major.$minor.$patch$extra" in *[!0-9.]*|*..*|.*|*.) return 1 ;; esac
-            [ -z "$extra" ] || return 1
-            major=${major:-0}; minor=${minor:-0}; patch=${patch:-0}
-            [ "$major" -gt "$want_major" ] ||
-              { [ "$major" -eq "$want_major" ] && [ "$minor" -gt "$want_minor" ]; } ||
-              { [ "$major" -eq "$want_major" ] && [ "$minor" -eq "$want_minor" ] && [ "$patch" -ge "$want_patch" ]; }
+            local major minor patch
+            IFS=. read -r major minor patch <<< "$1"
+            [ "$major" != 0 ] ||
+              [ "${#minor}" -gt 2 ] ||
+              { [ "${#minor}" -eq 2 ] && [[ "$minor" > 74 ]]; } ||
+              { [ "$minor" = 74 ] && [ "$patch" != 0 ]; }
           }
           version_at_least "$version"
           mkdir -p .ci/fzf
-          if [ "$RUNNER_OS" = Linux ]; then archive="fzf-${version#v}-linux_amd64.tar.gz"; else archive="fzf-${version#v}-windows_amd64.zip"; fi
+          if [ "$RUNNER_OS" = Linux ]; then archive="fzf-${version}-linux_amd64.tar.gz"; else archive="fzf-${version}-windows_amd64.zip"; fi
           curl -fsSL -o .ci/fzf/$archive "https://github.com/junegunn/fzf/releases/download/v${version#v}/$archive"
           curl -fsSL -o .ci/fzf/checksums.txt "https://github.com/junegunn/fzf/releases/download/v${version#v}/fzf_${version#v}_checksums.txt"
           (cd .ci/fzf && sha256sum -c checksums.txt --ignore-missing)

@@ -2,6 +2,7 @@ package integration
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -107,5 +108,19 @@ func TestSourceLimitContractHasNoAllowlist(t *testing.T) {
 	}
 	if strings.Contains(string(text), "legacy") || strings.Contains(string(text), "Exceptions") {
 		t.Fatal("source-limit contract weakens coverage with an allowlist")
+	}
+}
+
+func TestGoFormattingCoversEverySourceLimitRoot(t *testing.T) {
+	for _, target := range []string{"fmt", "fmt-check"} {
+		command := exec.Command("make", "-n", target)
+		command.Dir = ".."
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("make -n %s: %v\n%s", target, err, output)
+		}
+		if !strings.Contains(string(output), "cmd internal integration scripts") {
+			t.Errorf("make %s does not format every source-limit root: %s", target, output)
+		}
 	}
 }
