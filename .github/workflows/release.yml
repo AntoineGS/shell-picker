@@ -54,8 +54,10 @@ jobs:
           test "${GITHUB_REF_TYPE}" = tag
           test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l)" = 4
           test "$(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' | sort -u | wc -l)" = 4
-          find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' | sort | while read -r name; do sha256sum "dist/$name"; done > dist/checksums.txt
+          (cd dist && find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\n' | sort | while read -r name; do sha256sum "$name"; done) > dist/checksums.txt
           (cd dist && sha256sum -c checksums.txt)
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$GITHUB_REF_NAME^{commit}")"
+          go run ./scripts/release.go check "$GITHUB_REF_NAME"
           mkdir verify
           tar -xzf "$(find dist -name 'shell-picker_*_linux_amd64.tar.gz' -print -quit)" -C verify
           test "$(./verify/shell-picker version)" = "shell-picker $GITHUB_REF_NAME"
