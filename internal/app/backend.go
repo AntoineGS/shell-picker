@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"os"
-	"sync/atomic"
 	"time"
 
 	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
@@ -14,11 +13,10 @@ import (
 )
 
 type pickerBackend struct {
-	actor               *session.Actor
-	metrics             *pickerMetrics
-	trace               *pickerTrace
-	publishedGeneration *atomic.Uint64
-	stat                func(string) (os.FileInfo, error)
+	actor   *session.Actor
+	metrics *pickerMetrics
+	trace   *pickerTrace
+	stat    func(string) (os.FileInfo, error)
 }
 
 func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (protocol.Effect, error) {
@@ -33,9 +31,6 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 	if err == nil {
 		backend.metrics.recordTransition(result)
 		if result.Effect.ReloadGeneration != 0 {
-			if backend.publishedGeneration != nil {
-				backend.publishedGeneration.Store(result.Snapshot.Generation())
-			}
 			state := result.Snapshot.State()
 			traceTransition(backend.trace, backend.metrics.policy, result, state.Location.Path)
 		}

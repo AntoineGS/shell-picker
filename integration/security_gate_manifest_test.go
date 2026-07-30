@@ -28,8 +28,9 @@ type task20GatePackage struct {
 }
 
 var task20GateManifest = []task20GatePackage{
-	{path: "./internal/session", selectedUnix: 30, selectedWindows: 32, tests: []string{
+	{path: "./internal/session", selectedUnix: 31, selectedWindows: 33, tests: []string{
 		"TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically",
+		"TestActorAssignsMonotonicGenerationOwnershipAcrossQueuedReplacement",
 		"TestActorCreatedTreeDiscardOrdering",
 		"TestHandleAddCreateErrorsRetainAddSnapshotAndDoNotBuild",
 		"TestHandleAddGenerationFailureRollsBackAndPreservesParents",

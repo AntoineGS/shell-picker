@@ -151,18 +151,21 @@ func TestPerformanceMakeTargetsUseCompiledHarnessAndFiftySamples(t *testing.T) {
 		t.Fatalf("make dry run: %v\n%s", err, output)
 	}
 	text := string(output)
-	for _, required := range []string{"TestStablePerformanceGates", "go build -trimpath", "go test -c", "-samples 50",
+	for _, required := range []string{"TestStablePerformanceGates", "TestStablePreviewReplacementBudgets", "go build -trimpath", "go test -c", "-samples 50",
 		"TestDedicatedBaseline", "TestDedicatedTargets", "TestRunPickerOwnsOneSessionAndOneFZF",
 		"TestRunDoesNotProbeVersion", "TestRunPickerShipsWorkingPreviewCallback", "TestOptionsHaveNoListenOrDuplicateBindings",
 		"TestPreviewAggregatesSequentialChildTelemetry", "TestPreviewTelemetryDistinguishesNativeFallbackAfterChild",
 		"TestCorePreviewEveryCategoryHasBoundedNativeFallback", "TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins",
-		"TestLocalWorkerCountBounded", "TestRealFZFPreviewReplacementKillsWholeTree"} {
+		"TestLocalWorkerCountBounded"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("make output lacks %q:\n%s", required, text)
 		}
 	}
 	if strings.Contains(text, "go run") {
 		t.Fatalf("dedicated harness uses go run:\n%s", text)
+	}
+	if strings.Contains(text, "TestRealFZFPreviewReplacementKillsWholeTree") {
+		t.Fatalf("stable target includes optional real-fzf test:\n%s", text)
 	}
 	for _, path := range []string{"host-baseline.json", "performance.json"} {
 		ignored := exec.Command("git", "check-ignore", "--quiet", path)

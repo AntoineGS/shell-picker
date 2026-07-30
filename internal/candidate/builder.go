@@ -11,6 +11,7 @@ import (
 )
 
 type BuildRequest struct {
+	Generation  uint64
 	Picker      protocol.Picker
 	Location    pathutil.Location
 	StatWorkers int

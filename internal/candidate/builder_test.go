@@ -30,6 +30,26 @@ func testRequest(picker protocol.Picker, initial bool) BuildRequest {
 	return BuildRequest{Picker: picker, Location: pathutil.Filesystem([]byte("/local")), Initial: initial}
 }
 
+func TestBuilderIgnoresGenerationSemantically(t *testing.T) {
+	cache, _ := newObservedCache(t, "printf '/z/one\\n'\n", time.Second, nil)
+	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
+	first := testRequest(protocol.PickerCP, false)
+	first.Generation = 7
+	second := first
+	second.Generation = 99
+	left, err := builder.Build(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := builder.Build(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(left.Records, right.Records) || left.Metrics.ZoxideOutcome != right.Metrics.ZoxideOutcome {
+		t.Fatalf("generation changed builder result: left=%+v right=%+v", left, right)
+	}
+}
+
 func testLocal(_ context.Context, picker protocol.Picker, _ pathutil.Location, _ LocalOptions) ([]Record, error) {
 	kind := protocol.KindLocal
 	if picker == protocol.PickerCP {

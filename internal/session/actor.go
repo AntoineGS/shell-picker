@@ -173,7 +173,7 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 			replyApplyError(command, errNilGenerator)
 			return nil
 		}
-		if current.generation == math.MaxUint64 {
+		if nextID == math.MaxUint64 {
 			replyApplyError(command, errGenerationLimit)
 			return nil
 		}
@@ -181,6 +181,7 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 		buildCtx, cancel := context.WithCancelCause(sessionCtx)
 		transition := &pendingTransition{id: nextID, command: command, accepted: accepted, cancel: cancel}
 		request := *command.proposal.Build
+		request.Generation = transition.id
 		go func(id uint64) {
 			result, err := generate(buildCtx, request)
 			actor.commands <- completionCommand{id: id, result: result, err: err}
@@ -282,9 +283,9 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 				} else {
 					records := cloneRecords(command.result.Records)
 					effect := proposal.Effect
-					effect.ReloadGeneration = current.generation + 1
+					effect.ReloadGeneration = pending.id
 					current = Snapshot{
-						generation: current.generation + 1,
+						generation: pending.id,
 						state:      cloneState(proposal.State), records: records, byFullRecord: buildIndex(records),
 					}
 					result := transitionResult(current, pending.command, pending.accepted, effect, command.result.Metrics)

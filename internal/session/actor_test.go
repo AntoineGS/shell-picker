@@ -139,6 +139,58 @@ func initializeActor(t *testing.T) (*Actor, *controlledGenerator) {
 	return actor, generator
 }
 
+func TestActorAssignsMonotonicGenerationOwnershipAcrossQueuedReplacement(t *testing.T) {
+	generator := newControlledGenerator()
+	actor := New(context.Background(), generator.Generate)
+	t.Cleanup(func() { _ = actor.Close() })
+
+	initialDone := asyncApply(actor, context.Background(), testProposal(0, testState("/start", protocol.ModeInsert, "start"), true, protocol.Effect{}))
+	initial := generator.Next(t)
+	if initial.request.Generation != 1 {
+		t.Fatalf("initial generation=%d want 1", initial.request.Generation)
+	}
+	initial.Complete([]candidate.Record{testRecord("start", "/start")}, nil)
+	if outcome := awaitApply(t, initialDone); outcome.err != nil || outcome.result.Snapshot.Generation() != 1 {
+		t.Fatalf("initial outcome=%+v", outcome)
+	}
+
+	retiringDone := asyncApply(actor, context.Background(), testProposal(1, testState("/retiring", protocol.ModeNormal, "retiring"), true, protocol.Effect{}))
+	retiring := generator.Next(t)
+	if retiring.request.Generation != 2 {
+		t.Fatalf("retiring generation=%d want 2", retiring.request.Generation)
+	}
+	replacementDone := asyncApply(actor, context.Background(), testProposal(1, testState("/replacement", protocol.ModeNormal, "replacement"), true, protocol.Effect{}))
+	select {
+	case <-retiring.ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued replacement did not retire active generation")
+	}
+	retiring.Complete(nil, context.Cause(retiring.ctx))
+	if outcome := awaitApply(t, retiringDone); !errors.Is(outcome.err, ErrSuperseded) {
+		t.Fatalf("retiring outcome=%+v", outcome)
+	}
+
+	replacement := generator.Next(t)
+	if replacement.request.Generation != 3 {
+		t.Fatalf("replacement generation=%d want 3", replacement.request.Generation)
+	}
+	replacement.Complete([]candidate.Record{testRecord("replacement", "/replacement")}, nil)
+	outcome := awaitApply(t, replacementDone)
+	if outcome.err != nil || outcome.result.Snapshot.Generation() != 3 || outcome.result.Effect.ReloadGeneration != 3 {
+		t.Fatalf("replacement outcome=%+v", outcome)
+	}
+}
+
+func TestCloneProposalPreservesBuildGenerationAndClonesLocation(t *testing.T) {
+	proposal := testProposal(4, testState("/source", protocol.ModeNormal, "source"), true, protocol.Effect{})
+	proposal.Build.Generation = 9
+	cloned := cloneProposal(proposal)
+	proposal.Build.Location.Path[0] = 'X'
+	if cloned.Build.Generation != 9 || string(cloned.Build.Location.Path) != "/source" {
+		t.Fatalf("cloned build=%+v", cloned.Build)
+	}
+}
+
 func TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically(t *testing.T) {
 	actor, generator := initializeActor(t)
 	effect := protocol.Effect{ClearQuery: true, ClearMulti: true}

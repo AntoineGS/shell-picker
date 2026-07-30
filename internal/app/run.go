@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/callback"
@@ -77,13 +76,11 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
-	var publishedGeneration atomic.Uint64
 	generate := func(generateCtx context.Context, request candidate.BuildRequest) (candidate.BuildResult, error) {
-		generation := publishedGeneration.Load() + 1
-		trace.event(integrationpkg.TraceEvent{Name: "generation.start", Generation: generation, Outcome: "ok"})
+		trace.event(integrationpkg.TraceEvent{Name: "generation.start", Generation: request.Generation, Outcome: "ok"})
 		result, buildErr := builder.Build(generateCtx, request)
 		if buildErr != nil {
-			trace.event(integrationpkg.TraceEvent{Name: "generation.discard", Generation: generation,
+			trace.event(integrationpkg.TraceEvent{Name: "generation.discard", Generation: request.Generation,
 				Outcome: traceDiscardOutcome(buildErr)})
 		}
 		return result, buildErr
@@ -115,7 +112,6 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, fmt.Errorf("build initial candidates: %w", err)
 	}
-	publishedGeneration.Store(initial.Snapshot.Generation())
 	traceTransition(trace, options.ZoxidePolicy, initial, initialState.Location.Path)
 
 	token, err := sessionipc.NewToken()
@@ -126,7 +122,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	metrics.traceID = traceID
 	metrics.policy = options.ZoxidePolicy
 	metrics.recordTransition(initial)
-	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace, publishedGeneration: &publishedGeneration}
+	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace}
 	server, err := sessionipc.Listen(ctx, token, backend)
 	if err != nil {
 		return protocol.Outcome{}, err
