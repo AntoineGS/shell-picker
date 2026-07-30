@@ -7,14 +7,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
+	"syscall"
 	"testing"
 )
 
 type resourceSnapshot struct {
 	descriptors map[string]struct{}
 	goroutines  int
-	artifacts   map[string]struct{}
+	artifacts   map[string]artifactFingerprint
 }
 
 func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
@@ -38,23 +38,24 @@ func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
 	return resourceSnapshot{descriptors: descriptors, goroutines: runtime.NumGoroutine(), artifacts: snapshotArtifacts(t, roots)}
 }
 
-func assertResourcesReturned(t *testing.T, baseline resourceSnapshot, roots ...string) {
-	t.Helper()
-	current := snapshotResources(t, roots...)
+func platformResourceDifference(baseline, current resourceSnapshot) string {
 	for descriptor := range current.descriptors {
 		if _, existed := baseline.descriptors[descriptor]; !existed {
-			if runtimeDescriptor(descriptor) {
-				continue
-			}
-			t.Errorf("owned descriptor remained open: %s", descriptor)
+			return "new descriptor " + descriptor
 		}
 	}
-	if current.goroutines > baseline.goroutines+2 {
-		t.Errorf("goroutines=%d baseline=%d after all owned completion channels closed", current.goroutines, baseline.goroutines)
+	for descriptor := range baseline.descriptors {
+		if _, remains := current.descriptors[descriptor]; !remains {
+			return "baseline descriptor changed " + descriptor
+		}
 	}
-	assertArtifactsEqual(t, baseline.artifacts, current.artifacts)
+	return ""
 }
 
-func runtimeDescriptor(descriptor string) bool {
-	return strings.Contains(descriptor, "anon_inode:[eventpoll]") || strings.Contains(descriptor, "anon_inode:[eventfd]")
+func artifactIdentity(_ string, info os.FileInfo) (uint64, uint64, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, fmt.Errorf("artifact has no Unix stat identity")
+	}
+	return uint64(stat.Dev), uint64(stat.Ino), nil
 }

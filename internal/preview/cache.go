@@ -210,25 +210,6 @@ func renderCachedArtifact(ctx context.Context, candidate protocol.ResolvedCandid
 	return renderStagedCache(ctx, cache, key, options, stdout, stderr, session)
 }
 
-func waitConverter(wait <-chan error, ticks <-chan time.Time, temp *converterArtifact, session *renderSession) (error, error) {
-	for {
-		select {
-		case err := <-wait:
-			return err, nil
-		case <-ticks:
-			if size, err := temp.Size(); err == nil && size > maxCachedArtifactBytes {
-				_ = temp.Cleanup()
-				if session.tree != nil {
-					_ = session.tree.KillTree()
-				}
-				<-wait
-				_ = temp.Cleanup()
-				return nil, session.terminal(ErrArtifactLimit)
-			}
-		}
-	}
-}
-
 func renderStagedCache(ctx context.Context, cache *Cache, key string, options Options, stdout *budgetWriter,
 	stderr io.Writer, session *renderSession) (bool, bool, error) {
 	staged, err := stageCacheArtifact(cache, key)

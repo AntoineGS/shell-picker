@@ -258,10 +258,6 @@ func (budget *outputBudget) status() (int64, bool) {
 	defer budget.mu.Unlock()
 	return budget.written, budget.exceeded
 }
-func externalProcessSpec(executable string, arguments, environment []string, stdout, stderr io.Writer) process.Spec {
-	return process.Spec{Path: executable, Args: arguments, Env: environment, Stdout: stdout, Stderr: stderr,
-		Containment: process.ContainmentInheritTree, WaitDelay: time.Second}
-}
 func lookupTool(name string, environment []string) string {
 	search := environmentValue(environment, "PATH")
 	if search == "" {

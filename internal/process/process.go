@@ -43,7 +43,13 @@ type ProcessEvent struct {
 	Path  string
 }
 
-type Runner struct{ Observe func(ProcessEvent) }
+type Runner struct {
+	Observe func(ProcessEvent)
+	// Execute is an internal test seam. When non-nil, Run validates and passes
+	// the caller's context and final Spec to Execute instead of starting a
+	// process. Execute must not synthesize ProcessEvent observations.
+	Execute func(context.Context, Spec) error
+}
 type ExitError struct{ Code uint32 }
 
 func (e *ExitError) Error() string { return fmt.Sprintf("process exited with code %d", e.Code) }
@@ -100,13 +106,6 @@ func (handle *TreeHandle) Close() error {
 		}
 	}
 	return handle.closeError
-}
-func (r Runner) Run(ctx context.Context, spec Spec) error {
-	child, err := r.Start(ctx, spec)
-	if err != nil {
-		return err
-	}
-	return child.Wait()
 }
 func validateSpec(ctx context.Context, spec Spec) error {
 	if ctx == nil {

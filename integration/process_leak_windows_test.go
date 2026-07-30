@@ -3,6 +3,8 @@
 package integration
 
 import (
+	"fmt"
+	"os"
 	"runtime"
 	"testing"
 	"unsafe"
@@ -15,7 +17,7 @@ var task20GetProcessHandleCount = windows.NewLazySystemDLL("kernel32.dll").NewPr
 type resourceSnapshot struct {
 	handles    uint32
 	goroutines int
-	artifacts  map[string]struct{}
+	artifacts  map[string]artifactFingerprint
 }
 
 func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
@@ -29,14 +31,26 @@ func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
 	return resourceSnapshot{handles: count, goroutines: runtime.NumGoroutine(), artifacts: snapshotArtifacts(t, roots)}
 }
 
-func assertResourcesReturned(t *testing.T, baseline resourceSnapshot, roots ...string) {
-	t.Helper()
-	current := snapshotResources(t, roots...)
-	if current.handles > baseline.handles+2 {
-		t.Errorf("process handles=%d baseline=%d after child exit event", current.handles, baseline.handles)
+func platformResourceDifference(baseline, current resourceSnapshot) string {
+	if current.handles != baseline.handles {
+		return fmt.Sprintf("handles baseline=%d current=%d", baseline.handles, current.handles)
 	}
-	if current.goroutines > baseline.goroutines+2 {
-		t.Errorf("goroutines=%d baseline=%d after all owned completion channels closed", current.goroutines, baseline.goroutines)
+	return ""
+}
+
+func artifactIdentity(path string, info os.FileInfo) (uint64, uint64, error) {
+	if !info.Mode().IsRegular() {
+		return 0, 0, nil
 	}
-	assertArtifactsEqual(t, baseline.artifacts, current.artifacts)
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+	var identity windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &identity); err != nil {
+		return 0, 0, err
+	}
+	index := uint64(identity.FileIndexHigh)<<32 | uint64(identity.FileIndexLow)
+	return uint64(identity.VolumeSerialNumber), index, nil
 }
