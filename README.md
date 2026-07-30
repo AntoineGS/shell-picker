@@ -22,7 +22,7 @@ shell-picker probe --json
 
 Both picker commands require absolute `--cwd` and `--home`; output is `nul` by default or `nuon` for Nushell.
 
-```text
+```sh check
 shell-picker cd --cwd "$PWD" --home "$HOME" --output nul
 shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 ```

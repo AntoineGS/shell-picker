@@ -2,6 +2,7 @@ package integration
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,8 +45,38 @@ func TestDocumentationCheckCommands(t *testing.T) {
 		validateCLIFlags(t, binary, home, content)
 		for _, command := range checkCommands(t, content) {
 			checkShellSyntax(t, command)
-			runDocCommand(t, binary, home, command, false)
+			output := runDocCommand(t, binary, home, command, false)
+			if isPickerDocCommand(command) && output != "" {
+				t.Fatalf("documented picker abort command %q produced output %q", command, output)
+			}
 		}
+	}
+	invocations, err := os.ReadFile(filepath.Join(home, "fzf-invocations"))
+	if err != nil {
+		t.Fatal("documented picker commands did not invoke fake fzf")
+	}
+	if got := len(strings.Split(strings.TrimSpace(string(invocations)), "\n")); got != 2 {
+		t.Fatalf("documented picker commands produced %d fake fzf invocations, want 2", got)
+	}
+}
+
+func TestDocumentationDiscoversEveryExecutableFence(t *testing.T) {
+	commands, err := parseCheckCommands(readDoc(t, "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(commands, "\n")
+	for _, command := range []string{"shell-picker cd", "shell-picker cp"} {
+		if !strings.Contains(joined, command) {
+			t.Errorf("README executable command %q was not discovered", command)
+		}
+	}
+}
+
+func TestExecutableCommandCannotHideInTextFence(t *testing.T) {
+	_, err := parseCheckCommands("```text\nshell-picker cd --cwd \"$PWD\" --home \"$HOME\" --output nul\n```\n")
+	if err == nil {
+		t.Fatal("executable command in text fence was accepted")
 	}
 }
 
@@ -74,6 +105,7 @@ func writeFakeTool(t *testing.T, directory, name string) {
 	body := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '0.74.1\\n'; fi\n"
 	if name == "fzf" {
 		body = "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '0.74.1\\n'; exit 0; fi\n" +
+			"printf '%s\\n' \"$*\" >> \"$HOME/fzf-invocations\"\n" +
 			"case \" $* \" in *\" --print-query \"*) printf '\\000';; esac\nexit 1\n"
 	}
 	if err := os.WriteFile(filepath.Join(directory, name), []byte(body), 0o755); err != nil {
@@ -83,10 +115,17 @@ func writeFakeTool(t *testing.T, directory, name string) {
 
 func runDocCommand(t *testing.T, binary, home, command string, allowUsage bool) string {
 	t.Helper()
+	pickerCommand := isPickerDocCommand(command)
 	command = strings.ReplaceAll(command, "shell-picker", shellQuote(binary))
 	process := exec.Command("sh", "-c", command)
 	process.Env = []string{"HOME=" + home, "PATH=" + filepath.Join(home, "tools") + ":" + os.Getenv("PATH"), "XDG_CACHE_HOME=" + filepath.Join(home, ".cache")}
-	output, err := process.CombinedOutput()
+	var output []byte
+	var err error
+	if pickerCommand {
+		output, err = runPickerDocCommand(process)
+	} else {
+		output, err = process.CombinedOutput()
+	}
 	if err != nil && !(allowUsage && strings.Contains(string(output), "usage: shell-picker")) {
 		t.Fatalf("documented command %q: %v\n%s", command, err, output)
 	}
@@ -95,6 +134,14 @@ func runDocCommand(t *testing.T, binary, home, command string, allowUsage bool) 
 
 func checkCommands(t *testing.T, document string) []string {
 	t.Helper()
+	commands, err := parseCheckCommands(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return commands
+}
+
+func parseCheckCommands(document string) ([]string, error) {
 	lines := strings.Split(document, "\n")
 	commands := []string{}
 	for index := 0; index < len(lines); index++ {
@@ -102,26 +149,51 @@ func checkCommands(t *testing.T, document string) []string {
 			continue
 		}
 		info := strings.TrimSpace(strings.TrimPrefix(lines[index], "```"))
-		language, _, _ := strings.Cut(info, " ")
-		if language != "sh" && language != "bash" && language != "shell" && language != "zsh" {
-			continue
-		}
-		if info != "sh check" {
-			t.Fatalf("shell fence %q must be exactly `sh check`", info)
-		}
 		start := index + 1
 		for index++; index < len(lines) && lines[index] != "```"; index++ {
 		}
 		if index == len(lines) {
-			t.Fatal("unterminated sh check block")
+			return nil, fmt.Errorf("unterminated fence %q", info)
 		}
 		command := strings.TrimSpace(strings.Join(lines[start:index], "\n"))
+		language, _, _ := strings.Cut(info, " ")
+		shell := language == "sh" || language == "bash" || language == "shell" || language == "zsh"
+		if !shell {
+			if isShellPickerDocCommand(command) {
+				return nil, fmt.Errorf("executable command in %q fence must be `sh check`", info)
+			}
+			continue
+		}
+		if info != "sh check" {
+			return nil, fmt.Errorf("shell fence %q must be exactly `sh check`", info)
+		}
 		if command == "" {
-			t.Fatal("empty sh check block")
+			return nil, fmt.Errorf("empty sh check block")
 		}
 		commands = append(commands, command)
 	}
-	return commands
+	return commands, nil
+}
+
+func isPickerDocCommand(command string) bool {
+	for _, line := range strings.Split(command, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "$"))
+		if line == "shell-picker cd" || line == "shell-picker cp" ||
+			strings.HasPrefix(line, "shell-picker cd ") || strings.HasPrefix(line, "shell-picker cp ") {
+			return true
+		}
+	}
+	return false
+}
+
+func isShellPickerDocCommand(command string) bool {
+	for _, line := range strings.Split(command, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "$"))
+		if line == "shell-picker" || strings.HasPrefix(line, "shell-picker ") {
+			return true
+		}
+	}
+	return false
 }
 
 func markdownDocuments(t *testing.T) []string {

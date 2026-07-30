@@ -92,6 +92,69 @@ func TestTraceUsesValidatedInternalBoundaryTimestamp(t *testing.T) {
 	}
 }
 
+func TestTraceAuthorityNumericAndTimestampBounds(t *testing.T) {
+	schema := traceSchemaAuthority()
+	now := time.Now().UTC()
+	valid := []TraceEvent{
+		{Name: "generation.start", Generation: schema.GenerationMax, Outcome: "ok"},
+		{Name: "generation.publish", CandidateCount: schema.CandidateCountMax, Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "bat", ChildStarts: schema.ChildStartsMax,
+			MaxLiveChildren: schema.MaxLiveChildrenMax, Outcome: "ok"},
+		{Name: "generation.publish", Outcome: "ok", ZoxidePolicy: schema.ZoxidePolicies[0],
+			ZoxideOutcome: schema.ZoxideOutcomes[0], ZoxideAttempts: schema.ZoxideAttemptsMax},
+		{Name: "generation.publish", Outcome: "ok", ActorQueueWait: schema.DurationMax,
+			LocalDuration: schema.DurationMax, TransformDuration: schema.DurationMax},
+		{Name: "callback.event", Outcome: "up", CallbackIPC: schema.DurationMax},
+		{Name: "callback.load", Outcome: "ok", LoadDuration: schema.DurationMax},
+		{Name: "generation.publish", Outcome: "ok", ZoxidePolicy: schema.ZoxidePolicies[0],
+			ZoxideOutcome: schema.ZoxideOutcomes[0], ZoxideDuration: schema.DurationMax},
+		{Name: "fzf.start", Outcome: "ok", Timestamp: now.Add(-schema.TimestampPastLimit)},
+		{Name: "fzf.start", Outcome: "ok", Timestamp: now.Add(schema.TimestampFutureLimit)},
+	}
+	for _, event := range valid {
+		if err := validateTraceEventWithSchema(event, schema, now); err != nil {
+			t.Errorf("boundary event rejected: %+v: %v", event, err)
+		}
+	}
+	invalid := []TraceEvent{
+		{Name: "generation.publish", CandidateCount: schema.CandidateCountMin - 1, Outcome: "ok"},
+		{Name: "generation.publish", CandidateCount: schema.CandidateCountMax + 1, Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "bat", ChildStarts: schema.ChildStartsMin - 1, Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "bat", ChildStarts: schema.ChildStartsMax + 1, Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "bat", MaxLiveChildren: schema.MaxLiveChildrenMin - 1, Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "bat", ChildStarts: 1,
+			MaxLiveChildren: schema.MaxLiveChildrenMax + 1, Outcome: "ok"},
+		{Name: "generation.publish", Outcome: "ok", ZoxidePolicy: schema.ZoxidePolicies[0],
+			ZoxideOutcome: schema.ZoxideOutcomes[0], ZoxideAttempts: schema.ZoxideCounterMin - 1},
+		{Name: "generation.publish", Outcome: "ok", ZoxidePolicy: schema.ZoxidePolicies[0],
+			ZoxideOutcome: schema.ZoxideOutcomes[0], ZoxideAttempts: schema.ZoxideAttemptsMax + 1},
+		{Name: "callback.event", Outcome: "up", CallbackIPC: schema.DurationMin - time.Nanosecond},
+		{Name: "callback.event", Outcome: "up", CallbackIPC: schema.DurationMax + time.Nanosecond},
+		{Name: "fzf.start", Outcome: "ok", Timestamp: now.Add(-schema.TimestampPastLimit - time.Nanosecond)},
+		{Name: "fzf.start", Outcome: "ok", Timestamp: now.Add(schema.TimestampFutureLimit + time.Nanosecond)},
+	}
+	for _, event := range invalid {
+		if err := validateTraceEventWithSchema(event, schema, now); err == nil {
+			t.Errorf("out-of-bounds event accepted: %+v", event)
+		}
+	}
+}
+
+func TestTraceAlwaysEmitsRFC3339NanoUTCTimestamp(t *testing.T) {
+	var output bytes.Buffer
+	if err := NewTrace(&output, fixedSessionID()).Event(TraceEvent{Name: "fzf.start", Outcome: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	var record TraceRecord
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &record); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, record.Time)
+	if err != nil || record.Time == "" || parsed.Location() != time.UTC {
+		t.Fatalf("time=%q parsed=%v error=%v", record.Time, parsed, err)
+	}
+}
+
 func TestTraceWritesStableRedactedJSONL(t *testing.T) {
 	var output bytes.Buffer
 	trace := NewTrace(&output, fixedSessionID())

@@ -86,11 +86,19 @@ func (trace *Trace) Event(event TraceEvent) error {
 	if err := validateTraceEvent(event); err != nil {
 		return err
 	}
+	schema := traceSchemaAuthority()
 	timestamp := event.Timestamp
-	if timestamp.IsZero() {
+	if timestamp.IsZero() && schema.TimestampRequired {
 		timestamp = time.Now()
 	}
-	record := TraceRecord{Schema: TraceSchema, Time: timestamp.UTC().Format(time.RFC3339Nano), Session: trace.session,
+	timestampText := ""
+	if !timestamp.IsZero() {
+		if schema.TimestampMustBeUTC {
+			timestamp = timestamp.UTC()
+		}
+		timestampText = timestamp.Format(traceTimestampLayout(schema.TimestampFormat))
+	}
+	record := TraceRecord{Schema: TraceSchema, Time: timestampText, Session: trace.session,
 		Event: event.Name, Generation: event.Generation, CandidateCount: event.CandidateCount,
 		Renderer: event.Renderer, ChildStarts: event.ChildStarts, MaxLiveChildren: event.MaxLiveChildren, Outcome: event.Outcome,
 		ZoxidePolicy: event.ZoxidePolicy, ZoxideAttempts: event.ZoxideAttempts, ZoxideStarts: event.ZoxideStarts,
@@ -134,9 +142,13 @@ func redact(value []byte) string {
 }
 
 func validateTraceEvent(event TraceEvent) error {
+	return validateTraceEventWithSchema(event, traceSchemaAuthority(), time.Now())
+}
+
+func validateTraceEventWithSchema(event TraceEvent, schema traceSchemaRules, now time.Time) error {
 	if !event.Timestamp.IsZero() {
-		now := time.Now()
-		if event.Timestamp.After(now.Add(time.Second)) || event.Timestamp.Before(now.Add(-24*time.Hour)) {
+		if event.Timestamp.After(now.Add(schema.TimestampFutureLimit)) ||
+			event.Timestamp.Before(now.Add(-schema.TimestampPastLimit)) {
 			return errors.New("trace: invalid timestamp")
 		}
 	}
@@ -144,7 +156,7 @@ func validateTraceEvent(event TraceEvent) error {
 		event.Name != "generation.discard" && event.Name != "callback.load" {
 		return errors.New("trace: generation is not valid for event")
 	}
-	if event.CandidateCount < 0 || event.CandidateCount > 1_000_000 ||
+	if event.CandidateCount < schema.CandidateCountMin || event.CandidateCount > schema.CandidateCountMax ||
 		event.CandidateCount != 0 && event.Name != "generation.publish" {
 		return errors.New("trace: invalid candidate count")
 	}
@@ -156,10 +168,11 @@ func validateTraceEvent(event TraceEvent) error {
 			return errors.New("trace: renderer is not valid for event")
 		}
 	}
-	if isPreviewEvent(event.Name) && !validRenderer(event.Renderer) {
+	if isPreviewEvent(event.Name) && !validRendererWithSchema(event.Renderer, schema) {
 		return errors.New("trace: invalid renderer")
 	}
-	if event.ChildStarts < 0 || event.ChildStarts > 3 || event.MaxLiveChildren < 0 || event.MaxLiveChildren > 1 ||
+	if event.ChildStarts < schema.ChildStartsMin || event.ChildStarts > schema.ChildStartsMax ||
+		event.MaxLiveChildren < schema.MaxLiveChildrenMin || event.MaxLiveChildren > schema.MaxLiveChildrenMax ||
 		event.MaxLiveChildren > event.ChildStarts {
 		return errors.New("trace: invalid preview child counters")
 	}
@@ -171,13 +184,13 @@ func validateTraceEvent(event TraceEvent) error {
 	if event.Renderer == "native" && (event.ChildStarts != 0 || event.MaxLiveChildren != 0) {
 		return errors.New("trace: native preview cannot have child counters")
 	}
-	if err := validateZoxideFields(event); err != nil {
+	if err := validateZoxideFields(event, schema); err != nil {
 		return err
 	}
-	if err := validateTimingFields(event); err != nil {
+	if err := validateTimingFields(event, schema); err != nil {
 		return err
 	}
-	if !validTraceOutcome(event.Name, event.Outcome) {
+	if !validTraceOutcomeWithSchema(event.Name, event.Outcome, schema) {
 		return errors.New("trace: invalid event or outcome")
 	}
 	return nil
@@ -187,11 +200,14 @@ func isPreviewEvent(name string) bool {
 	return name == "preview.dispatch" || name == "preview.finished" || name == "preview.cancel" || name == "preview.exit"
 }
 
-func validateZoxideFields(event TraceEvent) error {
-	if event.ZoxideAttempts < 0 || event.ZoxideStarts < 0 || event.ZoxideExits < 0 || event.ZoxideProcesses < 0 ||
-		event.ZoxideLive < 0 || event.ZoxideMaxLive < 0 || event.ZoxideAttempts > 1_000_000 ||
+func validateZoxideFields(event TraceEvent, schema traceSchemaRules) error {
+	if event.ZoxideAttempts < schema.ZoxideCounterMin || event.ZoxideStarts < schema.ZoxideCounterMin ||
+		event.ZoxideExits < schema.ZoxideCounterMin || event.ZoxideProcesses < schema.ZoxideCounterMin ||
+		event.ZoxideLive < schema.ZoxideCounterMin || event.ZoxideMaxLive < schema.ZoxideCounterMin ||
+		event.ZoxideAttempts > schema.ZoxideAttemptsMax ||
 		event.ZoxideStarts > event.ZoxideAttempts || event.ZoxideExits != event.ZoxideStarts ||
-		event.ZoxideProcesses != event.ZoxideStarts || event.ZoxideLive != 0 || event.ZoxideMaxLive > event.ZoxideStarts {
+		event.ZoxideProcesses != event.ZoxideStarts || event.ZoxideLive != schema.ZoxideLiveRequired ||
+		event.ZoxideMaxLive > event.ZoxideStarts {
 		return errors.New("trace: invalid zoxide counters")
 	}
 	hasFields := event.ZoxidePolicy != "" || event.ZoxideAttempts != 0 || event.ZoxideStarts != 0 || event.ZoxideExits != 0 ||
@@ -203,21 +219,20 @@ func validateZoxideFields(event TraceEvent) error {
 	if hasFields && (event.ZoxidePolicy == "" || event.ZoxideOutcome == "") {
 		return errors.New("trace: incomplete zoxide fields")
 	}
-	if event.ZoxidePolicy != "" && event.ZoxidePolicy != "cached" && event.ZoxidePolicy != "fresh" {
+	if event.ZoxidePolicy != "" && !schemaContains(schema.ZoxidePolicies, event.ZoxidePolicy) {
 		return errors.New("trace: invalid zoxide policy")
 	}
-	if event.ZoxideOutcome != "" && !map[string]bool{"ok": true, "missing": true, "process-error": true, "malformed": true,
-		"timeout": true, "cancelled": true, "not-run": true, "cached": true}[event.ZoxideOutcome] {
+	if event.ZoxideOutcome != "" && !schemaContains(schema.ZoxideOutcomes, event.ZoxideOutcome) {
 		return errors.New("trace: invalid zoxide outcome")
 	}
 	return nil
 }
 
-func validateTimingFields(event TraceEvent) error {
+func validateTimingFields(event TraceEvent, schema traceSchemaRules) error {
 	durations := []time.Duration{event.ActorQueueWait, event.CallbackIPC, event.LocalDuration, event.ZoxideDuration,
 		event.TransformDuration, event.LoadDuration}
 	for _, duration := range durations {
-		if duration < 0 || duration > 24*time.Hour {
+		if duration < schema.DurationMin || duration > schema.DurationMax {
 			return errors.New("trace: invalid duration")
 		}
 	}
@@ -234,34 +249,14 @@ func validateTimingFields(event TraceEvent) error {
 	return nil
 }
 
-func validTraceOutcome(event, outcome string) bool {
-	allowed := map[string]map[string]bool{
-		"session.start":      {"cd": true, "cp": true},
-		"generation.start":   {"ok": true},
-		"generation.publish": {"ok": true},
-		"generation.discard": {"cancelled": true, "error": true, "stale": true, "superseded": true},
-		"fzf.start":          {"ok": true},
-		"fzf.exit":           {"ok": true, "aborted": true, "error": true},
-		"callback.event":     {"mi": true, "ma": true, "es": true, "fw": true, "up": true, "sl": true, "hm": true, "en": true},
-		"callback.load":      {"ok": true, "error": true},
-		"preview.dispatch":   {"ok": true, "error": true},
-		"preview.finished":   {"ok": true, "error": true},
-		"preview.cancel":     {"cancelled": true},
-		"preview.exit":       {"ok": true, "error": true},
-		"session.close":      {"accepted": true, "aborted": true, "error": true},
-	}
-	return allowed[event][outcome]
+func validTraceOutcomeWithSchema(event, outcome string, schema traceSchemaRules) bool {
+	return schemaContains(schema.EventOutcomes[event], outcome)
 }
 
-func validRenderer(renderer string) bool {
-	allowed := map[string]bool{
-		"native": true, "eza": true, "glow": true, "bat": true, "kitten": true, "chafa": true,
-		"unzip": true, "gzip": true, "xz": true, "tar": true, "file": true, "pdftoppm": true,
-		"ffmpegthumbnailer": true, "ffmpeg": true, "exiftool": true,
-	}
-	if allowed[renderer] {
+func validRendererWithSchema(renderer string, schema traceSchemaRules) bool {
+	if schemaContains(schema.RendererBases, renderer) {
 		return true
 	}
 	base, fallback := strings.CutSuffix(renderer, "-fallback")
-	return fallback && base != "native" && allowed[base]
+	return fallback && base != "native" && schemaContains(schema.RendererBases, base)
 }

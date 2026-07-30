@@ -2,9 +2,6 @@ package integration
 
 import (
 	"encoding/csv"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"os"
 	"sort"
 	"strconv"
@@ -21,42 +18,117 @@ func TestDocumentedTraceTableMatchesValidator(t *testing.T) {
 	}
 }
 
+func TestTraceContractChangesWithValidationAuthority(t *testing.T) {
+	base := traceSchemaAuthority()
+	baseline := strings.Join(traceContractRowsForSchema(t, base), "\n")
+	tests := []struct {
+		name   string
+		mutate func(*traceSchemaRules)
+		want   string
+		reject string
+	}{
+		{"add event outcome", func(schema *traceSchemaRules) {
+			schema.EventOutcomes["fzf.exit"] = append(schema.EventOutcomes["fzf.exit"], "interrupted")
+		}, "interrupted", ""},
+		{"add zoxide policy", func(schema *traceSchemaRules) {
+			schema.ZoxidePolicies = append(schema.ZoxidePolicies, "offline")
+		}, "offline", ""},
+		{"remove zoxide outcome", func(schema *traceSchemaRules) {
+			schema.ZoxideOutcomes = removeString(schema.ZoxideOutcomes, "timeout")
+		}, "@zoxide_outcomes", "timeout"},
+		{"change candidate count maximum", func(schema *traceSchemaRules) {
+			schema.CandidateCountMax++
+		}, "candidate_count=0..1000001", ""},
+		{"change duration maximum", func(schema *traceSchemaRules) {
+			schema.DurationMax -= time.Microsecond
+		}, "duration_us=0..86399999999", ""},
+		{"change timestamp past bound", func(schema *traceSchemaRules) {
+			schema.TimestampPastLimit -= time.Hour
+		}, "timestamp_input=zero-or-now-23h0m0s..now+1s", ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			schema := cloneTraceSchemaRules(base)
+			test.mutate(&schema)
+			contract := strings.Join(traceContractRowsForSchema(t, schema), "\n")
+			if contract == baseline {
+				t.Fatal("authority mutation did not change generated trace contract")
+			}
+			if !strings.Contains(contract, test.want) {
+				t.Fatalf("mutated contract does not contain %q:\n%s", test.want, contract)
+			}
+			if test.reject != "" && strings.Contains(contract, test.reject) {
+				t.Fatalf("mutated contract still contains removed authority value %q:\n%s", test.reject, contract)
+			}
+		})
+	}
+}
+
+func TestTraceValidationUsesAuthoritativeZoxideVocabulary(t *testing.T) {
+	schema := cloneTraceSchemaRules(traceSchemaAuthority())
+	schema.ZoxidePolicies = append(schema.ZoxidePolicies, "offline")
+	schema.ZoxideOutcomes = append(schema.ZoxideOutcomes, "deferred")
+	event := TraceEvent{Name: "generation.publish", Outcome: "ok", ZoxidePolicy: "offline", ZoxideOutcome: "deferred"}
+	if err := validateTraceEventWithSchema(event, schema, time.Now()); err != nil {
+		t.Fatalf("schema-authorized zoxide vocabulary rejected: %v", err)
+	}
+}
+
+func cloneTraceSchemaRules(schema traceSchemaRules) traceSchemaRules {
+	clone := schema
+	clone.EventOutcomes = make(map[string][]string, len(schema.EventOutcomes))
+	for event, outcomes := range schema.EventOutcomes {
+		clone.EventOutcomes[event] = append([]string(nil), outcomes...)
+	}
+	clone.RendererBases = append([]string(nil), schema.RendererBases...)
+	clone.ZoxidePolicies = append([]string(nil), schema.ZoxidePolicies...)
+	clone.ZoxideOutcomes = append([]string(nil), schema.ZoxideOutcomes...)
+	return clone
+}
+
+func removeString(values []string, remove string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != remove {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
 func traceContractRows(t *testing.T) []string {
-	candidates := traceStringCandidates(t)
+	return traceContractRowsForSchema(t, traceSchemaAuthority())
+}
+
+func traceContractRowsForSchema(t *testing.T, schema traceSchemaRules) []string {
 	renderers := []string{}
-	for _, candidate := range rendererStringCandidates(candidates) {
-		if validRenderer(candidate) {
+	for _, candidate := range rendererStringCandidates(schema.RendererBases) {
+		if validRendererWithSchema(candidate, schema) {
 			renderers = append(renderers, candidate)
 		}
 	}
 	renderers = uniqueSorted(renderers)
 
-	outcomes := map[string][]string{}
-	for _, event := range candidates {
-		for _, outcome := range candidates {
-			if validTraceOutcome(event, outcome) {
-				outcomes[event] = append(outcomes[event], outcome)
-			}
-		}
-	}
-
 	rows := []string{
 		"event,outcomes,generation,renderer,counters,optional_fields",
+		"@numeric_bounds," + strings.Join(traceNumericBounds(schema), "|") + ",,,,",
 		"@renderers," + strings.Join(renderers, "|") + ",,,,",
+		"@zoxide_outcomes," + strings.Join(uniqueSorted(append([]string(nil), schema.ZoxideOutcomes...)), "|") + ",,,,",
+		"@zoxide_policies," + strings.Join(uniqueSorted(append([]string(nil), schema.ZoxidePolicies...)), "|") + ",,,,",
 	}
-	for event, acceptedOutcomes := range outcomes {
-		acceptedOutcomes = uniqueSorted(acceptedOutcomes)
+	for event, acceptedOutcomes := range schema.EventOutcomes {
+		acceptedOutcomes = uniqueSorted(append([]string(nil), acceptedOutcomes...))
 		profiles := map[string][]string{}
 		for _, outcome := range acceptedOutcomes {
 			base := TraceEvent{Name: event, Outcome: outcome}
 			acceptedRenderers := []string{}
-			if validateTraceEvent(base) == nil {
+			if validateTraceEventWithSchema(base, schema, time.Now()) == nil {
 				acceptedRenderers = append(acceptedRenderers, "")
 			}
 			for _, renderer := range renderers {
 				candidate := base
 				candidate.Renderer = renderer
-				if validateTraceEvent(candidate) == nil {
+				if validateTraceEventWithSchema(candidate, schema, time.Now()) == nil {
 					acceptedRenderers = append(acceptedRenderers, renderer)
 				}
 			}
@@ -65,10 +137,10 @@ func traceContractRows(t *testing.T) []string {
 			}
 			base.Renderer = acceptedRenderers[0]
 			profile := strings.Join([]string{
-				acceptedGenerationStates(t, base),
+				acceptedGenerationStates(t, base, schema),
 				documentedRendererState(acceptedRenderers, renderers),
-				acceptedCounterStates(t, base, acceptedRenderers),
-				strings.Join(acceptedOptionalFields(base), "|"),
+				acceptedCounterStates(t, base, acceptedRenderers, schema),
+				strings.Join(acceptedOptionalFields(base, schema), "|"),
 			}, ",")
 			profiles[profile] = append(profiles[profile], outcome)
 		}
@@ -83,43 +155,48 @@ func traceContractRows(t *testing.T) []string {
 func rendererStringCandidates(values []string) []string {
 	candidates := append([]string(nil), values...)
 	for _, base := range values {
-		for _, suffix := range values {
-			if strings.HasPrefix(suffix, "-") && !strings.ContainsAny(suffix, " \t\r\n") {
-				candidates = append(candidates, base+suffix)
-			}
+		if base != "native" {
+			candidates = append(candidates, base+"-fallback")
 		}
 	}
 	return uniqueSorted(candidates)
 }
 
-func traceStringCandidates(t *testing.T) []string {
-	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), "trace.go", nil, 0)
-	if err != nil {
-		t.Fatal(err)
+func traceNumericBounds(schema traceSchemaRules) []string {
+	timestampRequirement := "optional"
+	if schema.TimestampRequired {
+		timestampRequirement = "required"
 	}
-	candidates := []string{""}
-	ast.Inspect(file, func(node ast.Node) bool {
-		literal, ok := node.(*ast.BasicLit)
-		if !ok || literal.Kind != token.STRING {
-			return true
-		}
-		value, err := strconv.Unquote(literal.Value)
-		if err == nil {
-			candidates = append(candidates, value, value+"-fallback")
-		}
-		return true
-	})
-	return uniqueSorted(candidates)
+	timestampZone := "offset-preserved"
+	if schema.TimestampMustBeUTC {
+		timestampZone = "utc"
+	}
+	bounds := []string{
+		"schema=" + strconv.Itoa(TraceSchema),
+		"generation=0.." + strconv.FormatUint(schema.GenerationMax, 10),
+		"candidate_count=" + strconv.Itoa(schema.CandidateCountMin) + ".." + strconv.Itoa(schema.CandidateCountMax),
+		"child_starts=" + strconv.Itoa(schema.ChildStartsMin) + ".." + strconv.Itoa(schema.ChildStartsMax),
+		"max_live_children=" + strconv.Itoa(schema.MaxLiveChildrenMin) + ".." + strconv.Itoa(schema.MaxLiveChildrenMax) + "<=child_starts",
+		"zoxide_attempts=" + strconv.Itoa(schema.ZoxideCounterMin) + ".." + strconv.Itoa(schema.ZoxideAttemptsMax),
+		"zoxide_starts=" + strconv.Itoa(schema.ZoxideCounterMin) + "..zoxide_attempts",
+		"zoxide_exits=zoxide_starts",
+		"zoxide_processes=zoxide_starts",
+		"zoxide_live=" + strconv.Itoa(schema.ZoxideLiveRequired),
+		"zoxide_max_live=" + strconv.Itoa(schema.ZoxideCounterMin) + "..zoxide_starts",
+		"duration_us=" + strconv.FormatInt(schema.DurationMin.Microseconds(), 10) + ".." + strconv.FormatInt(schema.DurationMax.Microseconds(), 10),
+		"timestamp=" + timestampRequirement + "-" + schema.TimestampFormat + "-" + timestampZone,
+		"timestamp_input=zero-or-now-" + schema.TimestampPastLimit.String() + "..now+" + schema.TimestampFutureLimit.String(),
+	}
+	return uniqueSorted(bounds)
 }
 
-func acceptedGenerationStates(t *testing.T, base TraceEvent) string {
+func acceptedGenerationStates(t *testing.T, base TraceEvent, schema traceSchemaRules) string {
 	t.Helper()
 	states := []string{}
 	for _, generation := range []uint64{0, 1} {
 		candidate := base
 		candidate.Generation = generation
-		if validateTraceEvent(candidate) == nil {
+		if validateTraceEventWithSchema(candidate, schema, time.Now()) == nil {
 			if generation == 0 {
 				states = append(states, "0")
 			} else {
@@ -153,18 +230,18 @@ func documentedRendererState(renderers, allRenderers []string) string {
 	return prefix + value
 }
 
-func acceptedCounterStates(t *testing.T, base TraceEvent, renderers []string) string {
+func acceptedCounterStates(t *testing.T, base TraceEvent, renderers []string, schema traceSchemaRules) string {
 	t.Helper()
 	groups := map[string][]string{}
 	for _, renderer := range renderers {
 		states := []string{}
-		for childStarts := -1; childStarts <= 4; childStarts++ {
-			for maxLive := -1; maxLive <= 2; maxLive++ {
+		for childStarts := schema.ChildStartsMin - 1; childStarts <= schema.ChildStartsMax+1; childStarts++ {
+			for maxLive := schema.MaxLiveChildrenMin - 1; maxLive <= schema.MaxLiveChildrenMax+1; maxLive++ {
 				candidate := base
 				candidate.Renderer = renderer
 				candidate.ChildStarts = childStarts
 				candidate.MaxLiveChildren = maxLive
-				if validateTraceEvent(candidate) == nil {
+				if validateTraceEventWithSchema(candidate, schema, time.Now()) == nil {
 					states = append(states, strconv.Itoa(childStarts)+"/"+strconv.Itoa(maxLive))
 				}
 			}
@@ -195,7 +272,7 @@ func acceptedCounterStates(t *testing.T, base TraceEvent, renderers []string) st
 	return strings.Join(parts, ";")
 }
 
-func acceptedOptionalFields(base TraceEvent) []string {
+func acceptedOptionalFields(base TraceEvent, schema traceSchemaRules) []string {
 	fields := map[string]func(*TraceEvent){
 		"actor_queue_wait_us": func(event *TraceEvent) { event.ActorQueueWait = time.Microsecond },
 		"callback_ipc_us":     func(event *TraceEvent) { event.CallbackIPC = time.Microsecond },
@@ -209,31 +286,34 @@ func acceptedOptionalFields(base TraceEvent) []string {
 	for name, apply := range fields {
 		candidate := base
 		apply(&candidate)
-		if validateTraceEvent(candidate) == nil {
+		if validateTraceEventWithSchema(candidate, schema, time.Now()) == nil {
 			accepted = append(accepted, name)
 		}
 	}
-	if states := acceptedZoxideRequiredFields(base); len(states) != 0 {
+	if states := acceptedZoxideRequiredFields(base, schema); len(states) != 0 {
 		accepted = append(accepted, "zoxide_*:"+strings.Join(states, "|"))
 	}
 	sort.Strings(accepted)
 	return accepted
 }
 
-func acceptedZoxideRequiredFields(base TraceEvent) []string {
+func acceptedZoxideRequiredFields(base TraceEvent, schema traceSchemaRules) []string {
+	if len(schema.ZoxidePolicies) == 0 || len(schema.ZoxideOutcomes) == 0 {
+		return nil
+	}
 	states := []string{}
 	for mask := 1; mask < 4; mask++ {
 		candidate := base
 		parts := []string{}
 		if mask&1 != 0 {
-			candidate.ZoxidePolicy = "fresh"
+			candidate.ZoxidePolicy = schema.ZoxidePolicies[0]
 			parts = append(parts, "policy")
 		}
 		if mask&2 != 0 {
-			candidate.ZoxideOutcome = "ok"
+			candidate.ZoxideOutcome = schema.ZoxideOutcomes[0]
 			parts = append(parts, "outcome")
 		}
-		if validateTraceEvent(candidate) == nil {
+		if validateTraceEventWithSchema(candidate, schema, time.Now()) == nil {
 			states = append(states, strings.Join(parts, "+"))
 		}
 	}
