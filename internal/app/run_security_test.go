@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -44,7 +45,8 @@ func TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks(t *testing
 	var previewEvents []process.ProcessEvent
 	var credential, callbackAddress string
 	var captured process.Spec
-	fixture.dependencies.ProcessRunner.Execute = func(_ context.Context, spec process.Spec) error {
+	stopBeforeFZF := errors.New("token inspection complete")
+	fixture.dependencies.ProcessRunner.BeforeStart = func(spec process.Spec) error {
 		if spec.Path != fixture.options.FZFPath {
 			return os.ErrNotExist
 		}
@@ -89,14 +91,16 @@ func TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks(t *testing
 		if err != nil {
 			t.Fatalf("production preview helper: %v", err)
 		}
-		return &process.ExitError{Code: 130}
+		return stopBeforeFZF
 	}
-	if _, err := RunPicker(context.Background(), fixture.options, fixture.dependencies); err != nil {
-		t.Fatal(err)
+	if _, err := RunPicker(context.Background(), fixture.options, fixture.dependencies); !errors.Is(err, stopBeforeFZF) {
+		t.Fatalf("RunPicker error=%v; want inspector sentinel", err)
 	}
 	if credential == "" {
 		t.Fatal("launch did not expose the actual controlled credential")
 	}
+	assertControlledFinalEnvironment(t, captured.Env, "SHELL_PICKER_TOKEN", credential)
+	assertControlledFinalEnvironment(t, captured.Env, "SHELL_PICKER_ADDR", callbackAddress)
 	input, err := io.ReadAll(captured.Stdin)
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +129,30 @@ func TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks(t *testing
 		cacheRoot = filepath.Join(os.Getenv("LOCALAPPDATA"), "shell-picker", "previews")
 	}
 	assertTask20CacheHasWinnerAndNoStage(t, cacheRoot)
+}
+
+func assertControlledFinalEnvironment(t *testing.T, environment []string, controlledKey, controlledValue string) {
+	t.Helper()
+	matches := 0
+	for _, entry := range environment {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			if strings.Contains(entry, controlledValue) {
+				t.Fatalf("controlled value occurred in malformed final environment entry")
+			}
+			continue
+		}
+		if key == controlledKey && value == controlledValue {
+			matches++
+			continue
+		}
+		if strings.Contains(key, controlledValue) || strings.Contains(value, controlledValue) {
+			t.Fatalf("controlled value occurred outside its exact final environment field")
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("controlled final environment field %s matches=%d; want one", controlledKey, matches)
+	}
 }
 
 func containsControlledValue(data []byte, values ...string) bool {

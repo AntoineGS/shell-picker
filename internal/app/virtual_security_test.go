@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"testing"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
@@ -37,7 +38,11 @@ func TestPickerBackendRejectsAuthorizedVirtualBeforeFilesystemAndOutput(t *testi
 	if err != nil || resolved.Target.Kind != pathutil.KindDrives {
 		t.Fatalf("authorized virtual membership resolution failed: target=%v err=%v", resolved.Target.Kind, err)
 	}
-	backend := &pickerBackend{actor: actor, metrics: &pickerMetrics{}}
+	statCalls := 0
+	backend := &pickerBackend{actor: actor, metrics: &pickerMetrics{}, stat: func(string) (os.FileInfo, error) {
+		statCalls++
+		return nil, errors.New("stat seam reached")
+	}}
 	if _, err := backend.ResolvePreview(context.Background(), virtualWire); !errors.Is(err, session.ErrUnknownRecord) {
 		t.Fatalf("virtual preview error=%T %v; want session semantic rejection", err, err)
 	} else {
@@ -45,6 +50,9 @@ func TestPickerBackendRejectsAuthorizedVirtualBeforeFilesystemAndOutput(t *testi
 		if errors.As(err, &pathErr) {
 			t.Fatalf("virtual preview reached filesystem stat")
 		}
+	}
+	if statCalls != 0 {
+		t.Fatalf("authorized virtual preview stat calls=%d; want zero", statCalls)
 	}
 	if outcome, err := session.ValidateCD(initial.Snapshot, [][]byte{virtualWire}); !errors.Is(err, session.ErrInvalidSelection) || outcome.Status != "" || len(outcome.Paths) != 0 {
 		t.Fatalf("virtual CD outcome=%+v err=%v", outcome, err)

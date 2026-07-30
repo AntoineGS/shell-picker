@@ -45,10 +45,9 @@ type ProcessEvent struct {
 
 type Runner struct {
 	Observe func(ProcessEvent)
-	// Execute is an internal test seam. When non-nil, Run validates and passes
-	// the caller's context and final Spec to Execute instead of starting a
-	// process. Execute must not synthesize ProcessEvent observations.
-	Execute func(context.Context, Spec) error
+	// BeforeStart is a fail-only inspection hook. Run calls it after generic
+	// validation and always continues to the real Start when it returns nil.
+	BeforeStart func(Spec) error
 }
 type ExitError struct{ Code uint32 }
 

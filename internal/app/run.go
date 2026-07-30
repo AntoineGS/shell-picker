@@ -270,6 +270,7 @@ type pickerBackend struct {
 	actor   *session.Actor
 	metrics *pickerMetrics
 	trace   *pickerTrace
+	stat    func(string) (os.FileInfo, error)
 }
 
 func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (protocol.Effect, error) {
@@ -318,7 +319,11 @@ func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte
 		return protocol.ResolvedCandidate{}, session.ErrUnknownRecord
 	}
 	started := time.Now()
-	info, err := os.Stat(string(record.Path))
+	stat := backend.stat
+	if stat == nil {
+		stat = os.Stat
+	}
+	info, err := stat(string(record.Path))
 	if err != nil {
 		return protocol.ResolvedCandidate{}, err
 	}

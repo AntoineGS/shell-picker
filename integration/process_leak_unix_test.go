@@ -12,9 +12,9 @@ import (
 )
 
 type resourceSnapshot struct {
-	descriptors map[string]struct{}
-	goroutines  int
-	artifacts   map[string]artifactFingerprint
+	descriptors     map[string]struct{}
+	goroutineStacks map[string]int
+	artifacts       map[string]artifactFingerprint
 }
 
 func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
@@ -35,7 +35,7 @@ func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
 		}
 		descriptors[fmt.Sprintf("%s=%s", entry.Name(), target)] = struct{}{}
 	}
-	return resourceSnapshot{descriptors: descriptors, goroutines: runtime.NumGoroutine(), artifacts: snapshotArtifacts(t, roots)}
+	return resourceSnapshot{descriptors: descriptors, goroutineStacks: snapshotGoroutineStacks(), artifacts: snapshotArtifacts(t, roots)}
 }
 
 func platformResourceDifference(baseline, current resourceSnapshot) string {

@@ -182,10 +182,12 @@ func (backend *task20BlockingBackend) ResolvePreview(ctx context.Context, _ []by
 
 func runTask20CancelledPreviewHandler(t *testing.T) {
 	t.Helper()
+	handleScope := beginTask20HandleScope(t, "server")
 	token, err := sessionipc.NewToken()
 	if err != nil {
 		t.Fatal(err)
 	}
+	handleScope.Capture(t)
 	backend := &task20BlockingBackend{started: make(chan struct{}), returned: make(chan struct{})}
 	server, err := sessionipc.Listen(context.Background(), token, backend)
 	if err != nil {
@@ -231,10 +233,12 @@ func runTask20CancelledPreviewHandler(t *testing.T) {
 		t.Fatal("closed listener accepted a post-close request")
 	}
 	client.CloseIdleConnections()
+	handleScope.RequireClosed(t)
 }
 
 func runTask20CancelledExternalPreview(t *testing.T, tools, fixture, cacheRoot string) {
 	t.Helper()
+	handleScope := beginTask20HandleScope(t, "process/job")
 	processLog := filepath.Join(tools, "processes.log")
 	environmentLog := filepath.Join(tools, "environment.log")
 	_ = os.Remove(processLog)
@@ -259,6 +263,7 @@ func runTask20CancelledExternalPreview(t *testing.T, tools, fixture, cacheRoot s
 	deadline, stop := context.WithTimeout(context.Background(), 3*time.Second)
 	defer stop()
 	attempt, start := awaitTask20ProcessStart(t, deadline, events, done)
+	handleScope.Capture(t)
 	outer, err := openOwnedProcessIdentity(start.PID)
 	if err != nil {
 		t.Fatalf("open outer process identity: %v", err)
@@ -303,6 +308,7 @@ func runTask20CancelledExternalPreview(t *testing.T, tools, fixture, cacheRoot s
 		}
 	}
 	assertTask20CacheEmpty(t, cacheRoot)
+	handleScope.RequireClosed(t)
 }
 
 func TestTask20PreviewResourceHelper(t *testing.T) {

@@ -3,6 +3,7 @@ package integration
 import (
 	"bufio"
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -12,7 +13,9 @@ import (
 	"time"
 )
 
-const task20FocusedPattern = `^Test(Actor|Handle|Reduce|NormalEscape|Validate|Server|Client|FinishedTelemetry|CachedPolicy|Fresh|IndependentFresh|CPNever|CallerCancellation|BuilderZoxide|Zoxide|EnumerateReadDir|Kqueue|RejectsNonIdentifiable|WaitDelay|WaitIs|CancellationCloses|ExitErrorPrecedesBlocking|OrdinaryCompletion|Foreground|RestoreForeground|RetainedInherited|CancelKills|InheritedTree|Preview|Archive|Zip|Cache|Converter|Renderer|ExternalRenderer|Terminal|SessionSpec|Run|ParseOutput|ActionArgument|TokenCanary|PickerBackend|CreateDirectory|SecurityGate|Forged|CancelledNavigation|ResourceSnapshot|ParityPreview|RealFZF)`
+const task20FocusedPattern = `^Test(Actor|Handle|Reduce|NormalEscape|Validate|Server|Client|FinishedTelemetry|CachedPolicy|Fresh|IndependentFresh|CPNever|CallerCancellation|BuilderZoxide|Zoxide|EnumerateReadDir|Kqueue|RejectsNonIdentifiable|WaitDelay|WaitIs|CancellationCloses|ExitErrorPrecedesBlocking|OrdinaryCompletion|Foreground|RestoreForeground|RetainedInherited|CancelKills|InheritedTree|Preview|Archive|Zip|Cache|Converter|Renderer|ExternalRenderer|Terminal|SessionSpec|Run|ParseOutput|ActionArgument|TokenCanary|PickerBackend|CreateDirectory|SecurityGate|Forged|CancelledNavigation|ResourceSnapshot|ParityPreview|RealFZF|Windows|CreateProcess|RunnerBeforeStart|RunnerNilBeforeStart)`
+
+const task20ManifestPackages = `./internal/session ./internal/sessionipc ./internal/candidate ./internal/process ./internal/callback ./internal/preview ./internal/fzf ./internal/app ./internal/pathutil ./integration`
 
 type task20GatePackage struct {
 	path                          string
@@ -23,7 +26,7 @@ type task20GatePackage struct {
 }
 
 var task20GateManifest = []task20GatePackage{
-	{path: "./internal/session", selectedUnix: 30, selectedWindows: 31, tests: []string{
+	{path: "./internal/session", selectedUnix: 30, selectedWindows: 32, tests: []string{
 		"TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically",
 		"TestActorCreatedTreeDiscardOrdering",
 		"TestHandleAddCreateErrorsRetainAddSnapshotAndDoNotBuild",
@@ -47,7 +50,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestServerRejectsBackendReturnedVirtualPreview",
 		"TestFinishedTelemetryExactChildBounds",
 	}},
-	{path: "./internal/candidate", selectedUnix: 17, selectedWindows: 16, tests: []string{
+	{path: "./internal/candidate", selectedUnix: 17, selectedWindows: 18, tests: []string{
 		"TestCachedPolicyAttemptsOnceForSessionAndLaterReportsCached",
 		"TestFreshZeroTimeoutIsAuthoritativeUnlimitedPerGeneration",
 		"TestFreshBuilderSerializesSessionQueriesAndCancelledWaiterDoesNotAttempt",
@@ -59,7 +62,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestZoxideMissingAndSpawnFailureAttemptWithoutStart",
 		"TestEnumerateReadDirErrorPublishesNothing",
 	}},
-	{path: "./internal/process", selectedUnix: 21, selectedWindows: 14, tests: []string{
+	{path: "./internal/process", selectedUnix: 23, selectedWindows: 24, tests: []string{
 		"TestKqueueEventValidation",
 		"TestKqueueRegistrationValidatedBeforeWait",
 		"TestRejectsNonIdentifiableValueCloserBeforeAttempt",
@@ -72,11 +75,18 @@ var task20GateManifest = []task20GatePackage{
 		"TestForegroundTreeOwnsTTYAndRestoresPreviousGroup",
 		"TestRestoreForegroundPGRRestoresMaskOnIoctlError",
 		"TestRetainedInheritedTreeKillsGroupAfterChildWait",
-		"TestRunnerExecuteReceivesFinalSpecWithoutLaunching",
-		"TestRunnerExecuteDoesNotBypassSpecValidation",
+		"TestRunnerBeforeStartInspectsValidatedSpecAndCannotSynthesizeSuccess",
+		"TestRunnerBeforeStartRunsOnlyAfterSpecValidation",
+		"TestRunnerNilBeforeStartExecutesRealStart",
+		"TestRunnerBeforeStartReturningNilCannotAvoidRealStart",
 	}, windows: []string{
 		"TestWindowsStartFailureStagesCloseEverything",
 		"TestWindowsCancelTerminatesJob",
+		"TestWindowsForegroundAndInheritedJobsTerminateDescendants",
+		"TestWindowsRejectsExtraFilesBeforeProcessAttempt",
+		"TestWindowsForegroundUsesOwnedJobWithoutTTY",
+		"TestWindowsExitErrorPreservesWaitDelayClassification",
+		"TestCreateProcessPassesStreamsAndArguments",
 		"TestCreateProcessInheritsOnlyExplicitChildHandles",
 	}, unix: []string{
 		"TestCancelKillsOwnedProcessTreeEventually",
@@ -87,7 +97,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestPreviewTerminalResourceSkipsFinishedTelemetry",
 		"TestPreviewAggregatesSequentialChildTelemetry",
 	}},
-	{path: "./internal/preview", selectedUnix: 32, selectedWindows: 28, tests: []string{
+	{path: "./internal/preview", selectedUnix: 32, selectedWindows: 36, tests: []string{
 		"TestArchiveLimitsEntriesBytesAndDeadline",
 		"TestZipPreflightRejectsCentralDirectoryBombBeforeArchiveOpen",
 		"TestCachePutAnchorsRootAcrossSwap",
@@ -100,38 +110,87 @@ var task20GateManifest = []task20GatePackage{
 		"TestRendererFailuresAreWaitedSequentiallyBeforeNativeFallback",
 		"TestTerminalRetriesBlockedCleanupAfterTreeKill",
 	}},
-	{path: "./internal/fzf", selectedUnix: 11, selectedWindows: 11, tests: []string{
+	{path: "./internal/fzf", selectedUnix: 12, selectedWindows: 12, tests: []string{
 		"TestSessionSpecSeparatesCallbackCredentialsFromInheritedEnvironment",
 		"TestRunRejectsUnsafeConfigurationBeforeProcessStart",
 		"TestRunDoesNotProbeVersion",
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 18, selectedWindows: 17, tests: []string{
+	{path: "./internal/app", selectedUnix: 19, selectedWindows: 17, tests: []string{
 		"TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks",
 		"TestPickerBackendRejectsAuthorizedVirtualBeforeFilesystemAndOutput",
 		"TestRunPickerClosesCallbackEndpointBeforeReturning",
 		"TestRunPickerAppliesZoxidePolicyProcessBudgets",
 		"TestRunPickerParentCancellationStopsActiveCallbackGenerationBeforeFZFReturns",
 	}},
-	{path: "./internal/pathutil", selectedUnix: 3, selectedWindows: 3, tests: []string{
+	{path: "./internal/pathutil", selectedUnix: 3, selectedWindows: 7, tests: []string{
 		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",
 		"TestCreateDirectoryTreeErrorsAndPreservesExistingParents",
 	}, windows: []string{
 		"TestCreateDirectoryTreeRejectsJunctionInBaseAncestry",
 		"TestCreateDirectoryTreeRejectsJunctionInQueryComponent",
 	}},
-	{path: "./integration", selectedUnix: 16, selectedWindows: 13, tests: []string{
+	{path: "./integration", selectedUnix: 23, selectedWindows: 21, tests: []string{
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
+		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",
 		"TestCancelledNavigationAndPreviewLeakNothing",
 		"TestResourceSnapshotFingerprintsArtifactReplacement",
+		"TestResourceSnapshotDetectsDescriptorFreeBlockedGoroutine",
 		"TestPreviewCategoryMatrix",
 		"TestParityPreviewResourceProcess",
 		"TestRealFZFPreviewReplacementKillsWholeTree",
 		"TestRealFZFPreviewTerminalFailuresKillWholeTree",
 		"TestRealFZFAdversarialPromptCannotInjectAction",
+	}, windows: []string{
+		"TestWindowsResourceSnapshotUsesExactHandleIdentities",
+		"TestWindowsOwnedProcessHandleRegistryReturnsToBaseline",
+		"TestWindowsResourceSnapshotFingerprintsDirectoryReplacement",
 	}},
+}
+
+func TestSecurityGateRunnerMatchesManifest(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "scripts", "security-gate.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(filepath.Join(root, "scripts", "security-gate.sh"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&0o111 == 0 {
+			t.Fatal("checked-in security gate is not executable")
+		}
+	}
+	assignments := make(map[string]string)
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		for _, key := range []string{"TASK20_PACKAGES", "TASK20_PATTERN"} {
+			prefix := key + "='"
+			if strings.HasPrefix(line, prefix) && strings.HasSuffix(line, "'") {
+				assignments[key] = strings.TrimSuffix(strings.TrimPrefix(line, prefix), "'")
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if assignments["TASK20_PACKAGES"] != task20ManifestPackages {
+		t.Fatalf("checked-in gate packages differ from manifest")
+	}
+	if assignments["TASK20_PATTERN"] != task20FocusedPattern {
+		t.Fatalf("checked-in gate pattern differs from manifest")
+	}
+	if !strings.Contains(string(data), `go test "$@" $TASK20_PACKAGES -run "$TASK20_PATTERN"`) {
+		t.Fatal("checked-in gate does not execute the manifest with forwarded go test arguments")
+	}
 }
 
 func TestSecurityGateManifestSelectsEveryRequiredTest(t *testing.T) {
