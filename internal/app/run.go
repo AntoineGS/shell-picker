@@ -335,11 +335,14 @@ func (backend *pickerBackend) RecordPreview(ctx context.Context, request session
 		return cause
 	}
 	started := time.Now()
-	if request.Phase == "started" {
-		backend.trace.event(integrationpkg.TraceEvent{Name: "preview.dispatch", Renderer: request.Renderer, Outcome: "ok"})
-	}
 	if err := backend.metrics.recordPreview(request); err != nil {
 		return err
+	}
+	switch request.Phase {
+	case "started":
+		backend.trace.event(integrationpkg.TraceEvent{Name: "preview.dispatch", Renderer: request.Renderer, Outcome: "ok"})
+	case "finished":
+		backend.trace.event(integrationpkg.TraceEvent{Name: "preview.finished", Renderer: request.Renderer, Outcome: request.Outcome})
 	}
 	backend.metrics.recordCallback(time.Since(started))
 	return context.Cause(ctx)

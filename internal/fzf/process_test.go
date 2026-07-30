@@ -42,6 +42,11 @@ func TestSessionSpecSeparatesCallbackCredentialsFromInheritedEnvironment(t *test
 	if !slices.Equal(spec.Args[:len(spec.Args)-1], config.Options) {
 		t.Fatalf("args=%q options=%q", spec.Args, config.Options)
 	}
+	for index, argument := range spec.Args {
+		if strings.Contains(argument, config.CallbackAddress) || strings.Contains(argument, config.CallbackToken) {
+			t.Fatalf("controlled callback credential reached argument %d", index)
+		}
+	}
 	wantPath := filepath.Dir(config.ExecutablePath) + string(os.PathListSeparator) + "/bin"
 	assertEnvExactlyOnce(t, spec.Env, "PATH", wantPath)
 	assertEnvExactlyOnce(t, spec.Env, "SHELL_PICKER_ADDR", config.CallbackAddress)

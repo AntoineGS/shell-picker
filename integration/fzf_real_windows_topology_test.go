@@ -61,16 +61,16 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 		}
 		switch strings.ToLower(filepath.Base(node.exe)) {
 		case "cmd.exe", "powershell.exe", "pwsh.exe", "sh.exe", "bash.exe":
-			t.Fatalf("interpreter in picker process tree: %+v", node)
+			t.Fatalf("interpreter in picker process tree pid=%d", pid)
 		}
 		lowerCommand := strings.ToLower(node.command)
 		if strings.Contains(lowerCommand, "--listen") || strings.Contains(lowerCommand, "shell_picker_token") ||
 			strings.Contains(lowerCommand, "http://127.0.0.1:") {
-			t.Fatalf("listener or credential name in process command line: %+v", node)
+			t.Fatalf("listener or callback loopback form in process command line pid=%d", pid)
 		}
 		for _, canary := range session.argvCanaries {
 			if canary != "" && strings.Contains(node.command, canary) {
-				t.Fatalf("credential canary in process command line: %+v", node)
+				t.Fatalf("stale credential canary in process command line pid=%d", pid)
 			}
 		}
 	}

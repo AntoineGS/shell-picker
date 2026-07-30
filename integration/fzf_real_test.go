@@ -40,6 +40,7 @@ type traceEvent struct {
 type barrier struct {
 	Event      string
 	Operation  string
+	Renderer   string
 	Generation uint64
 	Count      int
 }

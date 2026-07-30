@@ -82,36 +82,80 @@ func (session *linuxTerminalSession) AssertProcessTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fzfCount := 0
+	var fzfPIDs []int
+	for pid := range descendants {
+		if pid != session.PID() && nodes[pid].exe == wantFZF {
+			fzfPIDs = append(fzfPIDs, pid)
+		}
+	}
+	if len(fzfPIDs) != 1 {
+		t.Fatalf("fzf child count=%d want 1", len(fzfPIDs))
+	}
+	rawEnvironment, err := os.ReadFile("/proc/" + strconv.Itoa(fzfPIDs[0]) + "/environ")
+	if err != nil {
+		t.Fatalf("read owned fzf environment for pid %d: %v", fzfPIDs[0], err)
+	}
+	actualCredentials, err := parseControlledFZFEnvironment(rawEnvironment)
+	if err != nil {
+		t.Fatalf("validate owned fzf controlled environment for pid %d: %v", fzfPIDs[0], err)
+	}
 	for pid := range descendants {
 		if pid == session.PID() {
 			continue
 		}
 		node := nodes[pid]
 		if node.exe == wantFZF {
-			fzfCount++
 			if node.ppid != session.PID() {
 				t.Fatalf("fzf pid %d parent=%d want picker %d", pid, node.ppid, session.PID())
 			}
 		}
 		base := strings.ToLower(filepath.Base(node.exe))
 		if map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "cmd.exe": true, "powershell.exe": true}[base] {
-			t.Fatalf("interpreter in picker tree: %+v", node)
+			t.Fatalf("interpreter role in picker tree pid=%d", pid)
 		}
 		for _, argument := range node.args {
 			if argument == "--listen" || strings.HasPrefix(argument, "--listen=") || strings.Contains(argument, "SHELL_PICKER_TOKEN") {
-				t.Fatalf("listener or credential name in process argv: %+v", node)
+				t.Fatalf("listener or credential name in process argv pid=%d", pid)
 			}
 			for _, canary := range session.argvCanaries {
 				if canary != "" && strings.Contains(argument, canary) {
-					t.Fatalf("callback credential canary in process argv: %+v", node)
+					t.Fatalf("stale callback credential canary in process argv pid=%d", pid)
+				}
+			}
+			for _, credential := range actualCredentials {
+				if strings.Contains(argument, credential) {
+					t.Fatalf("actual controlled callback credential in process argv pid=%d", pid)
 				}
 			}
 		}
 	}
-	if fzfCount != 1 {
-		t.Fatalf("fzf child count=%d want 1", fzfCount)
+}
+
+func parseControlledFZFEnvironment(raw []byte) ([]string, error) {
+	values := make(map[string]string, 2)
+	for _, entry := range bytes.Split(raw, []byte{0}) {
+		key, value, ok := bytes.Cut(entry, []byte{'='})
+		if !ok {
+			continue
+		}
+		name := string(key)
+		if name != "SHELL_PICKER_ADDR" && name != "SHELL_PICKER_TOKEN" {
+			continue
+		}
+		if len(value) == 0 {
+			return nil, fmt.Errorf("empty %s", name)
+		}
+		if _, exists := values[name]; exists {
+			return nil, fmt.Errorf("duplicate %s", name)
+		}
+		values[name] = string(value)
 	}
+	address, addressOK := values["SHELL_PICKER_ADDR"]
+	token, tokenOK := values["SHELL_PICKER_TOKEN"]
+	if !addressOK || !tokenOK {
+		return nil, errors.New("missing controlled callback environment")
+	}
+	return []string{address, token}, nil
 }
 
 func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
@@ -329,6 +373,7 @@ func (session *linuxTerminalSession) WaitBarrier(ctx context.Context, wanted bar
 				session.t.Fatalf("trace reader failed: %s", event.Outcome)
 			}
 			if event.Event == wanted.Event && (wanted.Operation == "" || event.Outcome == wanted.Operation) &&
+				(wanted.Renderer == "" || event.Renderer == wanted.Renderer) &&
 				(wanted.Generation == 0 || event.Generation == wanted.Generation) {
 				count++
 				matched = event

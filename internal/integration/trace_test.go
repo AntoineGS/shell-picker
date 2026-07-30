@@ -59,7 +59,9 @@ func TestTraceAcceptsOnlyTask19EventsAndBoundedFields(t *testing.T) {
 		{Name: "session.start", Outcome: "cp"}, {Name: "generation.publish", Generation: 1, Outcome: "ok"},
 		{Name: "fzf.start", Outcome: "ok"}, {Name: "fzf.exit", Outcome: "aborted"},
 		{Name: "callback.event", Outcome: "en"}, {Name: "callback.load", Generation: 2, Outcome: "ok"},
-		{Name: "preview.dispatch", Renderer: "native", Outcome: "ok"}, {Name: "session.close", Outcome: "accepted"},
+		{Name: "preview.dispatch", Renderer: "native", Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "native", Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "eza-fallback", Outcome: "error"}, {Name: "session.close", Outcome: "accepted"},
 	}
 	var output bytes.Buffer
 	trace := NewTrace(&output, fixedSessionID())
@@ -72,6 +74,9 @@ func TestTraceAcceptsOnlyTask19EventsAndBoundedFields(t *testing.T) {
 	invalid := []TraceEvent{
 		{Name: "generation.start", Outcome: "ok"}, {Name: "callback.event", Outcome: "execute(evil)"},
 		{Name: "preview.dispatch", Renderer: strings.Repeat("x", 65), Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "native", Outcome: "execute(evil)"},
+		{Name: "preview.finished", Renderer: "unknown", Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "native", Outcome: "ok", Path: []byte("token-query-record")},
 		{Name: "session.close", Outcome: strings.Repeat("x", 65)},
 	}
 	for _, event := range invalid {

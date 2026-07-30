@@ -78,13 +78,67 @@ func TestWindowsTerminalLifecycleSourceContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := string(raw)
-	for _, required := range []string{"waitErr", "waitDone", "DuplicateHandle", "CloseHandle(information.Thread)",
-		"CancelIoEx(session.output", "CancelIoEx(session.trace", "<-session.drainDone", "<-session.traceDone"} {
+	for _, required := range []string{"waitErr", "waitDone", "DuplicateHandle", "ops.closeHandle(information.Thread)",
+		"ops.cancelIO(session.output", "ops.cancelIO(session.trace", "<-session.drainDone", "<-session.traceDone"} {
 		if !strings.Contains(source, required) {
 			t.Errorf("Windows lifecycle source lacks %s", required)
 		}
 	}
 	if strings.Contains(source, "waitResult") || strings.Contains(source, "session.thread") {
 		t.Error("Windows lifecycle retains consumable wait or thread-handle state")
+	}
+	if strings.Contains(source, "windowsHandleOwner") || strings.Contains(source, "windowsWaitState") {
+		t.Error("Windows lifecycle retains a parallel state model")
+	}
+	traceCreate := strings.Index(source, "createWindowsTerminalResources(config, defaultWindowsTerminalFactory())")
+	outputDrain := strings.Index(source, "go session.drainOutput")
+	if traceCreate < 0 || outputDrain < 0 || traceCreate > outputDrain {
+		t.Error("Windows constructor starts output drain before fallible trace resource setup")
+	}
+}
+
+func TestWindowsPreviewTestsRequireTopologyAndCheckOperations(t *testing.T) {
+	parsed, err := parser.ParseFile(token.NewFileSet(), "fzf_real_preview_windows_test.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := map[string]bool{
+		"TestRealFZFPreviewReplacementKillsWholeTree":     false,
+		"TestRealFZFResizeUpdatesPreviewDimensions":       false,
+		"TestRealFZFPreviewTerminalFailuresKillWholeTree": false,
+	}
+	for _, declaration := range parsed.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Recv != nil {
+			continue
+		}
+		if _, exists := wanted[function.Name.Name]; !exists {
+			continue
+		}
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, selected := call.Fun.(*ast.SelectorExpr)
+			if selected && selector.Sel.Name == "AssertProcessTopology" {
+				wanted[function.Name.Name] = true
+			}
+			return true
+		})
+	}
+	for name, found := range wanted {
+		if !found {
+			t.Errorf("%s lacks AssertProcessTopology", name)
+		}
+	}
+	raw, err := os.ReadFile("fzf_real_preview_windows_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"_ = term.Send", "_ = term.Resize", "_ = f.controller.release", "_ = term.Wait"} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Errorf("Windows preview source ignores operation error with %q", forbidden)
+		}
 	}
 }

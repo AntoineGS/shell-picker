@@ -412,11 +412,8 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 			t.Fatalf("killed renderer claimed normal completion: %+v", event)
 		}
 	}
-	for _, event := range term.TraceEvents() {
-		if event.Event == "preview.exit" {
-			t.Fatalf("killed callback claimed finished telemetry: %+v", event)
-		}
-	}
+	assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "eza", "ok", 2)
+	assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "eza", "", 0)
 	if err := fixture.controller.release(second.RendererPID); err != nil {
 		t.Fatal(err)
 	}
@@ -427,6 +424,8 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 	if err := waitTreeExit(testContext(t), second); err != nil {
 		t.Fatalf("released preview tree did not exit: %v", err)
 	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: 1})
+	assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "eza", "ok", 1)
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	if err := term.Send([]byte("q")); err != nil {
 		t.Fatal(err)
@@ -484,6 +483,8 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 		t.Fatalf("preview dimensions initial=%dx%d resize1=%dx%d want 46x35 resize2=%dx%d want 37x27",
 			first.Columns, first.Lines, second.Columns, second.Lines, third.Columns, third.Lines)
 	}
+	assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "chafa", "ok", 3)
+	assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "chafa", "", 0)
 	if err := fixture.controller.release(third.RendererPID); err != nil {
 		t.Fatal(err)
 	}
@@ -491,6 +492,8 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	if finished.PID != third.RendererPID {
 		t.Fatalf("renderer exit=%+v want pid %d", finished, third.RendererPID)
 	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "chafa", Count: 1})
+	assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "chafa", "ok", 1)
 	for _, tree := range []observedPreviewTree{first, second, third} {
 		if err := waitTreeExit(testContext(t), tree); err != nil {
 			t.Fatalf("preview tree %+v did not exit: %v", tree, err)
@@ -546,13 +549,11 @@ func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
 						t.Fatalf("native fallback or unexpected renderer: %+v", event)
 					}
 				}
-				if event.Event == "preview.exit" {
-					t.Fatalf("terminal callback claimed finished telemetry: %+v", event)
-				}
 			}
 			if dispatches != 1 {
 				t.Fatalf("preview dispatches=%d want 1; events=%+v", dispatches, term.TraceEvents())
 			}
+			assertPreviewTraceCount(t, term.TraceEvents(), "preview.finished", "eza", "", 0)
 			sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 			if err := term.Send([]byte("q")); err != nil {
 				t.Fatal(err)

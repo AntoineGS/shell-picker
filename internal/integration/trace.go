@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -100,10 +101,10 @@ func validateTraceEvent(event TraceEvent) error {
 	if event.Path != nil && event.Name != "generation.publish" {
 		return errors.New("trace: path is not valid for event")
 	}
-	if event.Renderer != "" && event.Name != "preview.dispatch" {
+	if event.Renderer != "" && event.Name != "preview.dispatch" && event.Name != "preview.finished" {
 		return errors.New("trace: renderer is not valid for event")
 	}
-	if event.Name == "preview.dispatch" && !validRenderer(event.Renderer) {
+	if (event.Name == "preview.dispatch" || event.Name == "preview.finished") && !validRenderer(event.Renderer) {
 		return errors.New("trace: invalid renderer")
 	}
 	if !validTraceOutcome(event.Name, event.Outcome) {
@@ -121,6 +122,7 @@ func validTraceOutcome(event, outcome string) bool {
 		"callback.event":     {"mi": true, "ma": true, "es": true, "fw": true, "up": true, "sl": true, "hm": true, "en": true},
 		"callback.load":      {"ok": true, "error": true},
 		"preview.dispatch":   {"ok": true, "error": true},
+		"preview.finished":   {"ok": true, "error": true},
 		"session.close":      {"accepted": true, "aborted": true, "error": true},
 	}
 	return allowed[event][outcome]
@@ -132,5 +134,9 @@ func validRenderer(renderer string) bool {
 		"unzip": true, "gzip": true, "xz": true, "tar": true, "file": true, "pdftoppm": true,
 		"ffmpegthumbnailer": true, "ffmpeg": true, "exiftool": true,
 	}
-	return allowed[renderer]
+	if allowed[renderer] {
+		return true
+	}
+	base, fallback := strings.CutSuffix(renderer, "-fallback")
+	return fallback && base != "native" && allowed[base]
 }

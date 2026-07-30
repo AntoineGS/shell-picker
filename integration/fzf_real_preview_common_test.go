@@ -4,7 +4,21 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"testing"
 )
+
+func assertPreviewTraceCount(t *testing.T, events []traceEvent, name, renderer, outcome string, want int) {
+	t.Helper()
+	got := 0
+	for _, event := range events {
+		if event.Event == name && event.Renderer == renderer && (outcome == "" || event.Outcome == outcome) {
+			got++
+		}
+	}
+	if got != want {
+		t.Fatalf("%s renderer=%s outcome=%s count=%d want %d; events=%+v", name, renderer, outcome, got, want, events)
+	}
+}
 
 type controlEvent struct {
 	Event   string `json:"event"`

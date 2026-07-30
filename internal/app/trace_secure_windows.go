@@ -79,10 +79,9 @@ func openTraceSink(path string) (io.WriteCloser, error) {
 	if file == nil {
 		return nil, errors.Join(errors.New("wrap trace handle"), windows.CloseHandle(handle))
 	}
-	// The caller authorizes the sink path. Windows permits setting the opened
-	// file DACL by handle, but does not provide a single API that also proves
-	// every traversed parent's ACL/reparse identity; parent trust remains
-	// caller-owned while the final opened object is validated without following.
+	// The caller authorizes every ancestor and the target; elevated wrappers
+	// must not accept an untrusted trace path. Final-handle DACL, type, and
+	// no-follow checks are defense in depth, not anchored traversal.
 	return file, nil
 }
 
