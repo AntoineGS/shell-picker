@@ -27,14 +27,22 @@ var (
 )
 
 type traceEvent struct {
-	Schema         int    `json:"schema"`
-	Session        string `json:"session"`
-	Event          string `json:"event"`
-	Generation     uint64 `json:"generation,omitempty"`
-	CandidateCount int    `json:"candidate_count,omitempty"`
-	Renderer       string `json:"renderer,omitempty"`
-	Outcome        string `json:"outcome,omitempty"`
-	Path           string `json:"path,omitempty"`
+	Schema          int    `json:"schema"`
+	Time            string `json:"time"`
+	Session         string `json:"session"`
+	Event           string `json:"event"`
+	Generation      uint64 `json:"generation,omitempty"`
+	CandidateCount  int    `json:"candidate_count,omitempty"`
+	Renderer        string `json:"renderer,omitempty"`
+	Outcome         string `json:"outcome,omitempty"`
+	Path            string `json:"path,omitempty"`
+	ZoxidePolicy    string `json:"zoxide_policy,omitempty"`
+	ZoxideAttempts  int    `json:"zoxide_attempts,omitempty"`
+	ZoxideStarts    int    `json:"zoxide_starts,omitempty"`
+	ZoxideMaxLive   int    `json:"zoxide_max_live,omitempty"`
+	CallbackIPCUS   int64  `json:"callback_ipc_us,omitempty"`
+	ChildStarts     int    `json:"child_starts,omitempty"`
+	MaxLiveChildren int    `json:"max_live_children,omitempty"`
 }
 
 type barrier struct {

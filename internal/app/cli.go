@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/AntoineGS/shell-picker/internal/callback"
 	"github.com/AntoineGS/shell-picker/internal/candidate"
+	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
 	"github.com/AntoineGS/shell-picker/internal/preview"
 	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
@@ -30,6 +32,9 @@ func Main(ctx context.Context, args []string, streams Streams, build string) int
 		fmt.Fprintf(streams.Out, "shell-picker %s\n", Version(build))
 		return 0
 	}
+	if len(args) > 0 && args[0] == "probe" {
+		return runProbeCLI(ctx, args, streams, build, integrationpkg.ProbeOptions{})
+	}
 	if len(args) >= 1 && args[0] == "--fzf-shell" {
 		return callbackMain(ctx, args, streams)
 	}
@@ -42,6 +47,25 @@ func Main(ctx context.Context, args []string, streams Streams, build string) int
 		ProcessRunner: process.Runner{}, Environment: os.Environ(), TTYErr: streams.Err,
 	}
 	return runPickerCLI(ctx, args, streams, executable, dependencies)
+}
+
+func runProbeCLI(ctx context.Context, args []string, streams Streams, build string, options integrationpkg.ProbeOptions) int {
+	if len(args) != 2 || args[0] != "probe" || args[1] != "--json" {
+		fmt.Fprintln(streams.Err, "usage: shell-picker probe --json")
+		return 2
+	}
+	options.Version = Version(build)
+	if options.Environment == nil {
+		options.Environment = os.Environ()
+	}
+	report := integrationpkg.Probe(ctx, options)
+	encoder := json.NewEncoder(streams.Out)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(report); err != nil {
+		fmt.Fprintln(streams.Err, "shell-picker: probe output failed")
+		return 1
+	}
+	return 0
 }
 
 func runPickerCLI(ctx context.Context, args []string, streams Streams, executable string, dependencies *Dependencies) int {

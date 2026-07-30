@@ -6,10 +6,89 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func fixedSessionID() [16]byte {
 	return [16]byte{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'}
+}
+
+func TestTraceWritesOnlyCompatibleBoundedPerformanceFields(t *testing.T) {
+	var output bytes.Buffer
+	trace := NewTrace(&output, fixedSessionID())
+	event := TraceEvent{Name: "generation.publish", Generation: 2, CandidateCount: 4, Path: []byte("/secret/path"),
+		ZoxidePolicy: "cached", ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideMaxLive: 1,
+		ActorQueueWait: 2 * time.Microsecond, LocalDuration: 3 * time.Microsecond,
+		ZoxideDuration: 4 * time.Microsecond, ZoxideOutcome: "ok", TransformDuration: 5 * time.Microsecond,
+		Outcome: "ok"}
+	if err := trace.Event(event); err != nil {
+		t.Fatal(err)
+	}
+	var record TraceRecord
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.ZoxidePolicy != "cached" || record.ZoxideAttempts != 1 || record.ZoxideStarts != 1 || record.ZoxideMaxLive != 1 ||
+		record.ActorQueueWaitUS != 2 || record.LocalUS != 3 || record.ZoxideUS != 4 || record.ZoxideOutcome != "ok" || record.TransformUS != 5 {
+		t.Fatalf("record=%+v", record)
+	}
+
+	before := output.Len()
+	invalid := []TraceEvent{
+		{Name: "fzf.exit", ZoxidePolicy: "cached", Outcome: "ok"},
+		{Name: "generation.publish", Generation: 3, ZoxidePolicy: "stale", Outcome: "ok"},
+		{Name: "generation.publish", Generation: 3, ZoxideAttempts: 0, ZoxideStarts: 1, Outcome: "ok"},
+		{Name: "generation.publish", Generation: 3, ZoxideAttempts: 1, Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "native", ChildStarts: 1, MaxLiveChildren: 1, Outcome: "ok"},
+		{Name: "preview.finished", Renderer: "bat", ChildStarts: 4, MaxLiveChildren: 1, Outcome: "ok"},
+		{Name: "callback.load", Generation: 3, CallbackIPC: time.Microsecond, Outcome: "ok"},
+	}
+	for _, candidate := range invalid {
+		if err := trace.Event(candidate); err == nil {
+			t.Fatalf("accepted incompatible event: %+v", candidate)
+		}
+	}
+	if output.Len() != before {
+		t.Fatalf("invalid fields reached writer: %q", output.Bytes()[before:])
+	}
+}
+
+func TestTraceAllowsBoundedLifecycleExtensionsWithoutInventedExitLatency(t *testing.T) {
+	valid := []TraceEvent{
+		{Name: "generation.start", Generation: 2, Outcome: "ok"},
+		{Name: "generation.discard", Generation: 2, Outcome: "cancelled"},
+		{Name: "preview.cancel", Renderer: "bat", Outcome: "cancelled"},
+		{Name: "preview.exit", Renderer: "bat", ChildStarts: 1, MaxLiveChildren: 1, Outcome: "ok"},
+	}
+	var output bytes.Buffer
+	trace := NewTrace(&output, fixedSessionID())
+	for _, event := range valid {
+		if err := trace.Event(event); err != nil {
+			t.Fatalf("event=%+v error=%v", event, err)
+		}
+	}
+	if strings.Contains(output.String(), "exit_latency") || strings.Contains(output.String(), "cancel_to_exit") {
+		t.Fatalf("trace claims OS exit latency: %s", output.String())
+	}
+}
+
+func TestTraceUsesValidatedInternalBoundaryTimestamp(t *testing.T) {
+	var output bytes.Buffer
+	boundary := time.Now().UTC().Add(-time.Millisecond).Truncate(time.Microsecond)
+	trace := NewTrace(&output, fixedSessionID())
+	if err := trace.Event(TraceEvent{Name: "callback.event", Outcome: "up", CallbackIPC: time.Millisecond, Timestamp: boundary}); err != nil {
+		t.Fatal(err)
+	}
+	var record TraceRecord
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Time != boundary.Format(time.RFC3339Nano) {
+		t.Fatalf("time=%q want %q", record.Time, boundary.Format(time.RFC3339Nano))
+	}
+	if err := trace.Event(TraceEvent{Name: "callback.event", Outcome: "up", Timestamp: time.Now().Add(time.Minute)}); err == nil {
+		t.Fatal("future timestamp accepted")
+	}
 }
 
 func TestTraceWritesStableRedactedJSONL(t *testing.T) {
@@ -42,7 +121,10 @@ func TestTraceWritesStableRedactedJSONL(t *testing.T) {
 	}
 	for key := range record {
 		if !map[string]bool{"schema": true, "time": true, "session": true, "event": true, "generation": true,
-			"candidate_count": true, "renderer": true, "outcome": true, "path": true}[key] {
+			"candidate_count": true, "renderer": true, "child_starts": true, "max_live_children": true,
+			"outcome": true, "path": true, "zoxide_policy": true, "zoxide_attempts": true, "zoxide_starts": true,
+			"zoxide_max_live": true, "actor_queue_wait_us": true, "callback_ipc_us": true, "local_us": true,
+			"zoxide_us": true, "zoxide_outcome": true, "transform_us": true, "load_us": true}[key] {
 			t.Fatalf("unstable trace field %q in %v", key, record)
 		}
 	}
@@ -72,7 +154,7 @@ func TestTraceAcceptsOnlyTask19EventsAndBoundedFields(t *testing.T) {
 	}
 	before := output.Len()
 	invalid := []TraceEvent{
-		{Name: "generation.start", Outcome: "ok"}, {Name: "callback.event", Outcome: "execute(evil)"},
+		{Name: "callback.event", Outcome: "execute(evil)"},
 		{Name: "preview.dispatch", Renderer: strings.Repeat("x", 65), Outcome: "ok"},
 		{Name: "preview.finished", Renderer: "native", Outcome: "execute(evil)"},
 		{Name: "preview.finished", Renderer: "unknown", Outcome: "ok"},

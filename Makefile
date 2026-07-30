@@ -1,4 +1,4 @@
-.PHONY: fmt test check real-fzf security-gate
+.PHONY: fmt test check real-fzf security-gate performance-stable performance-dedicated
 
 fmt:
 	gofmt -w cmd internal integration
@@ -14,3 +14,14 @@ security-gate:
 real-fzf:
 	test -n "$(SHELL_PICKER_REAL_FZF)"
 	go test ./integration -run TestRealFZF -count=1 -v
+
+performance-stable:
+	go test ./integration -run TestStablePerformanceGates -count=1
+
+performance-dedicated:
+	test "$${SHELL_PICKER_DEDICATED_PERF}" = 1
+	mkdir -p bin
+	go build -trimpath -o bin/shell-picker ./cmd/shell-picker
+	go test -c -o bin/shell-picker-perf.test ./integration
+	./bin/shell-picker-perf.test -test.run TestDedicatedBaseline -binary ./bin/shell-picker -samples 50 -output host-baseline.json
+	./bin/shell-picker-perf.test -test.run TestDedicatedTargets -binary ./bin/shell-picker -samples 50 -baseline host-baseline.json -output performance.json

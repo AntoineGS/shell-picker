@@ -15,6 +15,12 @@ import (
 )
 
 func runParityHelper() int {
+	if os.Getenv(parityHelperEnvironment) == "performance" {
+		if code, ok := runPerformanceHelper(); ok {
+			return code
+		}
+		return 2
+	}
 	mode := os.Getenv(parityHelperEnvironment)
 	switch mode {
 	case "zoxide-ok":

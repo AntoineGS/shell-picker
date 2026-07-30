@@ -44,8 +44,14 @@ func TestPickerBackendTracesOnlyAcceptedPreviewFinishedTelemetryInOrder(t *testi
 		records = append(records, record)
 	}
 	if records[0].Event != "preview.dispatch" || records[0].Renderer != "eza" || records[0].Outcome != "ok" ||
-		records[1].Event != "preview.finished" || records[1].Renderer != "eza" || records[1].Outcome != "error" {
+		records[1].Event != "preview.finished" || records[1].Renderer != "eza" || records[1].Outcome != "error" ||
+		records[1].ChildStarts != 1 || records[1].MaxLiveChildren != 1 {
 		t.Fatalf("records=%+v", records)
+	}
+	for _, record := range records {
+		if record.Event == "preview.exit" {
+			t.Fatalf("parent invented OS exit event: %+v", record)
+		}
 	}
 	text := output.String()
 	for _, forbidden := range []string{"token", "query", "current_item", currentCanary, strings.Repeat("x", 65)} {

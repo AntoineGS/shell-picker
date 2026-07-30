@@ -34,6 +34,42 @@ func TestVersionCommand(t *testing.T) {
 	}
 }
 
+func TestProbeCLIEmitsDeterministicJSONWithoutRawDependencyPaths(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runProbeCLI(context.Background(), []string{"probe", "--json"}, Streams{Out: &stdout, Err: &stderr}, "v1.2.3",
+		integrationpkg.ProbeOptions{
+			FZFPath: "fzf", ZoxidePath: "zoxide", PreviewTools: []string{"bat"},
+			LookupPath: func(name string) (string, error) {
+				if name == "fzf" {
+					return "/private/bin/fzf", nil
+				}
+				return "", os.ErrNotExist
+			},
+			CheckFZF: func(context.Context, string, []string) (string, error) { return "0.74.1", nil },
+			Cache:    integrationpkg.ProbeCache{Root: "/private/cache", Status: "writable"},
+		})
+	if code != 0 || stderr.Len() != 0 || !bytes.HasSuffix(stdout.Bytes(), []byte("\n")) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	var report integrationpkg.ProbeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Ready || report.FZF.Version != "0.74.1" || report.Zoxide.Status != "optional-missing" {
+		t.Fatalf("report=%+v", report)
+	}
+	for _, forbidden := range []string{"/private/bin/fzf", "/private/cache", "token", "query", "record"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("probe leaked %q: %s", forbidden, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	if code := runProbeCLI(context.Background(), []string{"probe"}, Streams{Out: &stdout, Err: &stderr}, "dev", integrationpkg.ProbeOptions{}); code != 2 {
+		t.Fatalf("probe without --json code=%d", code)
+	}
+}
+
 func TestPreviewEnvironmentAllowsOnlyPathLocaleAndTerminalMetadata(t *testing.T) {
 	inherited := []string{
 		"PATH=/usr/bin", "LANG=en_CA.UTF-8", "LC_ALL=C", "LC_CTYPE=C.UTF-8", "TERM=xterm-256color",
@@ -203,13 +239,28 @@ func TestPickerTraceCreatesPrivateFileAndRecordsLifecycle(t *testing.T) {
 		}
 		names = append(names, event.Event)
 	}
-	want := []string{"session.start", "generation.publish", "fzf.start", "fzf.exit", "session.close"}
+	want := []string{"session.start", "generation.start", "generation.publish", "fzf.start", "fzf.exit", "session.close"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("trace events=%q want %q; raw=%s", names, want, raw)
 	}
 	if bytes.Contains(raw, []byte(fixture.cwd)) || bytes.Contains(raw, []byte("SHELL_PICKER_TOKEN")) ||
 		bytes.Contains(raw, []byte("query")) || bytes.Contains(raw, []byte("record")) {
 		t.Fatalf("trace leaked sensitive value: %s", raw)
+	}
+	var publication integrationpkg.TraceRecord
+	decoder = json.NewDecoder(bytes.NewReader(raw))
+	for decoder.More() {
+		var event integrationpkg.TraceRecord
+		if err := decoder.Decode(&event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Event == "generation.publish" {
+			publication = event
+		}
+	}
+	if publication.ZoxidePolicy != "cached" || publication.ZoxideAttempts != 0 || publication.ZoxideStarts != 0 ||
+		publication.ZoxideMaxLive != 0 || publication.ZoxideOutcome != "not-run" || publication.LocalUS < 0 || publication.TransformUS < 0 {
+		t.Fatalf("publication=%+v", publication)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/callback"
@@ -76,9 +77,20 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
+	var publishedGeneration atomic.Uint64
+	generate := func(generateCtx context.Context, request candidate.BuildRequest) (candidate.BuildResult, error) {
+		generation := publishedGeneration.Load() + 1
+		trace.event(integrationpkg.TraceEvent{Name: "generation.start", Generation: generation, Outcome: "ok"})
+		result, buildErr := builder.Build(generateCtx, request)
+		if buildErr != nil {
+			trace.event(integrationpkg.TraceEvent{Name: "generation.discard", Generation: generation,
+				Outcome: traceDiscardOutcome(buildErr)})
+		}
+		return result, buildErr
+	}
 	actorCtx, cancelActor := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer cancelActor(nil)
-	actor := session.New(actorCtx, builder.Build)
+	actor := session.New(actorCtx, generate)
 	actorOpen := true
 	defer func() {
 		if actorOpen {
@@ -103,8 +115,8 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, fmt.Errorf("build initial candidates: %w", err)
 	}
-	trace.event(integrationpkg.TraceEvent{Name: "generation.publish", Generation: initial.Snapshot.Generation(),
-		CandidateCount: len(initial.Snapshot.Records()), Outcome: "ok", Path: initialState.Location.Path})
+	publishedGeneration.Store(initial.Snapshot.Generation())
+	traceTransition(trace, options.ZoxidePolicy, initial, initialState.Location.Path)
 
 	token, err := sessionipc.NewToken()
 	if err != nil {
@@ -112,8 +124,9 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	}
 	metrics := &pickerMetrics{}
 	metrics.traceID = traceID
+	metrics.policy = options.ZoxidePolicy
 	metrics.recordTransition(initial)
-	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace}
+	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace, publishedGeneration: &publishedGeneration}
 	server, err := sessionipc.Listen(ctx, token, backend)
 	if err != nil {
 		return protocol.Outcome{}, err
@@ -206,6 +219,29 @@ func selectLifecycleError(selected, actorClose, parentCause error) error {
 	return parentCause
 }
 
+func traceDiscardOutcome(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, session.ErrClosed):
+		return "cancelled"
+	case errors.Is(err, session.ErrStaleGeneration):
+		return "stale"
+	case errors.Is(err, session.ErrSuperseded):
+		return "superseded"
+	default:
+		return "error"
+	}
+}
+
+func traceTransition(trace *pickerTrace, policy candidate.ZoxidePolicy, result session.TransitionResult, path []byte) {
+	metrics := result.Metrics
+	trace.event(integrationpkg.TraceEvent{Name: "generation.publish", Generation: result.Snapshot.Generation(),
+		CandidateCount: len(result.Snapshot.Records()), Outcome: "ok", Path: path, ZoxidePolicy: policy.String(),
+		ZoxideAttempts: metrics.Sources.ZoxideAttempts, ZoxideStarts: metrics.Sources.ZoxideStarts,
+		ZoxideMaxLive: metrics.Sources.ZoxideMaxLive, ActorQueueWait: metrics.QueueWait,
+		LocalDuration: metrics.Sources.LocalDuration, ZoxideDuration: metrics.Sources.ZoxideDuration,
+		ZoxideOutcome: metrics.Sources.ZoxideOutcome, TransformDuration: metrics.TransformDuration})
+}
+
 func validatePickerOptions(ctx context.Context, options PickerOptions) error {
 	if ctx == nil {
 		return errors.New("run picker: nil context")
@@ -264,91 +300,4 @@ func frameCandidateRecords(records []candidate.Record) []byte {
 		wire[index] = record.Wire()
 	}
 	return protocol.FrameRecords(wire)
-}
-
-type pickerBackend struct {
-	actor   *session.Actor
-	metrics *pickerMetrics
-	trace   *pickerTrace
-	stat    func(string) (os.FileInfo, error)
-}
-
-func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (protocol.Effect, error) {
-	if cause := context.Cause(ctx); cause != nil {
-		return protocol.Effect{}, cause
-	}
-	started := time.Now()
-	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.event", Outcome: string(event.Opcode)})
-	result, err := session.Handle(ctx, backend.actor, event)
-	if err == nil {
-		backend.metrics.recordTransition(result)
-		if result.Effect.ReloadGeneration != 0 {
-			state := result.Snapshot.State()
-			backend.trace.event(integrationpkg.TraceEvent{Name: "generation.publish", Generation: result.Snapshot.Generation(),
-				CandidateCount: len(result.Snapshot.Records()), Outcome: "ok", Path: state.Location.Path})
-		}
-	}
-	backend.metrics.recordCallback(time.Since(started))
-	return result.Effect, err
-}
-
-func (backend *pickerBackend) LoadGeneration(ctx context.Context, generation uint64) ([]byte, error) {
-	if cause := context.Cause(ctx); cause != nil {
-		return nil, cause
-	}
-	started := time.Now()
-	snapshot, err := backend.actor.Snapshot(ctx, generation)
-	if err != nil {
-		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: generation, Outcome: "error"})
-		return nil, err
-	}
-	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: generation, Outcome: "ok"})
-	backend.metrics.recordLoad(time.Since(started))
-	return frameCandidateRecords(snapshot.Records()), nil
-}
-
-func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte) (protocol.ResolvedCandidate, error) {
-	if cause := context.Cause(ctx); cause != nil {
-		return protocol.ResolvedCandidate{}, cause
-	}
-	record, err := backend.actor.ResolveCurrent(ctx, current)
-	if err != nil {
-		return protocol.ResolvedCandidate{}, err
-	}
-	if record.Kind == protocol.KindVirtual || record.Target.Kind != pathutil.KindFilesystem {
-		return protocol.ResolvedCandidate{}, session.ErrUnknownRecord
-	}
-	started := time.Now()
-	stat := backend.stat
-	if stat == nil {
-		stat = os.Stat
-	}
-	info, err := stat(string(record.Path))
-	if err != nil {
-		return protocol.ResolvedCandidate{}, err
-	}
-	if cause := context.Cause(ctx); cause != nil {
-		return protocol.ResolvedCandidate{}, cause
-	}
-	backend.metrics.recordPreviewResolve(time.Since(started))
-	return protocol.ResolvedCandidate{Kind: record.Kind, Path: append([]byte(nil), record.Path...), Size: info.Size(),
-		ModTimeUnixNano: info.ModTime().UnixNano(), Mode: uint32(info.Mode())}, nil
-}
-
-func (backend *pickerBackend) RecordPreview(ctx context.Context, request sessionipc.PreviewRequest) error {
-	if cause := context.Cause(ctx); cause != nil {
-		return cause
-	}
-	started := time.Now()
-	if err := backend.metrics.recordPreview(request); err != nil {
-		return err
-	}
-	switch request.Phase {
-	case "started":
-		backend.trace.event(integrationpkg.TraceEvent{Name: "preview.dispatch", Renderer: request.Renderer, Outcome: "ok"})
-	case "finished":
-		backend.trace.event(integrationpkg.TraceEvent{Name: "preview.finished", Renderer: request.Renderer, Outcome: request.Outcome})
-	}
-	backend.metrics.recordCallback(time.Since(started))
-	return context.Cause(ctx)
 }

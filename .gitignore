@@ -3,4 +3,6 @@
 /coverage/
 *.trace.jsonl
 *.bench.json
+/host-baseline.json
+/performance.json
 .shell-picker-cache/

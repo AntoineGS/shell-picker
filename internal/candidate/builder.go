@@ -183,7 +183,7 @@ func buildWithZoxide(
 		}
 	}
 	return BuildResult{
-		Records:         mergeRecords(local.records, records),
+		Records:         MergeRecords(local.records, records),
 		ZoxideDiscarded: metrics.ZoxideOutcome != "ok" && metrics.ZoxideOutcome != "cached",
 		Metrics:         metrics,
 	}, nil
@@ -216,10 +216,11 @@ func (builder *Builder) buildCachedNavigation(
 	metrics.ZoxideAttempts = 0
 	metrics.ZoxideStarts = 0
 	metrics.ZoxideMaxLive = 0
-	return BuildResult{Records: mergeRecords(local, zoxide), Metrics: metrics}, nil
+	return BuildResult{Records: MergeRecords(local, zoxide), Metrics: metrics}, nil
 }
 
-func mergeRecords(local, zoxide []Record) []Record {
+// MergeRecords returns local-first records with authoritative target deduplication.
+func MergeRecords(local, zoxide []Record) []Record {
 	merged := make([]Record, 0, len(local)+len(zoxide))
 	filesystem := make(map[string]struct{}, len(local)+len(zoxide))
 	virtual := make(map[virtualRecordKey]struct{})

@@ -18,6 +18,7 @@ const (
 type pickerMetrics struct {
 	mu      sync.Mutex
 	traceID [16]byte
+	policy  candidate.ZoxidePolicy
 
 	events, loads, previews  uint64
 	callbackIPC, loadLatency time.Duration
