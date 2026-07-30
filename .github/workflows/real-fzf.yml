@@ -1,0 +1,45 @@
+name: Real fzf
+
+on:
+  workflow_dispatch:
+    inputs:
+      fzf_version:
+        required: true
+        default: 0.74.1
+        type: string
+  schedule:
+    - cron: '17 3 * * 0'
+
+permissions: {contents: read}
+
+jobs:
+  real-fzf:
+    strategy: {matrix: {os: [ubuntu-24.04, windows-2025]}}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: 1.26.5}
+      - name: Install official fzf archive
+        shell: bash
+        run: |
+          version='${{ inputs.fzf_version || '0.74.1' }}'
+          test "${version#v}" \>='0.74.1'
+          mkdir -p .ci/fzf
+          if [ "$RUNNER_OS" = Linux ]; then archive="fzf-${version#v}-linux_amd64.tar.gz"; else archive="fzf-${version#v}-windows_amd64.zip"; fi
+          curl -fsSL -o .ci/fzf/$archive "https://github.com/junegunn/fzf/releases/download/v${version#v}/$archive"
+          curl -fsSL -o .ci/fzf/checksums.txt "https://github.com/junegunn/fzf/releases/download/v${version#v}/fzf_${version#v}_checksums.txt"
+          (cd .ci/fzf && sha256sum -c checksums.txt --ignore-missing)
+          if [ "$RUNNER_OS" = Linux ]; then tar -xzf .ci/fzf/$archive -C .ci/fzf; else unzip -o .ci/fzf/$archive -d .ci/fzf; fi
+      - name: Linux terminal prerequisites
+        if: runner.os == 'Linux'
+        run: python3 -c 'import os; fd=os.open("/dev/ptmx", os.O_RDWR); os.close(fd); print("/dev/ptmx devpts TIOCSPTLCK TIOCGPTN pidfd_open prerequisites checked")'
+      - name: Windows pseudo console prerequisites
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ([Environment]::OSVersion.Version.Build -lt 17763) { throw 'Windows build 17763+ required' }
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class P { [DllImport("kernel32.dll")] public static extern int CreatePseudoConsole(); }'
+          Write-Host 'CreatePseudoConsole prerequisite checked'
+      - shell: bash
+        run: SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf${{ runner.os == 'Windows' && '.exe' || '' }}" go test ./integration -run TestRealFZF -count=1 -v

@@ -1,0 +1,30 @@
+name: Dedicated performance
+
+on:
+  workflow_dispatch:
+
+permissions: {contents: read}
+
+jobs:
+  performance:
+    strategy:
+      matrix:
+        include:
+          - {runner: [self-hosted, shell-picker-perf, linux]}
+          - {runner: [self-hosted, shell-picker-perf, windows]}
+    runs-on: ${{ matrix.runner }}
+    env: {SHELL_PICKER_DEDICATED_PERF: 1}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: 1.26.5}
+      - run: make performance-dedicated
+        env:
+          PERFORMANCE_SCENARIOS: cached-navigation,fresh-navigation,fresh-exact-parity-navigation
+      - run: test -f host-baseline.json && test -f performance.json || test "baseline-required" = baseline-required
+      - uses: actions/upload-artifact@v4
+        with:
+          name: performance-${{ runner.os }}
+          path: |
+            host-baseline.json
+            performance.json

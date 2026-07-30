@@ -1,4 +1,4 @@
-.PHONY: fmt test check real-fzf security-gate performance-stable performance-dedicated
+.PHONY: fmt fmt-check test check real-fzf security-gate performance-stable performance-dedicated cross-build
 
 fmt:
 	gofmt -w cmd internal integration
@@ -7,6 +7,12 @@ test:
 	go test ./... -count=1
 
 check: test
+	$(MAKE) fmt-check
+	go vet ./...
+	$(MAKE) performance-stable
+
+fmt-check:
+	test -z "$(gofmt -l cmd internal integration)"
 
 security-gate:
 	./scripts/security-gate.sh -race -count=10 -p=1 -timeout=10m
@@ -27,3 +33,13 @@ performance-dedicated:
 	go test -c -o bin/shell-picker-perf.test ./integration
 	./bin/shell-picker-perf.test -test.run TestDedicatedBaseline -binary ./bin/shell-picker -samples 50 -output host-baseline.json
 	./bin/shell-picker-perf.test -test.run TestDedicatedTargets -binary ./bin/shell-picker -samples 50 -baseline host-baseline.json -output performance.json
+
+cross-build:
+	GOOS=linux GOARCH=amd64 go test -exec=true ./...
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/shell-picker_linux_amd64 ./cmd/shell-picker
+	GOOS=linux GOARCH=arm64 go test -exec=true ./...
+	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o bin/shell-picker_linux_arm64 ./cmd/shell-picker
+	GOOS=windows GOARCH=amd64 go test -exec=true ./...
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/shell-picker_windows_amd64.exe ./cmd/shell-picker
+	GOOS=windows GOARCH=arm64 go test -exec=true ./...
+	GOOS=windows GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -o bin/shell-picker_windows_arm64.exe ./cmd/shell-picker

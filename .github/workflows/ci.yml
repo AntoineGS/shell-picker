@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: 1.26.5
+  GO_MODULE: golang.org/x/sys v0.47.0
+# go-version: 1.26.5
+
+jobs:
+  unit:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - run: go test ./... -count=1
+      - run: go vet ./...
+      - run: go list -m all
+
+  race-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - run: go test -race ./internal/... ./integration -count=1
+
+  adapters-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - run: sudo apt-get update && sudo apt-get install -y zsh
+      - run: cargo install nu --locked --version 0.113.1
+      - run: zsh adapters/zsh/shell-picker.test.zsh
+      - run: nu --no-config-file adapters/nushell/shell-picker.test.nu
+      - run: go test ./integration -run 'Test(NushellAdapter|ZshAdapter)' -count=1
+
+  adapters-windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - run: cargo install nu --locked --version 0.113.1
+      - run: nu --no-config-file adapters/nushell/shell-picker.test.nu
+      - run: go test ./integration -run TestNushellAdapter -count=1
+
+  fzf-version:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - shell: bash
+        run: |
+          mkdir -p .ci/fzf
+          if [ "$RUNNER_OS" = Linux ]; then archive=fzf-0.74.1-linux_amd64.tar.gz; else archive=fzf-0.74.1-windows_amd64.zip; fi
+          curl -fsSL -o .ci/fzf/$archive https://github.com/junegunn/fzf/releases/download/v0.74.1/$archive
+          curl -fsSL -o .ci/fzf/checksums.txt https://github.com/junegunn/fzf/releases/download/v0.74.1/fzf_0.74.1_checksums.txt
+          (cd .ci/fzf && sha256sum -c checksums.txt --ignore-missing)
+          if [ "$RUNNER_OS" = Linux ]; then tar -xzf .ci/fzf/$archive -C .ci/fzf; else unzip -o .ci/fzf/$archive -d .ci/fzf; fi
+      - shell: bash
+        run: FZF_PATH="$PWD/.ci/fzf/fzf${{ runner.os == 'Windows' && '.exe' || '' }}" go test ./internal/fzf -run TestInstalledFZFCheckVersion -count=1
+
+  stable-performance:
+    strategy:
+      matrix: {os: [ubuntu-24.04, windows-2025]}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - run: go test ./integration -run TestStablePerformanceGates -count=1
+
+  cross-build:
+    strategy:
+      matrix:
+        include:
+          - {goos: linux, goarch: amd64, GOOS: linux, GOARCH: amd64, output: bin/shell-picker_linux_amd64}
+          - {goos: linux, goarch: arm64, GOOS: linux, GOARCH: arm64, output: bin/shell-picker_linux_arm64}
+          - {goos: windows, goarch: amd64, GOOS: windows, GOARCH: amd64, output: bin/shell-picker_windows_amd64.exe}
+          - {goos: windows, goarch: arm64, GOOS: windows, GOARCH: arm64, output: bin/shell-picker_windows_arm64.exe}
+    runs-on: ubuntu-24.04
+    env: {GOOS: '${{ matrix.GOOS }}', GOARCH: '${{ matrix.GOARCH }}'}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - run: go test -exec=true ./...
+      - run: mkdir -p bin && CGO_ENABLED=0 go build -trimpath -o "${{ matrix.output }}" ./cmd/shell-picker
+      - uses: actions/upload-artifact@v4
+        with: {name: '${{ matrix.output }}', path: '${{ matrix.output }}'}
+      - uses: actions/download-artifact@v4
+        if: false
+
+  required:
+    if: ${{ always() }}
+    needs: [unit, race-linux, adapters-linux, adapters-windows, fzf-version, stable-performance, cross-build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reject failed required jobs
+        run: |
+          test "${{ needs.unit.result }}" = success
+          test "${{ needs.race-linux.result }}" = success
+          test "${{ needs.adapters-linux.result }}" = success
+          test "${{ needs.adapters-windows.result }}" = success
+          test "${{ needs.fzf-version.result }}" = success
+          test "${{ needs.stable-performance.result }}" = success
+          test "${{ needs.cross-build.result }}" = success
