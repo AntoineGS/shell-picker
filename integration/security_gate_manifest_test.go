@@ -136,7 +136,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestCreateDirectoryTreeRejectsJunctionInBaseAncestry",
 		"TestCreateDirectoryTreeRejectsJunctionInQueryComponent",
 	}},
-	{path: "./integration", selectedUnix: 27, selectedWindows: 27, tests: []string{
+	{path: "./integration", selectedUnix: 28, selectedWindows: 28, tests: []string{
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
 		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",
@@ -149,6 +149,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestRealFZFPreviewReplacementKillsWholeTree",
 		"TestRealFZFPreviewTerminalFailuresKillWholeTree",
 		"TestRealFZFAdversarialPromptCannotInjectAction",
+		"TestRealFZFPickerNavigationAndNormalMode",
 	}, windows: []string{
 		"TestWindowsResourceSnapshotUsesExactHandleIdentities",
 		"TestWindowsOwnedProcessHandleRegistryReturnsToBaseline",
