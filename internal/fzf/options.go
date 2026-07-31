@@ -18,6 +18,7 @@ func Options(picker protocol.Picker, prompt, header string) []string {
 		"--layout=reverse",
 		"--delimiter=\t",
 		"--with-nth=2",
+		"--keep-right",
 		"--read0",
 		"--print0",
 		"--prompt=" + prompt,

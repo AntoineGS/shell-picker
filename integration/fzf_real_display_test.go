@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -133,6 +134,51 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		beforeNavigation := len(term.Output())
 		sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 2, Count: 1})
 		waitForTerminalTextAfter(t, term, beforeNavigation, "prefix-prefix-")
+	})
+
+	t.Run("narrow candidate preserves rightmost path component", func(t *testing.T) {
+		fixture := newRealFZFFixture(t, requireRealFZF(t), "narrow candidate")
+		source, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools := t.TempDir()
+		name := "zoxide"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		if err := copyExecutable(source, filepath.Join(tools, name)); err != nil {
+			t.Fatal(err)
+		}
+		longParent := filepath.Join(fixture.home, strings.Repeat("candidate-prefix-", 8))
+		for _, name := range []string{"visible", "zoxide-one", "zoxide-two"} {
+			if err := os.MkdirAll(filepath.Join(longParent, name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		absoluteTarget := filepath.Join(longParent, "zoxide-one")
+		environment := []string{
+			"PATH=" + tools,
+			parityHelperEnvironment + "=zoxide-ok",
+			"PARITY_TEST_ROOT=" + longParent,
+		}
+		term := fixture.startSized(t, protocol.PickerCD, environment, 48, 24)
+		defer term.Close()
+		term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+		waitForTerminalText(t, term, "zoxide-one")
+		if bytes.Contains(visibleTerminalOutput(term.Output()), []byte(strings.Repeat("candidate-prefix-", 8))) {
+			t.Fatalf("candidate row retained its leftmost relative prefix: %q", term.Output())
+		}
+		if err := term.Send([]byte("zoxide-one")); err != nil {
+			t.Fatal(err)
+		}
+		if err := term.Send(keyEnter); err != nil {
+			t.Fatal(err)
+		}
+		if err := term.Wait(testContext(t)); err != nil {
+			t.Fatal(err)
+		}
+		fixture.AssertAccepted(t, term, absoluteTarget)
 	})
 
 	for _, test := range []struct {

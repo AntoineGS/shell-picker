@@ -10,6 +10,7 @@ import (
 
 func TestPickerOptions(t *testing.T) {
 	required := []string{
+		"--keep-right",
 		"--bind=ctrl-u:half-page-up",
 		"--bind=ctrl-d:half-page-down",
 		"--bind=,:preview-half-page-up",
