@@ -152,22 +152,27 @@ func testRealFZFNormalPaging(t *testing.T) {
 		}
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 		waitForTerminalText(t, term, "LIST-PREVIEW-00")
+		beforeNormal := len(term.Output())
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+		waitForTerminalTextAfter(t, term, beforeNormal, "[N] item-")
 
 		beforeDown := len(term.Output())
 		previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
+		finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
 		if err := term.Send([]byte{0x04}); err != nil {
 			t.Fatal(err)
 		}
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
-		down := waitForNavigationMarkerAfter(t, term, beforeDown, "LIST")
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
+		down := waitForChangedNavigationMarkerAfter(t, term, beforeDown, "LIST", 0)
 
 		beforeUp := len(term.Output())
 		if err := term.Send([]byte{0x15}); err != nil {
 			t.Fatal(err)
 		}
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 2})
-		up := waitForNavigationMarkerAfter(t, term, beforeUp, "LIST")
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 2})
+		up := waitForChangedNavigationMarkerAfter(t, term, beforeUp, "LIST", down)
 		if down <= 0 || up >= down {
 			t.Fatalf("Ctrl-D/Ctrl-U visible markers=%d/%d, want down then up", down, up)
 		}
@@ -191,18 +196,20 @@ func testRealFZFNormalPaging(t *testing.T) {
 		}
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 		waitForTerminalText(t, term, "SCROLL-PREVIEW-00")
+		beforeNormal := len(term.Output())
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+		waitForTerminalTextAfter(t, term, beforeNormal, "[N] preview-target")
 
 		beforeDown := len(term.Output())
 		if err := term.Send([]byte{'.'}); err != nil {
 			t.Fatal(err)
 		}
-		down := waitForNavigationMarkerAfter(t, term, beforeDown, "SCROLL")
+		down := waitForChangedNavigationMarkerAfter(t, term, beforeDown, "SCROLL", 0)
 		beforeUp := len(term.Output())
 		if err := term.Send([]byte{','}); err != nil {
 			t.Fatal(err)
 		}
-		up := waitForNavigationMarkerAfter(t, term, beforeUp, "SCROLL")
+		up := waitForChangedNavigationMarkerAfter(t, term, beforeUp, "SCROLL", down)
 		if down <= 0 || up >= down {
 			t.Fatalf("period/comma visible preview markers=%d/%d, want down then up", down, up)
 		}
@@ -239,24 +246,37 @@ func assertTraceCount(t *testing.T, events []traceEvent, name, outcome string, w
 	}
 }
 
-func waitForNavigationMarkerAfter(t *testing.T, term terminalSession, before int, prefix string) int {
+func TestChangedNavigationMarkerSkipsStaleContent(t *testing.T) {
+	output := []byte("SCROLL-PREVIEW-00 stale redraw\nSCROLL-PREVIEW-12 paged redraw\n")
+	got, ok := changedNavigationMarker(output, "SCROLL", 0)
+	if !ok || got != 12 {
+		t.Fatalf("changed marker=%d/%t, want 12/true", got, ok)
+	}
+}
+
+func waitForChangedNavigationMarkerAfter(t *testing.T, term terminalSession, before int, prefix string, previous int) int {
 	t.Helper()
 	ctx := testContext(t)
-	marker := regexp.MustCompile(prefix + `-PREVIEW-([0-9]{2})`)
 	for {
 		output := term.Output()
 		if before <= len(output) {
-			match := marker.FindSubmatch(visibleTerminalOutput(output[before:]))
-			if len(match) == 2 {
-				value, err := strconv.Atoi(string(match[1]))
-				if err != nil {
-					t.Fatal(err)
-				}
+			if value, ok := changedNavigationMarker(visibleTerminalOutput(output[before:]), prefix, previous); ok {
 				return value
 			}
 		}
 		term.WaitOutputAfter(ctx, len(output))
 	}
+}
+
+func changedNavigationMarker(output []byte, prefix string, previous int) (int, bool) {
+	marker := regexp.MustCompile(regexp.QuoteMeta(prefix) + `-PREVIEW-([0-9]{2})`)
+	for _, match := range marker.FindAllSubmatch(output, -1) {
+		value, err := strconv.Atoi(string(match[1]))
+		if err == nil && value != previous {
+			return value, true
+		}
+	}
+	return 0, false
 }
 
 func waitForTerminalTextCountAfter(t *testing.T, term terminalSession, before int, text string, count int) {

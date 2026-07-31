@@ -27,6 +27,18 @@ func TestDocumentedModeTableMatchesFZFBindings(t *testing.T) {
 	}
 }
 
+func TestDocumentedRuntimeModeBindingsExcludeStartupUnboundTransientEvents(t *testing.T) {
+	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
+		for _, mode := range []protocol.Mode{protocol.ModeInsert, protocol.ModeNormal, protocol.ModeAdd} {
+			for _, binding := range activeModeBindings(t, picker, mode) {
+				if strings.HasPrefix(binding, "change:") || strings.HasPrefix(binding, "result-final:") {
+					t.Errorf("%s/%s startup binding %q is active", picker, mode, binding)
+				}
+			}
+		}
+	}
+}
+
 func TestDocumentedBindingKeySplittingPreservesEscapedPunctuation(t *testing.T) {
 	tests := []struct {
 		raw  string
@@ -170,6 +182,7 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 	}
 	bindings := []binding{}
 	active := map[string]bool{}
+	var startupActions string
 	for _, option := range options {
 		if !strings.HasPrefix(option, "--bind=") {
 			continue
@@ -179,7 +192,11 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 			continue
 		}
 		keys, _, ok := strings.Cut(render, ":")
-		if !ok || keys == "start" || keys == "resize" {
+		if !ok || keys == "resize" {
+			continue
+		}
+		if keys == "start" {
+			startupActions = strings.TrimPrefix(render, "start:")
 			continue
 		}
 		var parts []string
@@ -193,15 +210,12 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 			active[key] = true
 		}
 	}
+	applyBindingActions(active, startupActions)
 	effect, err := fzf.RenderEffect(protocol.Effect{Rebind: mode})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, match := range regexp.MustCompile(`(rebind|unbind)\(([^)]*)\)`).FindAllStringSubmatch(effect, -1) {
-		for _, key := range splitFZFBindingKeys(match[2]) {
-			active[key] = match[1] == "rebind"
-		}
-	}
+	applyBindingActions(active, effect)
 	result := []string{}
 	for _, binding := range bindings {
 		allActive := true
@@ -216,6 +230,19 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 		result = append(result, "other printable keys:ignore")
 	}
 	return result
+}
+
+func applyBindingActions(active map[string]bool, actions string) {
+	matches := regexp.MustCompile(`(rebind|unbind)(?:\(([^)]*)\)|\[([^]]*)\])`).FindAllStringSubmatch(actions, -1)
+	for _, match := range matches {
+		keys := match[2]
+		if keys == "" {
+			keys = match[3]
+		}
+		for _, key := range splitFZFBindingKeys(keys) {
+			active[key] = match[1] == "rebind"
+		}
+	}
 }
 
 func parseModeTable(t *testing.T, document string) map[string][]string {
