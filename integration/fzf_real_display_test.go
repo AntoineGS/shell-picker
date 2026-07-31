@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
@@ -53,6 +54,38 @@ func waitForTerminalTextAfter(t *testing.T, term terminalSession, before int, te
 			return
 		}
 		term.WaitOutputAfter(ctx, len(output))
+	}
+}
+
+func waitForPreviewQuiescence(t *testing.T, term terminalSession) {
+	t.Helper()
+	ctx := testContext(t)
+	dispatches := traceCount(term.TraceEvents(), "preview.dispatch", "")
+	if dispatches > 0 {
+		term.WaitBarrier(ctx, barrier{Event: "preview.finished", Count: dispatches})
+	}
+
+	const quietPeriod = 100 * time.Millisecond
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	var quietSince time.Time
+	for {
+		dispatches := traceCount(term.TraceEvents(), "preview.dispatch", "")
+		finished := traceCount(term.TraceEvents(), "preview.finished", "")
+		if dispatches == finished {
+			if quietSince.IsZero() {
+				quietSince = time.Now()
+			} else if time.Since(quietSince) >= quietPeriod {
+				return
+			}
+		} else {
+			quietSince = time.Time{}
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("wait for preview quiescence: %v; events=%+v", ctx.Err(), term.TraceEvents())
+		}
 	}
 }
 
@@ -109,12 +142,14 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		}
 		waitForTerminalText(t, term, "query-end")
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
+		waitForPreviewQuiescence(t, term)
 		waitForTerminalText(t, term, stablePreviewMarker)
 		beforeCtrlA := len(term.Output())
 		if err := term.Send(keyCtrlA); err != nil {
 			t.Fatal(err)
 		}
 		waitForTerminalTextAfter(t, term, beforeCtrlA, "query-begin")
+		waitForPreviewQuiescence(t, term)
 
 		beforeResize := len(term.Output())
 		previewBefore := traceCount(term.TraceEvents(), "preview.dispatch", "")
@@ -187,17 +222,18 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		term := fixture.startSized(t, protocol.PickerCD, environment, 48, 24)
 		defer term.Close()
 		term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
-		waitForTerminalText(t, term, "zoxide-one")
-		if bytes.Contains(visibleTerminalOutput(term.Output()), []byte(strings.Repeat("candidate-prefix-", 8))) {
-			t.Fatalf("candidate row retained its leftmost relative prefix: %q", term.Output())
-		}
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
-		beforeQuery := len(term.Output())
+		beforeFilter := len(term.Output())
+		previewBefore := traceCount(term.TraceEvents(), "preview.dispatch", "")
 		if err := term.Send([]byte("zoxide-one")); err != nil {
 			t.Fatal(err)
 		}
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
-		waitForTerminalTextAfter(t, term, beforeQuery, "[I] zoxide-one")
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewBefore + 1})
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: previewBefore + 1})
+		waitForTerminalTextAfter(t, term, beforeFilter, "[I] zoxide-one")
+		if bytes.Contains(visibleTerminalOutput(term.Output()), []byte(strings.Repeat("candidate-prefix-", 8))) {
+			t.Fatalf("candidate row retained its leftmost relative prefix: %q", term.Output())
+		}
 		if err := term.Send(keyEnter); err != nil {
 			t.Fatal(err)
 		}
