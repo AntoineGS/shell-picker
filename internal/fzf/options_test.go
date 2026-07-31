@@ -11,6 +11,7 @@ import (
 func TestPickerOptions(t *testing.T) {
 	required := []string{
 		"--keep-right",
+		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
 		"--jump-labels=g",
 		"--bind=ctrl-u:half-page-up",
 		"--bind=ctrl-d:half-page-down",

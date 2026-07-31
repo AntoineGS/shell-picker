@@ -29,7 +29,11 @@ func visibleHeader(header string, lookupEnv func(string) string) (string, bool) 
 			return "", false
 		}
 		if preview > 0 {
-			contentWidth = columns - preview - 8
+			if preview*2 <= columns {
+				contentWidth = columns - preview - 8
+			} else {
+				contentWidth = columns - 2
+			}
 		}
 	}
 	if contentWidth <= 0 {

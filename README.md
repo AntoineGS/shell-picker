@@ -37,6 +37,7 @@ shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 ```
 
 The picker uses a two-line layout: the escaped current location is the header, while the prompt contains only the mode and query. Long headers are left-truncated to fit.
+The preview uses a right-side 50% split while that pane is at least 80 columns wide. On narrower terminals it moves below the result list at 50% height and returns to the right when resized wider.
 
 ```text
 ··/long/path/to/current/

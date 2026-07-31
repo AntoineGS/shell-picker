@@ -27,7 +27,7 @@ func Options(picker protocol.Picker, prompt, header string) []string {
 		"--header-first",
 		infoCommand,
 		"--preview=p",
-		"--preview-window=right:50%:wrap",
+		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
 		binding("enter", transformEvent(protocol.OpEnter)),
 		binding("esc", transformEvent(protocol.OpEscape)),
 		binding("i", transformEvent(protocol.OpModeInsert)),

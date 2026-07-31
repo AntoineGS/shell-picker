@@ -40,6 +40,7 @@ These modes keep callback cancellation, independent query cancellation, and term
 There is one picker parent and one fzf child. Unix foreground TTY setup uses parent-fd `Ctty`; separate child fd 3 is supplied through `ExtraFiles`, with its lifetime and restoration handled separately. `Foreground` uses a parent fd while `Setctty` uses a child fd.
 
 Fzf renders a two-line layout with a bounded mode-only prompt and a separate location header. Startup and resize invoke the typed `d` display callback; picker-specific `i:cd` and `i:cp` commands render info text. The display callback reads the current actor snapshot without applying a transition, changing generation, rebuilding candidates, or affecting selection. Navigation effects carry the full escaped location, and the terminal adapter emits the final width-aware `change-header` action.
+Fzf owns responsive preview placement through its native 80-column alternative-layout threshold. The display callback uses exported preview geometry and subtracts preview width only for a side-by-side pane.
 
 An invalid slash result switches to the fixed local empty source and invalid preview without shell execution. `result-final` arms `change` only after that rendering completes; the resulting one-shot restore reloads the authenticated current generation without rebuilding candidates or changing session state.
 

@@ -66,6 +66,8 @@ func TestVisibleHeaderWidthAndTruncation(t *testing.T) {
 		{name: "empty preview", header: "abcdefgh", columns: "10", preview: "", want: "··gh"},
 		{name: "zero preview", header: "abcdefgh", columns: "10", preview: "0", want: "··gh"},
 		{name: "right half preview", header: strings.Repeat("a", 37), columns: "80", preview: "36", want: "··" + strings.Repeat("a", 32)},
+		{name: "stacked preview keeps full width", header: strings.Repeat("a", 70), columns: "80", preview: "76", want: strings.Repeat("a", 70)},
+		{name: "stacked unicode tail", header: strings.Repeat("a", 80) + "界/end", columns: "80", preview: "76", want: "··" + strings.Repeat("a", 68) + "界/end"},
 		{name: "unix root", header: "/", columns: "5", want: "/"},
 		{name: "windows root", header: `C:\`, columns: "7", want: `C:\`},
 		{name: "virtual root", header: "Drives/", columns: "11", want: "Drives/"},

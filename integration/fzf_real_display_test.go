@@ -77,26 +77,39 @@ func assertModePathSeparated(t *testing.T, term terminalSession, before int, mod
 func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 	t.Run("narrow display preserves right tails across interaction", func(t *testing.T) {
 		fixture := newRealFZFFixture(t, requireRealFZF(t), "two-line display")
-		parentName := strings.Repeat("prefix-", 8)
-		fixture.cwd = filepath.Join(fixture.cwd, parentName, "rightmost-location")
+		parentNames := []string{
+			"header-prefix-01", "header-prefix-02", "header-prefix-03", "header-prefix-04",
+			"header-prefix-05", "header-prefix-06", "header-prefix-07", "header-prefix-08",
+		}
+		fixture.cwd = filepath.Join(append([]string{fixture.cwd}, append(parentNames, "rightmost-location")...)...)
 		for _, directory := range []string{fixture.cwd, filepath.Join(fixture.cwd, "alpha"), filepath.Join(fixture.cwd, "beta")} {
 			if err := os.MkdirAll(directory, 0o700); err != nil {
 				t.Fatal(err)
 			}
 		}
-		term := fixture.startSized(t, protocol.PickerCP, nil, 64, 24)
+		const query = "query-begin-abcdefghijklmnopqrstuvwxyz-query-end"
+		const stablePreviewMarker = "STABLE-RESIZE-PREVIEW"
+		if err := os.WriteFile(filepath.Join(fixture.cwd, query+"-stable-preview.txt"), []byte(stablePreviewMarker+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		term := fixture.startSized(t, protocol.PickerCP, nil, 200, 35)
 		defer term.Close()
 		term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
-		initialRetainedPathTail := "rightmost-location" + string(os.PathSeparator)
-		waitForTerminalText(t, term, initialRetainedPathTail)
+		sideBySideHeaderTail := filepath.Join(parentNames[4:]...) + string(os.PathSeparator) + "rightmost-location" + string(os.PathSeparator)
+		longerRetainedHeaderTail := filepath.Join(parentNames[3:]...) + string(os.PathSeparator) + "rightmost-location" + string(os.PathSeparator)
+		waitForTerminalText(t, term, sideBySideHeaderTail)
 		waitForTerminalText(t, term, "[I] ")
-		assertModePathSeparated(t, term, 0, "[I] ", fixture.cwd, initialRetainedPathTail)
+		assertModePathSeparated(t, term, 0, "[I] ", fixture.cwd, sideBySideHeaderTail)
+		if visible := visibleTerminalOutput(term.Output()); bytes.Contains(visible, []byte(longerRetainedHeaderTail)) {
+			t.Fatalf("side-by-side header retained the stacked tail %q: %q", longerRetainedHeaderTail, visible)
+		}
 
-		query := "query-begin-abcdefghijklmnopqrstuvwxyz-query-end"
 		if err := term.Send([]byte(query)); err != nil {
 			t.Fatal(err)
 		}
 		waitForTerminalText(t, term, "query-end")
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
+		waitForTerminalText(t, term, stablePreviewMarker)
 		beforeCtrlA := len(term.Output())
 		if err := term.Send(keyCtrlA); err != nil {
 			t.Fatal(err)
@@ -104,12 +117,21 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		waitForTerminalTextAfter(t, term, beforeCtrlA, "query-begin")
 
 		beforeResize := len(term.Output())
-		if err := term.Resize(48, 24); err != nil {
+		previewBefore := traceCount(term.TraceEvents(), "preview.dispatch", "")
+		if err := term.Resize(120, 35); err != nil {
 			t.Fatal(err)
 		}
-		waitForTerminalTextAfter(t, term, beforeResize, "most-location")
+		term.WaitOutputAfter(testContext(t), beforeResize)
+		waitForTerminalTextAfter(t, term, beforeResize, longerRetainedHeaderTail)
+		waitForTerminalTextAfter(t, term, beforeResize, stablePreviewMarker)
+		if got := traceCount(term.TraceEvents(), "preview.dispatch", ""); got != previewBefore {
+			t.Fatalf("resize preview dispatches=%d want unchanged count=%d", got, previewBefore)
+		}
+		if len(longerRetainedHeaderTail) <= len(sideBySideHeaderTail) {
+			t.Fatalf("post-resize header tail %q is not longer than side-by-side tail %q", longerRetainedHeaderTail, sideBySideHeaderTail)
+		}
 
-		retainedPathTail := "most-location" + string(os.PathSeparator)
+		retainedPathTail := "rightmost-location" + string(os.PathSeparator)
 		beforeNormal := len(term.Output())
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 		waitForTerminalTextAfter(t, term, beforeNormal, "[N] ")
@@ -133,7 +155,7 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
 		beforeNavigation := len(term.Output())
 		sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 2, Count: 1})
-		waitForTerminalTextAfter(t, term, beforeNavigation, "prefix-prefix-")
+		waitForTerminalTextAfter(t, term, beforeNavigation, "header-prefix-")
 	})
 
 	t.Run("narrow candidate preserves rightmost path component", func(t *testing.T) {
