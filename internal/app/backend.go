@@ -63,7 +63,7 @@ func (backend *pickerBackend) CurrentHeader(ctx context.Context) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return pathutil.PromptDisplay(state.Location), nil
+	return pathutil.PromptDisplayHome(state.Location, state.Home), nil
 }
 
 func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte) (protocol.ResolvedCandidate, error) {

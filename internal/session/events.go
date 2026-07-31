@@ -255,7 +255,7 @@ func setNavigationUnchecked(proposal *ProposedTransition, target pathutil.Locati
 	proposal.State.Prompt = modePrompt(proposal.State.Mode, false)
 	proposal.Build = &candidate.BuildRequest{Picker: proposal.State.Picker, Location: cloneLocation(target)}
 	proposal.Effect = modeEffect(proposal.State, true, 0)
-	proposal.Effect.Header = pathutil.PromptDisplay(target)
+	proposal.Effect.Header = pathutil.PromptDisplayHome(target, proposal.State.Home)
 	proposal.Effect.ClearMulti = true
 }
 

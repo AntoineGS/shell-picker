@@ -69,7 +69,7 @@ func TestPickerBackendCurrentHeaderReadsCurrentStateWithoutGenerationOrBuild(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if header != pathutil.PromptDisplay(pathutil.Filesystem([]byte("/work"))) {
+	if header != pathutil.PromptDisplayHome(pathutil.Filesystem([]byte("/work")), pathutil.Filesystem([]byte("/work"))) {
 		t.Fatalf("header=%q", header)
 	}
 	snapshot, err := actor.Current(context.Background())

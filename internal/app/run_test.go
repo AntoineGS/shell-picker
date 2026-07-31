@@ -29,7 +29,7 @@ func TestRunPickerOwnsOneSessionAndOneFZF(t *testing.T) {
 		launches++
 		if config.CallbackAddress == "" || config.CallbackToken == "" || config.CallbackToken == "forged" ||
 			!contains(config.Options, "--preview=p") || !contains(config.Options, "--prompt=[I] ") ||
-			!contains(config.Options, "--header="+pathutil.PromptDisplay(pathutil.Filesystem(fixture.options.CWD))) ||
+			!contains(config.Options, "--header="+pathutil.PromptDisplayHome(pathutil.Filesystem(fixture.options.CWD), pathutil.Filesystem(fixture.options.Home))) ||
 			!contains(config.Options, "--header-first") || !contains(config.Options, "--info-command=i:cd") {
 			t.Fatalf("callback/options config=%+v", config)
 		}
@@ -51,6 +51,39 @@ func TestRunPickerOwnsOneSessionAndOneFZF(t *testing.T) {
 	}
 	if _, err := fixture.tty.Stat(); err != nil {
 		t.Fatalf("injected terminal was closed: %v", err)
+	}
+}
+
+func TestRunPickerCompactsZoxideHomeDisplay(t *testing.T) {
+	fixture := newPickerFixture(t, protocol.PickerCD)
+	home := t.TempDir()
+	initialLocation := filepath.Join(home, "start")
+	if err := os.Mkdir(initialLocation, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	zoxideTarget := filepath.Join(home, "visited", "project")
+	fixture.options.CWD = []byte(initialLocation)
+	fixture.options.Home = []byte(home)
+	fixture.dependencies.ZoxidePath = zoxideFixture(t, zoxideTarget)
+	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
+		record := recordForPath(t, config.Input, zoxideTarget)
+		wire, err := protocol.ParseRecord(record)
+		if err != nil || wire.Display != "~/visited/project" {
+			t.Fatalf("zoxide wire=%+v err=%v", wire, err)
+		}
+		decoded, err := protocol.DecodePath(wire.Payload)
+		if err != nil || string(decoded) != zoxideTarget {
+			t.Fatalf("payload=%q err=%v", decoded, err)
+		}
+		return fzf.Result{Key: "enter", Records: [][]byte{wire.Bytes()}}, nil
+	}
+
+	outcome, err := RunPicker(context.Background(), fixture.options, fixture.dependencies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Status != protocol.StatusAccepted || len(outcome.Paths) != 1 || string(outcome.Paths[0]) != zoxideTarget {
+		t.Fatalf("outcome=%+v", outcome)
 	}
 }
 

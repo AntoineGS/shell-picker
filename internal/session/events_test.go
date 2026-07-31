@@ -112,6 +112,25 @@ func TestNavigationEffectSeparatesPromptAndHeader(t *testing.T) {
 	}
 }
 
+func TestPickerNavigationHeaderCompactsHome(t *testing.T) {
+	homePath := t.TempDir()
+	targetPath := filepath.Join(homePath, "projects", "app")
+	home := pathutil.Filesystem([]byte(homePath))
+	snapshot := eventSnapshot(protocol.PickerCD, protocol.ModeInsert, home,
+		eventRecord(protocol.KindZoxide, "visited", targetPath))
+	snapshot.state.Home = home
+
+	reduction, err := Reduce(snapshot, protocol.Event{
+		Opcode:      protocol.OpForward,
+		CurrentItem: []byte(snapshot.records[0].FullKey()),
+	})
+	proposal := reduction.proposalForTest()
+	wantHeader := pathutil.PromptDisplayHome(pathutil.Filesystem([]byte(targetPath)), home)
+	if err != nil || proposal.Effect.Header != wantHeader {
+		t.Fatalf("effect=%+v err=%v want header=%q", proposal.Effect, err, wantHeader)
+	}
+}
+
 func TestAcceptanceAndVirtualEnter(t *testing.T) {
 	virtual := eventRecord(protocol.KindVirtual, "Drives", "ignored")
 	for _, mode := range []protocol.Mode{protocol.ModeInsert, protocol.ModeNormal} {

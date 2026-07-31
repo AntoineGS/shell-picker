@@ -27,6 +27,14 @@ func (record Record) FullKey() string {
 	return string(record.Wire().Bytes())
 }
 
+func CompactHomeDisplays(records []Record, home []byte) {
+	for index := range records {
+		if records[index].Kind == protocol.KindZoxide {
+			records[index].Display = protocol.EscapeDisplay(pathutil.CompactHome(records[index].Path, home))
+		}
+	}
+}
+
 func newRecord(kind protocol.Kind, display string, path []byte) Record {
 	clonedPath := bytes.Clone(path)
 	return Record{

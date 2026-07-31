@@ -79,6 +79,9 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	generate := func(generateCtx context.Context, request candidate.BuildRequest) (candidate.BuildResult, error) {
 		trace.event(integrationpkg.TraceEvent{Name: "generation.start", Generation: request.Generation, Outcome: "ok"})
 		result, buildErr := builder.Build(generateCtx, request)
+		if buildErr == nil {
+			candidate.CompactHomeDisplays(result.Records, options.Home)
+		}
 		if buildErr != nil {
 			trace.event(integrationpkg.TraceEvent{Name: "generation.discard", Generation: request.Generation,
 				Outcome: traceDiscardOutcome(buildErr)})
@@ -100,11 +103,11 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 
 	initialLocation := pathutil.Filesystem(options.CWD)
 	initialPrompt := "[I] "
-	initialHeader := pathutil.PromptDisplay(initialLocation)
 	initialState := session.State{
 		Picker: options.Picker, Mode: protocol.ModeInsert,
 		Location: initialLocation, Home: pathutil.Filesystem(options.Home), Prompt: initialPrompt,
 	}
+	initialHeader := pathutil.PromptDisplayHome(initialLocation, initialState.Home)
 	initial, err := actor.Apply(ctx, session.ProposedTransition{
 		State: initialState,
 		Build: &candidate.BuildRequest{Picker: options.Picker, Location: initialState.Location, Initial: true},
