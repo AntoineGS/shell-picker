@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/AntoineGS/shell-picker/internal/protocol"
@@ -249,17 +250,17 @@ func testRealFZFInsertPaging(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
 	down := waitForChangedNavigationMarkerAfter(t, term, beforeDown, "LIST", 0)
-	waitForTerminalText(t, term, "[I] item-")
+	assertLatestModePromptAfter(t, term, beforeDown, "[I] item-", fmt.Sprintf("LIST-PREVIEW-%02d", down))
 	assertTraceCount(t, term.TraceEvents(), "callback.event", "", callbackCount)
 
 	beforeUp := len(term.Output())
 	if err := term.Send([]byte{0x15}); err != nil {
 		t.Fatal(err)
 	}
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 2})
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
 	up := waitForChangedNavigationMarkerAfter(t, term, beforeUp, "LIST", down)
-	waitForTerminalText(t, term, "[I] item-")
+	assertLatestModePromptAfter(t, term, beforeUp, "[I] item-", fmt.Sprintf("LIST-PREVIEW-%02d", up))
 	if down <= 0 || up >= down {
 		t.Fatalf("Ctrl-D/Ctrl-U visible markers=%d/%d, want down then up", down, up)
 	}
@@ -306,21 +307,28 @@ func testRealFZFNormalFirstLast(t *testing.T) {
 	if err := term.Send([]byte{'g'}); err != nil {
 		t.Fatal(err)
 	}
-	term.WaitOutputAfter(testContext(t), beforePrefix)
+	waitForTerminalTextAfter(t, term, beforePrefix, "▌ item-35.txt")
 	if marker, changed := changedNavigationMarker(visibleTerminalOutput(term.Output()[beforePrefix:]), "LIST", 35); changed {
 		t.Fatalf("first g changed preview marker to %d, want 35", marker)
 	}
-	waitForTerminalText(t, term, "LIST-PREVIEW-35")
-	waitForTerminalText(t, term, "[N] item-")
+	assertLatestModePromptAfter(t, term, beforePrefix, "[N] item-", "▌ item-35.txt")
+	if marker, ok := latestNavigationMarker(visibleTerminalOutput(term.Output()), "LIST"); !ok || marker != 35 {
+		t.Fatalf("first g selected marker=%d/%t, want 35/true", marker, ok)
+	}
+	if item, ok := latestSelectedNavigationItem(visibleTerminalOutput(term.Output())); !ok || item != "item-35.txt" {
+		t.Fatalf("first g selected item=%q/%t, want item-35.txt/true", item, ok)
+	}
 
+	previewCount = traceCount(term.TraceEvents(), "preview.dispatch", "")
+	finishedCount = traceCount(term.TraceEvents(), "preview.finished", "")
 	beforeFirst := len(term.Output())
 	if err := term.Send([]byte{'g'}); err != nil {
 		t.Fatal(err)
 	}
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 2})
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
 	first := waitForChangedNavigationMarkerAfter(t, term, beforeFirst, "LIST", 35)
-	waitForTerminalText(t, term, "[N] item-")
+	assertLatestModePromptAfter(t, term, beforeFirst, "[N] item-", fmt.Sprintf("LIST-PREVIEW-%02d", first))
 	if first != 0 {
 		t.Fatalf("gg selected marker=%d, want 0", first)
 	}
@@ -387,6 +395,52 @@ func changedNavigationMarker(output []byte, prefix string, previous int) (int, b
 		}
 	}
 	return 0, false
+}
+
+func latestNavigationMarker(output []byte, prefix string) (int, bool) {
+	marker := regexp.MustCompile(regexp.QuoteMeta(prefix) + `-PREVIEW-([0-9]{2})`)
+	matches := marker.FindAllSubmatch(output, -1)
+	for index := len(matches) - 1; index >= 0; index-- {
+		value, err := strconv.Atoi(string(matches[index][1]))
+		if err == nil {
+			return value, true
+		}
+	}
+	return 0, false
+}
+
+func latestSelectedNavigationItem(output []byte) (string, bool) {
+	marker := regexp.MustCompile(`▌ (item-[0-9]{2}\.txt)`)
+	matches := marker.FindAllSubmatch(output, -1)
+	if len(matches) == 0 {
+		return "", false
+	}
+	return string(matches[len(matches)-1][1]), true
+}
+
+func assertLatestModePromptAfter(t *testing.T, term terminalSession, before int, want, evidence string) {
+	t.Helper()
+	waitForTerminalTextAfter(t, term, before, evidence)
+	raw := term.Output()
+	if before >= len(raw) {
+		t.Fatalf("action produced no output after %d bytes", before)
+	}
+	visible := visibleTerminalOutput(raw)
+	wantIndex := bytes.LastIndex(visible, []byte(want))
+	if wantIndex < 0 {
+		t.Fatalf("latest mode prompt lacks %q in output after %d bytes: %q", want, before, raw)
+	}
+	separator := strings.Index(want, "] ")
+	if separator < 0 {
+		t.Fatalf("invalid mode prompt %q", want)
+	}
+	query := want[separator+2:]
+	for _, prefix := range []string{"[I] ", "[N] ", "[A] ", "[A!] "} {
+		candidate := []byte(prefix + query)
+		if candidateIndex := bytes.LastIndex(visible, candidate); candidateIndex > wantIndex {
+			t.Fatalf("latest mode prompt is %q, want %q; output=%q", prefix+query, want, raw)
+		}
+	}
 }
 
 func waitForTerminalTextCountAfter(t *testing.T, term terminalSession, before int, text string, count int) {
