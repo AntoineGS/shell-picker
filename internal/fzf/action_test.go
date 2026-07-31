@@ -73,19 +73,25 @@ func TestRenderModeEffects(t *testing.T) {
 		effect     protocol.Effect
 		wantPrefix string
 		wantSuffix string
+		contains   []string
 	}{
 		{"insert", protocol.Effect{Search: "on", Rebind: protocol.ModeInsert, Prompt: "[I] ", Header: "/work/"},
-			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(", "+change-prompt([I] )+change-header:/work/"},
+			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~,ctrl-u,ctrl-d)+unbind(", "+change-prompt([I] )+change-header:/work/", nil},
 		{"normal", protocol.Effect{Search: "off", Rebind: protocol.ModeNormal, Prompt: "[N] ", Header: "/work/"},
-			"disable-search+rebind(", "+change-prompt([N] )+change-header:/work/"},
+			"disable-search+rebind(", "+change-prompt([N] )+change-header:/work/", nil},
 		{"add", protocol.Effect{Search: "on", Rebind: protocol.ModeAdd, Prompt: "[A] ", Header: "/work/", ClearQuery: true},
-			"enable-search+unbind(", "+clear-query+change-prompt([A] )+change-header:/work/"},
+			"enable-search+unbind(", "+clear-query+change-prompt([A] )+change-header:/work/", []string{"ctrl-u", "ctrl-d", "g", "G", "jump"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := RenderEffect(test.effect)
 			if err != nil || !strings.HasPrefix(got, test.wantPrefix) || !strings.HasSuffix(got, test.wantSuffix) {
 				t.Fatalf("got=%q want prefix=%q suffix=%q err=%v", got, test.wantPrefix, test.wantSuffix, err)
+			}
+			for _, value := range test.contains {
+				if !strings.Contains(got, value) {
+					t.Fatalf("got=%q lacks %q", got, value)
+				}
 			}
 		})
 	}

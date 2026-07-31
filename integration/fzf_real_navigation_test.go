@@ -17,6 +17,8 @@ func TestRealFZFPickerNavigationAndNormalMode(t *testing.T) {
 	t.Run("invalid slash restores after edit", testRealFZFInvalidSlashRestore)
 	t.Run("normal printable keys and escape", testRealFZFNormalInputAndEscape)
 	t.Run("normal paging directions", testRealFZFNormalPaging)
+	t.Run("insert paging directions", testRealFZFInsertPaging)
+	t.Run("normal first and last", testRealFZFNormalFirstLast)
 }
 
 func testRealFZFExactChildSlash(t *testing.T) {
@@ -214,6 +216,114 @@ func testRealFZFNormalPaging(t *testing.T) {
 			t.Fatalf("period/comma visible preview markers=%d/%d, want down then up", down, up)
 		}
 	})
+}
+
+func testRealFZFInsertPaging(t *testing.T) {
+	fixture := newRealFZFFixture(t, requireRealFZF(t), "insert list paging")
+	removeFixtureCandidates(t, fixture)
+	for index := 0; index < 36; index++ {
+		name := fmt.Sprintf("item-%02d.txt", index)
+		content := fmt.Sprintf("LIST-PREVIEW-%02d\n", index)
+		if err := os.WriteFile(filepath.Join(fixture.cwd, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	term := fixture.startSized(t, protocol.PickerCP, []string{"PATH=" + t.TempDir()}, 80, 18)
+	defer term.Close()
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
+	if err := term.Send([]byte("item-")); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 2})
+	waitForTerminalText(t, term, "LIST-PREVIEW-00")
+	waitForTerminalText(t, term, "[I] item-")
+
+	previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
+	finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
+	callbackCount := traceCount(term.TraceEvents(), "callback.event", "")
+	beforeDown := len(term.Output())
+	if err := term.Send([]byte{0x04}); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
+	down := waitForChangedNavigationMarkerAfter(t, term, beforeDown, "LIST", 0)
+	waitForTerminalText(t, term, "[I] item-")
+	assertTraceCount(t, term.TraceEvents(), "callback.event", "", callbackCount)
+
+	beforeUp := len(term.Output())
+	if err := term.Send([]byte{0x15}); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 2})
+	up := waitForChangedNavigationMarkerAfter(t, term, beforeUp, "LIST", down)
+	waitForTerminalText(t, term, "[I] item-")
+	if down <= 0 || up >= down {
+		t.Fatalf("Ctrl-D/Ctrl-U visible markers=%d/%d, want down then up", down, up)
+	}
+	assertTraceCount(t, term.TraceEvents(), "callback.event", "", callbackCount)
+}
+
+func testRealFZFNormalFirstLast(t *testing.T) {
+	fixture := newRealFZFFixture(t, requireRealFZF(t), "normal first and last")
+	removeFixtureCandidates(t, fixture)
+	for index := 0; index < 36; index++ {
+		name := fmt.Sprintf("item-%02d.txt", index)
+		content := fmt.Sprintf("LIST-PREVIEW-%02d\n", index)
+		if err := os.WriteFile(filepath.Join(fixture.cwd, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	term := fixture.startSized(t, protocol.PickerCP, []string{"PATH=" + t.TempDir()}, 80, 18)
+	defer term.Close()
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
+	if err := term.Send([]byte("item-")); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 2})
+	waitForTerminalText(t, term, "LIST-PREVIEW-00")
+	waitForTerminalText(t, term, "[I] item-")
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	waitForTerminalText(t, term, "[N] item-")
+
+	previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
+	finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
+	beforeLast := len(term.Output())
+	if err := term.Send([]byte{'G'}); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
+	last := waitForChangedNavigationMarkerAfter(t, term, beforeLast, "LIST", 0)
+	if last != 35 {
+		t.Fatalf("G selected marker=%d, want 35", last)
+	}
+
+	beforePrefix := len(term.Output())
+	if err := term.Send([]byte{'g'}); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitOutputAfter(testContext(t), beforePrefix)
+	if marker, changed := changedNavigationMarker(visibleTerminalOutput(term.Output()[beforePrefix:]), "LIST", 35); changed {
+		t.Fatalf("first g changed preview marker to %d, want 35", marker)
+	}
+	waitForTerminalText(t, term, "LIST-PREVIEW-35")
+	waitForTerminalText(t, term, "[N] item-")
+
+	beforeFirst := len(term.Output())
+	if err := term.Send([]byte{'g'}); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 2})
+	first := waitForChangedNavigationMarkerAfter(t, term, beforeFirst, "LIST", 35)
+	waitForTerminalText(t, term, "[N] item-")
+	if first != 0 {
+		t.Fatalf("gg selected marker=%d, want 0", first)
+	}
 }
 
 func removeFixtureCandidates(t *testing.T, fixture *realFZFFixture) {

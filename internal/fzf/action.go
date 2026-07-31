@@ -12,8 +12,9 @@ type action struct{ text string }
 
 var (
 	navigationKeys      = []string{"ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~"}
-	normalCommandKeys   = []string{"h", "j", "k", "l", "i", "a", "q", "space"}
-	normalPagingKeys    = []string{"ctrl-u", "ctrl-d", ",", "."}
+	listPagingKeys      = []string{"ctrl-u", "ctrl-d"}
+	normalCommandKeys   = []string{"h", "j", "k", "l", "i", "a", "q", "space", "g", "G", "jump"}
+	normalPagingKeys    = []string{",", "."}
 	normalPrintableKeys = buildNormalPrintableKeys()
 	normalKeys          = appendKeys(normalCommandKeys, normalPagingKeys, normalPrintableKeys)
 )
@@ -36,6 +37,8 @@ func acceptEnter() action   { return action{text: "print(enter)+accept"} }
 func ignore() action        { return action{text: "ignore"} }
 func wait() action          { return action{text: "wait"} }
 func first() action         { return action{text: "first"} }
+func last() action          { return action{text: "last"} }
+func jump() action          { return action{text: "jump"} }
 func down() action          { return action{text: "down"} }
 func up() action            { return action{text: "up"} }
 func abort() action         { return action{text: "abort"} }
@@ -55,9 +58,9 @@ func changePreviewInvalid() action { return action{text: "change-preview(p:inval
 func rebind(mode protocol.Mode) action {
 	switch mode {
 	case protocol.ModeInsert:
-		return keyAction("rebind", navigationKeys)
+		return keyAction("rebind", appendKeys(navigationKeys, listPagingKeys))
 	case protocol.ModeNormal:
-		return keyAction("rebind", appendKeys(navigationKeys, normalKeys))
+		return keyAction("rebind", appendKeys(navigationKeys, listPagingKeys, normalKeys))
 	case protocol.ModeAdd:
 		return action{}
 	default:
@@ -72,7 +75,7 @@ func unbind(mode protocol.Mode) action {
 	case protocol.ModeNormal:
 		return action{}
 	case protocol.ModeAdd:
-		return keyAction("unbind", appendKeys(navigationKeys, normalKeys))
+		return keyAction("unbind", appendKeys(navigationKeys, listPagingKeys, normalKeys))
 	default:
 		return action{}
 	}
@@ -162,6 +165,7 @@ func writeActionKey(encoded *strings.Builder, key string) {
 func buildNormalPrintableKeys() []string {
 	active := map[rune]bool{
 		'h': true, 'j': true, 'k': true, 'l': true, 'i': true, 'a': true, 'q': true,
+		'g': true, 'G': true,
 		'/': true, '~': true, ',': true, '.': true,
 	}
 	keys := make([]string, 0, 83)

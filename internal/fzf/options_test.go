@@ -11,8 +11,12 @@ import (
 func TestPickerOptions(t *testing.T) {
 	required := []string{
 		"--keep-right",
+		"--jump-labels=g",
 		"--bind=ctrl-u:half-page-up",
 		"--bind=ctrl-d:half-page-down",
+		"--bind=g:jump",
+		"--bind=G:last",
+		"--bind=jump:first",
 		"--bind=,:preview-half-page-up",
 		"--bind=.:preview-half-page-down",
 		"--bind=change:transform(e:rs)",
@@ -40,6 +44,7 @@ func TestPickerOptions(t *testing.T) {
 func TestNormalModeIgnoresEveryOtherASCIIPrintableKey(t *testing.T) {
 	active := map[rune]bool{
 		'h': true, 'j': true, 'k': true, 'l': true, 'i': true, 'a': true, 'q': true,
+		'g': true, 'G': true,
 		'/': true, '~': true, ',': true, '.': true,
 	}
 	options := Options(protocol.PickerCD, "[I] ", "/work/")
@@ -58,6 +63,7 @@ func TestInsertAndAddUnbindFullNormalOnlySet(t *testing.T) {
 	ignored := make([]string, 0, 83)
 	active := map[rune]bool{
 		'h': true, 'j': true, 'k': true, 'l': true, 'i': true, 'a': true, 'q': true,
+		'g': true, 'G': true,
 		'/': true, '~': true, ',': true, '.': true,
 	}
 	for key := '!'; key <= '~'; key++ {
@@ -65,7 +71,8 @@ func TestInsertAndAddUnbindFullNormalOnlySet(t *testing.T) {
 			ignored = append(ignored, string(key))
 		}
 	}
-	normalOnly := append([]string{"h", "j", "k", "l", "i", "a", "q", "space", "ctrl-u", "ctrl-d", ",", "."}, ignored...)
+	listPaging := []string{"ctrl-u", "ctrl-d"}
+	normalOnly := append([]string{"h", "j", "k", "l", "i", "a", "q", "space", "g", "G", "jump", ",", "."}, ignored...)
 	ordinaryNormalOnly := make([]string, 0, len(normalOnly)-3)
 	for _, key := range normalOnly {
 		if key == `\` || key == "(" || key == ")" {
@@ -87,7 +94,8 @@ func TestInsertAndAddUnbindFullNormalOnlySet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ordinaryAll := append([]string{"ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~"}, ordinaryNormalOnly...)
+	ordinaryAll := append([]string{"ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~"}, listPaging...)
+	ordinaryAll = append(ordinaryAll, ordinaryNormalOnly...)
 	if want := "rebind(" + strings.Join(ordinaryAll, ",") + `)+rebind[(,),\]`; normal != want {
 		t.Fatalf("normal=%q want=%q", normal, want)
 	}
