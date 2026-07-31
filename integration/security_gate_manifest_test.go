@@ -121,13 +121,14 @@ var task20GateManifest = []task20GatePackage{
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 22, selectedWindows: 20, tests: []string{
+	{path: "./internal/app", selectedUnix: 23, selectedWindows: 21, tests: []string{
 		"TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks",
 		"TestPickerBackendRejectsAuthorizedVirtualBeforeFilesystemAndOutput",
 		"TestRunPickerClosesCallbackEndpointBeforeReturning",
 		"TestRunPickerAppliesZoxidePolicyProcessBudgets",
 		"TestRunPickerParentCancellationStopsInitialZoxideBeforeFZFLaunch",
 		"TestRunPickerNavigationRemovesZoxideCandidates",
+		"TestRunPickerCompactsZoxideHomeDisplay",
 	}},
 	{path: "./internal/pathutil", selectedUnix: 3, selectedWindows: 7, tests: []string{
 		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",

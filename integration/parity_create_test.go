@@ -93,10 +93,10 @@ func runCreateSemantic(t *testing.T, row parityRow) {
 	case "prompt":
 		header := result.Effect.Header
 		if header == "" {
-			header = pathutil.PromptDisplay(result.Snapshot.State().Location)
+			header = pathutil.PromptDisplayHome(result.Snapshot.State().Location, result.Snapshot.State().Home)
 		}
 		actual := result.Snapshot.State().Prompt + header + " "
-		location := pathutil.PromptDisplay(location)
+		location := pathutil.PromptDisplayHome(location, state.Home)
 		if valid {
 			want := strings.ReplaceAll(strings.ReplaceAll(golden.ValidPrompt, "{location}", location), "{query}", protocol.EscapeDisplay(query))
 			if actual != want {

@@ -90,7 +90,7 @@ func runOperationSemantic(t *testing.T, row parityRow) {
 			assertParityText(t, row, string(findParityRecord(t, records, "escaped-directory").Kind))
 		case "prompt":
 			valid := result.Snapshot.State().Prompt == "[N] " &&
-				result.Effect.Header == pathutil.PromptDisplay(pathutil.Filesystem([]byte(target)))
+				result.Effect.Header == pathutil.PromptDisplayHome(pathutil.Filesystem([]byte(target)), home)
 			got := ""
 			if valid {
 				got = "[N] escaped-directory/ "
