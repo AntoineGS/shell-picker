@@ -245,11 +245,10 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		term := fixture.startSized(t, protocol.PickerCP, nil, 64, 24)
 		defer term.Close()
 		term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
-		waitForTerminalText(t, term, "rightmost-location"+string(os.PathSeparator))
+		initialRetainedPathTail := "rightmost-location" + string(os.PathSeparator)
+		waitForTerminalText(t, term, initialRetainedPathTail)
 		waitForTerminalText(t, term, "[I] ")
-		if bytes.Contains(visibleTerminalOutput(term.Output()), []byte("[I] "+fixture.cwd)) {
-			t.Fatalf("location rendered in input line: %q", term.Output())
-		}
+		assertModePathSeparated(t, term, 0, "[I] ", fixture.cwd, initialRetainedPathTail)
 
 		query := "query-begin-abcdefghijklmnopqrstuvwxyz-query-end"
 		if err := term.Send([]byte(query)); err != nil {
@@ -321,21 +320,19 @@ func assertRealFZFSelectionInfo(t *testing.T, fixture *realFZFFixture, picker pr
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 	waitForTerminalText(t, term, "3/3")
+	beforeNormal := len(term.Output())
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	waitForTerminalTextAfter(t, term, beforeNormal, "[N] ")
 	if bytes.Contains(visibleTerminalOutput(term.Output()), []byte("(0)")) {
 		t.Fatalf("zero selection count rendered: %q", term.Output())
 	}
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	beforeSelection := len(term.Output())
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
-	sendAndWait(t, term, keyDown, barrier{Event: "preview.dispatch", Count: 2})
-	if wantSelected {
-		waitForTerminalTextAfter(t, term, beforeSelection, "3/3 (1)")
-	} else {
-		waitForTerminalTextAfter(t, term, beforeSelection, "3/3")
-	}
+	beforeInsert := len(term.Output())
+	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
+	waitForTerminalTextAfter(t, term, beforeInsert, "[I] ")
 	output := term.Output()
 	selectedOutput := visibleTerminalOutput(output[beforeSelection:])
 	if bytes.Contains(selectedOutput, []byte("(0)")) {
