@@ -31,6 +31,24 @@ type fakeClient struct {
 	recordErr error
 }
 
+type panicClient struct{}
+
+func (panicClient) Event(context.Context, sessionipc.EventRequest) (sessionipc.EventResponse, error) {
+	panic("unexpected IPC Event")
+}
+func (panicClient) Load(context.Context, sessionipc.LoadRequest) ([]byte, error) {
+	panic("unexpected IPC Load")
+}
+func (panicClient) ResolvePreview(context.Context, sessionipc.PreviewRequest) (sessionipc.PreviewResponse, error) {
+	panic("unexpected IPC ResolvePreview")
+}
+func (panicClient) RecordPreview(context.Context, sessionipc.PreviewRequest) error {
+	panic("unexpected IPC RecordPreview")
+}
+func (panicClient) Display(context.Context) (sessionipc.DisplayResponse, error) {
+	panic("unexpected IPC Display")
+}
+
 type shortWriter struct {
 	data    []byte
 	maximum int
@@ -121,7 +139,7 @@ func TestEventInvalidDimensionsStillRendersRemainingEffect(t *testing.T) {
 	if err := Dispatch(context.Background(), mustParse(t, "e:en"), deps); err != nil {
 		t.Fatal(err)
 	}
-	want := "reload-sync(l:2)+wait+first+change-prompt([N] )"
+	want := "reload-sync(l:2)+wait+first+change-preview(p)+unbind(change,result-final)+change-prompt([N] )"
 	if stdout.String() != want {
 		t.Fatalf("stdout=%q want=%q", stdout.String(), want)
 	}
@@ -151,6 +169,38 @@ func TestLocalEventValidationReadsOnlyFZFKey(t *testing.T) {
 	})
 	if !errors.Is(err, ErrKey) || !reflect.DeepEqual(keys, []string{"FZF_KEY"}) {
 		t.Fatalf("err=%v keys=%q", err, keys)
+	}
+}
+
+func TestRestoreEventAllowsEditingKey(t *testing.T) {
+	var keys []string
+	err := ValidateLocal(Command{Kind: KindEvent, Opcode: protocol.OpRestoreView}, func(key string) string {
+		keys = append(keys, key)
+		return "backspace"
+	})
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("err=%v keys=%q", err, keys)
+	}
+}
+
+func TestFixedLocalCallbacksNeedNoIPCOrFilesystem(t *testing.T) {
+	for _, test := range []struct {
+		command Command
+		want    string
+	}{
+		{Command{Kind: KindEmptySource}, ""},
+		{Command{Kind: KindInvalidPreview}, "[Invalid Path]"},
+	} {
+		var output bytes.Buffer
+		err := Dispatch(context.Background(), test.command, Dependencies{
+			Client: panicClient{}, LookupEnv: func(string) string { return "" }, Stdout: &output, Stderr: io.Discard,
+			Preview: func(context.Context, protocol.ResolvedCandidate, io.Writer, io.Writer) error {
+				panic("unexpected preview or filesystem work")
+			},
+		})
+		if err != nil || output.String() != test.want {
+			t.Fatalf("command=%+v output=%q err=%v", test.command, output.String(), err)
+		}
 	}
 }
 

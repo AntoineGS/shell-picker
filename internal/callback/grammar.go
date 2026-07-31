@@ -19,6 +19,8 @@ const (
 	KindPreview
 	KindDisplay
 	KindInfo
+	KindEmptySource
+	KindInvalidPreview
 )
 
 type Command struct {
@@ -28,11 +30,15 @@ type Command struct {
 	Picker     protocol.Picker
 }
 
+func (command Command) Local() bool {
+	return command.Kind == KindInfo || command.Kind == KindEmptySource || command.Kind == KindInvalidPreview
+}
+
 func Parse(raw string) (Command, error) {
 	events := map[string]protocol.Opcode{
 		"e:mi": protocol.OpModeInsert, "e:ma": protocol.OpModeAdd, "e:es": protocol.OpEscape,
 		"e:fw": protocol.OpForward, "e:up": protocol.OpParent, "e:sl": protocol.OpSlash,
-		"e:hm": protocol.OpHome, "e:en": protocol.OpEnter,
+		"e:hm": protocol.OpHome, "e:en": protocol.OpEnter, "e:rs": protocol.OpRestoreView,
 	}
 	if opcode, ok := events[raw]; ok {
 		return Command{Kind: KindEvent, Opcode: opcode}, nil
@@ -48,6 +54,12 @@ func Parse(raw string) (Command, error) {
 	}
 	if raw == "i:cp" {
 		return Command{Kind: KindInfo, Picker: protocol.PickerCP}, nil
+	}
+	if raw == "l:empty" {
+		return Command{Kind: KindEmptySource}, nil
+	}
+	if raw == "p:invalid" {
+		return Command{Kind: KindInvalidPreview}, nil
 	}
 	if !strings.HasPrefix(raw, "l:") {
 		return Command{}, ErrGrammar

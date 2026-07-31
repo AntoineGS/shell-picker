@@ -38,7 +38,7 @@ func Dispatch(ctx context.Context, command Command, dependencies Dependencies) e
 	if ctx == nil || dependencies.LookupEnv == nil || dependencies.Stdout == nil {
 		return errors.New("callback: incomplete dependencies")
 	}
-	if command.Kind != KindInfo && dependencies.Client == nil {
+	if !command.Local() && dependencies.Client == nil {
 		return errors.New("callback: incomplete dependencies")
 	}
 	if err := ValidateLocal(command, dependencies.LookupEnv); err != nil {
@@ -55,6 +55,10 @@ func Dispatch(ctx context.Context, command Command, dependencies Dependencies) e
 		return dispatchDisplay(ctx, dependencies)
 	case KindInfo:
 		return writeAll(dependencies.Stdout, []byte(finderInfo(command.Picker, dependencies.LookupEnv)))
+	case KindEmptySource:
+		return nil
+	case KindInvalidPreview:
+		return writeAll(dependencies.Stdout, []byte("[Invalid Path]"))
 	default:
 		return ErrGrammar
 	}
@@ -66,10 +70,10 @@ func ValidateLocal(command Command, lookupEnv func(string) string) error {
 	}
 	switch command.Kind {
 	case KindEvent:
-		if !validKey(command.Opcode, lookupEnv("FZF_KEY")) {
+		if command.Opcode != protocol.OpRestoreView && !validKey(command.Opcode, lookupEnv("FZF_KEY")) {
 			return ErrKey
 		}
-	case KindLoad, KindPreview, KindDisplay, KindInfo:
+	case KindLoad, KindPreview, KindDisplay, KindInfo, KindEmptySource, KindInvalidPreview:
 		return nil
 	default:
 		return ErrGrammar

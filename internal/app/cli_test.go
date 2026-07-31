@@ -183,6 +183,26 @@ func TestFZFShellInfoDoesNotRequireIPCCredentials(t *testing.T) {
 	}
 }
 
+func TestFixedCallbacksNeedNoIPCCredentials(t *testing.T) {
+	t.Setenv("SHELL_PICKER_ADDR", "")
+	t.Setenv("SHELL_PICKER_TOKEN", "")
+	for _, test := range []struct {
+		command string
+		want    string
+	}{
+		{command: "l:empty", want: ""},
+		{command: "p:invalid", want: "[Invalid Path]"},
+	} {
+		t.Run(test.command, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := callbackMain(context.Background(), []string{"--fzf-shell", test.command}, Streams{Out: &stdout, Err: &stderr})
+			if code != 0 || stdout.String() != test.want || stderr.Len() != 0 {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestFZFShellTransportFailureReturnsOneWithoutCredentials(t *testing.T) {
 	t.Setenv("SHELL_PICKER_ADDR", "http://127.0.0.1:1")
 	t.Setenv("SHELL_PICKER_TOKEN", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
