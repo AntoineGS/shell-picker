@@ -1,4 +1,11 @@
-.PHONY: fmt fmt-check test check real-fzf security-gate performance-stable performance-dedicated cross-build release-snapshot release-check
+.PHONY: build install fmt fmt-check test check real-fzf security-gate performance-stable performance-dedicated cross-build release-snapshot release-check
+
+build:
+	mkdir -p bin
+	go build -trimpath -o bin/shell-picker ./cmd/shell-picker
+
+install:
+	go install -trimpath ./cmd/shell-picker
 
 fmt:
 	gofmt -w cmd internal integration scripts

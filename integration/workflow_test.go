@@ -125,3 +125,17 @@ func TestGoFormattingCoversEverySourceLimitRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildAndInstallMakeTargets(t *testing.T) {
+	command := exec.Command("make", "-n", "build", "install")
+	command.Dir = ".."
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("make -n build install: %v\n%s", err, output)
+	}
+	requireAll(t, string(output),
+		"mkdir -p bin",
+		"go build -trimpath -o bin/shell-picker ./cmd/shell-picker",
+		"go install -trimpath ./cmd/shell-picker",
+	)
+}
