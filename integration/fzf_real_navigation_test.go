@@ -107,18 +107,23 @@ func testRealFZFNormalInputAndEscape(t *testing.T) {
 	if err := term.Send([]byte{'b', 'Z', '7', ':', '+', '\\'}); err != nil {
 		t.Fatal(err)
 	}
+	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
 	beforeResize := len(term.Output())
 	if err := term.Resize(121, 35); err != nil {
 		t.Fatal(err)
 	}
 	term.WaitOutputAfter(testContext(t), beforeResize)
-	waitForTerminalTextAfter(t, term, beforeResize, "[N] alpha")
+	waitForTerminalTextAfter(t, term, beforeResize, "[I] alpha")
 	waitForTerminalTextAfter(t, term, beforeResize, "1/3")
 	if visible := visibleTerminalOutput(term.Output()[beforeResize:]); bytes.Contains(visible, []byte(`alphabZ7:+\`)) {
 		t.Fatalf("ignored Normal keys mutated query: %q", term.Output()[beforeResize:])
 	}
 
+	beforeNormal := len(term.Output())
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
+	waitForTerminalTextAfter(t, term, beforeNormal, "[N] alpha")
+	waitForTerminalTextAfter(t, term, beforeNormal, "1/3")
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
 	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatal(err)
 	}
