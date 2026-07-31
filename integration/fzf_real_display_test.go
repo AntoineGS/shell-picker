@@ -169,9 +169,13 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		if bytes.Contains(visibleTerminalOutput(term.Output()), []byte(strings.Repeat("candidate-prefix-", 8))) {
 			t.Fatalf("candidate row retained its leftmost relative prefix: %q", term.Output())
 		}
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
+		beforeQuery := len(term.Output())
 		if err := term.Send([]byte("zoxide-one")); err != nil {
 			t.Fatal(err)
 		}
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
+		waitForTerminalTextAfter(t, term, beforeQuery, "[I] zoxide-one")
 		if err := term.Send(keyEnter); err != nil {
 			t.Fatal(err)
 		}
