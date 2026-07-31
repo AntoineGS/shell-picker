@@ -37,6 +37,13 @@ func Drives() Location {
 	return Location{Kind: KindDrives}
 }
 
+func PromptDisplayHome(location, home Location) string {
+	if location.Kind != KindFilesystem || home.Kind != KindFilesystem {
+		return PromptDisplay(location)
+	}
+	return PromptDisplay(Filesystem(CompactHome(location.Path, home.Path)))
+}
+
 func ValidateAddQuery(base Location, query []byte) error {
 	if base.Kind != KindFilesystem || len(query) == 0 || isAbsolute(query) {
 		return ErrInvalidAdd

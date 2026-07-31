@@ -54,6 +54,29 @@ func TestWindowsRelativeAndValidation(t *testing.T) {
 	}
 }
 
+func TestCompactHomeWindows(t *testing.T) {
+	tests := []struct {
+		path, home, want string
+	}{
+		{`C:\Users\Test`, `c:\users\test`, `~`},
+		{`C:\Users\Test\projects\app`, `C:\Users\Test`, `~\projects\app`},
+		{`C:\Users\Test-old\app`, `C:\Users\Test`, `C:\Users\Test-old\app`},
+		{`D:\app`, `C:\Users\Test`, `D:\app`},
+	}
+	for _, test := range tests {
+		if got := string(CompactHome([]byte(test.path), []byte(test.home))); got != test.want {
+			t.Errorf("CompactHome(%q, %q)=%q want=%q", test.path, test.home, got, test.want)
+		}
+	}
+}
+
+func TestPromptDisplayHomeWindows(t *testing.T) {
+	got := PromptDisplayHome(Filesystem([]byte(`C:\Users\Test\app`)), Filesystem([]byte(`C:\Users\Test`)))
+	if got != `~\app\` {
+		t.Fatalf("PromptDisplayHome=%q", got)
+	}
+}
+
 func TestWindowsUNCNavigationPure(t *testing.T) {
 	t.Run("parent child", func(t *testing.T) {
 		got := parentWindows(Filesystem([]byte(`\\server\share\team\project`)))

@@ -72,6 +72,20 @@ func relativeWindows(base, target []byte) []byte {
 	return []byte(result)
 }
 
+func CompactHome(path, home []byte) []byte {
+	if !filepath.IsAbs(string(path)) || !filepath.IsAbs(string(home)) {
+		return bytes.Clone(path)
+	}
+	relative := relativeWindows(home, path)
+	if bytes.Equal(relative, path) || bytes.Equal(relative, []byte("..")) || bytes.HasPrefix(relative, []byte(`..\`)) {
+		return bytes.Clone(path)
+	}
+	if bytes.Equal(relative, []byte(".")) {
+		return []byte("~")
+	}
+	return append([]byte(`~\`), relative...)
+}
+
 func PromptDisplay(location Location) string {
 	if location.Kind != KindFilesystem {
 		return `Drives\`

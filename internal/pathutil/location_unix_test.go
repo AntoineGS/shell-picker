@@ -50,6 +50,37 @@ func TestRelativeAndAddValidation(t *testing.T) {
 	}
 }
 
+func TestCompactHomeUnix(t *testing.T) {
+	tests := []struct {
+		name, path, home, want string
+	}{
+		{"exact", "/home/test", "/home/test", "~"},
+		{"descendant", "/home/test/projects/app", "/home/test", "~/projects/app"},
+		{"outside", "/srv/app", "/home/test", "/srv/app"},
+		{"shared-prefix", "/home/test-old/app", "/home/test", "/home/test-old/app"},
+		{"root", "/", "/home/test", "/"},
+		{"invalid-home", "/home/test/app", "relative", "/home/test/app"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := string(CompactHome([]byte(test.path), []byte(test.home))); got != test.want {
+				t.Fatalf("CompactHome(%q, %q)=%q want=%q", test.path, test.home, got, test.want)
+			}
+		})
+	}
+}
+
+func TestPromptDisplayHomeUnix(t *testing.T) {
+	location := Filesystem([]byte("/home/test/a\\b"))
+	home := Filesystem([]byte("/home/test"))
+	if got := PromptDisplayHome(location, home); got != `~/a\\b/` {
+		t.Fatalf("PromptDisplayHome=%q", got)
+	}
+	if got := PromptDisplayHome(Drives(), home); got != "Drives/" {
+		t.Fatalf("drives display=%q", got)
+	}
+}
+
 func TestRelativePreservesArbitraryBytes(t *testing.T) {
 	target := append([]byte("/work/"), 0xff, '\n', 'x')
 	if got := Relative([]byte("/work"), target); !bytes.Equal(got, target[len("/work/"):]) {
