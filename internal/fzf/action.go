@@ -83,22 +83,64 @@ func startUnbind() action {
 }
 
 func keyAction(name string, keys []string) action {
-	var size int
+	var ordinarySize, ordinaryCount, alternateCount int
 	for _, key := range keys {
-		size += len(key) + strings.Count(key, `\`) + strings.Count(key, ",")
+		if usesAlternateActionDelimiter(key) {
+			alternateCount++
+			continue
+		}
+		ordinaryCount++
+		ordinarySize += len(key) + strings.Count(key, `\`) + strings.Count(key, ",")
+	}
+	size := len(name) + 2 + ordinarySize + max(0, ordinaryCount-1)
+	if alternateCount != 0 {
+		size += len(name) + 2 + alternateCount + max(0, alternateCount-1)
+		if ordinaryCount != 0 {
+			size++
+		}
 	}
 	var text strings.Builder
-	text.Grow(len(name) + 2 + size + max(0, len(keys)-1))
-	text.WriteString(name)
-	text.WriteByte('(')
-	for index, key := range keys {
-		if index != 0 {
-			text.WriteByte(',')
+	text.Grow(size)
+	if ordinaryCount != 0 || alternateCount == 0 {
+		text.WriteString(name)
+		text.WriteByte('(')
+		var written int
+		for _, key := range keys {
+			if usesAlternateActionDelimiter(key) {
+				continue
+			}
+			if written != 0 {
+				text.WriteByte(',')
+			}
+			writeActionKey(&text, key)
+			written++
 		}
-		writeActionKey(&text, key)
+		text.WriteByte(')')
 	}
-	text.WriteByte(')')
+	if alternateCount != 0 {
+		if ordinaryCount != 0 {
+			text.WriteByte('+')
+		}
+		text.WriteString(name)
+		text.WriteByte('[')
+		var written int
+		for _, key := range keys {
+			if !usesAlternateActionDelimiter(key) {
+				continue
+			}
+			if written != 0 {
+				text.WriteByte(',')
+			}
+			text.WriteString(key)
+			written++
+		}
+		text.WriteByte(']')
+	}
 	return action{text: text.String()}
+}
+
+func usesAlternateActionDelimiter(key string) bool {
+	return key == `\` || key == "(" || key == ")"
 }
 
 func encodeActionKey(key string) string {

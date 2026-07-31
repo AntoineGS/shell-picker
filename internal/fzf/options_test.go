@@ -29,7 +29,7 @@ func TestPickerOptions(t *testing.T) {
 		}
 		if !slices.ContainsFunc(got, func(option string) bool {
 			return strings.HasPrefix(option, "--bind=start:unbind(") &&
-				strings.Contains(option, ",change,result-final)+transform(d)")
+				strings.Contains(option, `,change,result-final)+unbind[(,),\]+transform(d)`)
 		}) {
 			t.Errorf("picker %q start binding does not disable restore events", picker)
 		}
@@ -46,9 +46,7 @@ func TestNormalModeIgnoresEveryOtherASCIIPrintableKey(t *testing.T) {
 		if active[key] {
 			continue
 		}
-		encoded := strings.ReplaceAll(string(key), `\`, `\\`)
-		encoded = strings.ReplaceAll(encoded, ",", `\,`)
-		want := "--bind=" + encoded + ":ignore"
+		want := binding(string(key), ignore())
 		if !slices.Contains(options, want) {
 			t.Errorf("printable key %q lacks exact ignore binding %q", key, want)
 		}
@@ -67,30 +65,29 @@ func TestInsertAndAddUnbindFullNormalOnlySet(t *testing.T) {
 		}
 	}
 	normalOnly := append([]string{"h", "j", "k", "l", "i", "a", "q", "space", "ctrl-u", "ctrl-d", ",", "."}, ignored...)
-	encoded := make([]string, len(normalOnly))
-	for index, key := range normalOnly {
+	ordinaryNormalOnly := make([]string, 0, len(normalOnly)-3)
+	for _, key := range normalOnly {
+		if key == `\` || key == "(" || key == ")" {
+			continue
+		}
 		key = strings.ReplaceAll(key, `\`, `\\`)
-		encoded[index] = strings.ReplaceAll(key, ",", `\,`)
+		ordinaryNormalOnly = append(ordinaryNormalOnly, strings.ReplaceAll(key, ",", `\,`))
 	}
+	wantNormalAction := "unbind(" + strings.Join(ordinaryNormalOnly, ",") + `)+unbind[(,),\]`
 
 	insert, err := RenderEffect(protocol.Effect{Rebind: protocol.ModeInsert})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "unbind(" + strings.Join(encoded, ",") + ")"; !strings.Contains(insert, want) {
-		t.Fatalf("insert=%q lacks %q", insert, want)
+	if !strings.Contains(insert, wantNormalAction) {
+		t.Fatalf("insert=%q lacks %q", insert, wantNormalAction)
 	}
 	normal, err := RenderEffect(protocol.Effect{Rebind: protocol.ModeNormal})
 	if err != nil {
 		t.Fatal(err)
 	}
-	all := append([]string{"ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~"}, normalOnly...)
-	allEncoded := make([]string, 0, len(all))
-	for _, key := range all {
-		key = strings.ReplaceAll(key, `\`, `\\`)
-		allEncoded = append(allEncoded, strings.ReplaceAll(key, ",", `\,`))
-	}
-	if want := "rebind(" + strings.Join(allEncoded, ",") + ")"; normal != want {
+	ordinaryAll := append([]string{"ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~"}, ordinaryNormalOnly...)
+	if want := "rebind(" + strings.Join(ordinaryAll, ",") + `)+rebind[(,),\]`; normal != want {
 		t.Fatalf("normal=%q want=%q", normal, want)
 	}
 
@@ -98,12 +95,7 @@ func TestInsertAndAddUnbindFullNormalOnlySet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded = encoded[:0]
-	for _, key := range all {
-		key = strings.ReplaceAll(key, `\`, `\\`)
-		encoded = append(encoded, strings.ReplaceAll(key, ",", `\,`))
-	}
-	if want := "unbind(" + strings.Join(encoded, ",") + ")"; add != want {
+	if want := "unbind(" + strings.Join(ordinaryAll, ",") + `)+unbind[(,),\]`; add != want {
 		t.Fatalf("add=%q want=%q", add, want)
 	}
 }

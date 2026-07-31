@@ -48,8 +48,8 @@ func TestRenderEffectRejectsImpossibleTransientCombinations(t *testing.T) {
 }
 
 func TestKeyActionsEscapeCommaAndBackslash(t *testing.T) {
-	got := keyAction("unbind", []string{",", `\`, `x\,y`}).text
-	if want := `unbind(\,,\\,x\\\,y)`; got != want {
+	got := keyAction("unbind", []string{",", `\`, "(", ")", `x\,y`}).text
+	if want := `unbind(\,,x\\\,y)+unbind[\,(,)]`; got != want {
 		t.Fatalf("got=%q want=%q", got, want)
 	}
 }
@@ -75,11 +75,11 @@ func TestRenderModeEffects(t *testing.T) {
 		wantSuffix string
 	}{
 		{"insert", protocol.Effect{Search: "on", Rebind: protocol.ModeInsert, Prompt: "[I] ", Header: "/work/"},
-			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(", ")+change-prompt([I] )+change-header:/work/"},
+			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(", "+change-prompt([I] )+change-header:/work/"},
 		{"normal", protocol.Effect{Search: "off", Rebind: protocol.ModeNormal, Prompt: "[N] ", Header: "/work/"},
-			"disable-search+rebind(", ")+change-prompt([N] )+change-header:/work/"},
+			"disable-search+rebind(", "+change-prompt([N] )+change-header:/work/"},
 		{"add", protocol.Effect{Search: "on", Rebind: protocol.ModeAdd, Prompt: "[A] ", Header: "/work/", ClearQuery: true},
-			"enable-search+unbind(", ")+clear-query+change-prompt([A] )+change-header:/work/"},
+			"enable-search+unbind(", "+clear-query+change-prompt([A] )+change-header:/work/"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

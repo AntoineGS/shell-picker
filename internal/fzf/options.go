@@ -49,7 +49,7 @@ func Options(picker protocol.Picker, prompt, header string) []string {
 		binding("resize", transformDisplay()),
 	}
 	for _, key := range normalPrintableKeys {
-		options = append(options, binding(encodeActionKey(key), ignore()))
+		options = append(options, binding(key, ignore()))
 	}
 	if picker == protocol.PickerCD {
 		return append(options, binding("space", clearMulti(), toggle()), "--sort", "--print-query", "--multi=1")

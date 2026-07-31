@@ -22,6 +22,35 @@ type terminalSnapshot struct {
 	err  error
 }
 
+// TestInstalledFZFFullOptionsDynamicKeyActionsAreParseable catches bundled
+// unbind/rebind actions becoming invalid when Normal printable keys include
+// literal parentheses.
+func TestInstalledFZFFullOptionsDynamicKeyActionsAreParseable(t *testing.T) {
+	path := os.Getenv("SHELL_PICKER_REAL_FZF")
+	if path == "" {
+		t.Skip("SHELL_PICKER_REAL_FZF is required for the installed full-options parse gate")
+	}
+	if err := CheckVersion(context.Background(), processpkg.Runner{}, path); err != nil {
+		t.Fatal(err)
+	}
+
+	generated := Options(protocol.PickerCD, "[I] ", "/work/")
+	args := make([]string, 0, len(generated)+1)
+	for _, option := range generated {
+		if strings.HasPrefix(option, "--bind=") {
+			args = append(args, option)
+		}
+	}
+	args = append(args, "--filter=candidate")
+	cmd := exec.Command(path, args...)
+	cmd.Env = processpkg.SanitizeEnv(os.Environ(), map[string]string{"TERM": "xterm-256color"})
+	cmd.Stdin = strings.NewReader("candidate\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("fzf rejected complete generated options: %v; output=%q", err, output)
+	}
+}
+
 func TestInstalledFZFActionSemantics(t *testing.T) {
 	path := os.Getenv("SHELL_PICKER_REAL_FZF")
 	if path == "" {
