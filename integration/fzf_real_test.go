@@ -214,6 +214,24 @@ func waitForTerminalTextAfter(t *testing.T, term terminalSession, before int, te
 	}
 }
 
+func visibleTerminalOutput(output []byte) []byte {
+	return terminalEscapeSequence.ReplaceAll(output, nil)
+}
+
+func assertModePathSeparated(t *testing.T, term terminalSession, before int, mode, fullPath, retainedTail string) {
+	t.Helper()
+	output := term.Output()
+	if before > len(output) {
+		t.Fatalf("mode output offset %d exceeds terminal output length %d", before, len(output))
+	}
+	visible := visibleTerminalOutput(output[before:])
+	for _, path := range []string{fullPath, retainedTail} {
+		if bytes.Contains(visible, []byte(mode+path)) {
+			t.Fatalf("location %q rendered adjacent to %s input marker: %q", path, mode, output[before:])
+		}
+	}
+}
+
 func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 	t.Run("narrow display preserves right tails across interaction", func(t *testing.T) {
 		fixture := newRealFZFFixture(t, requireRealFZF(t), "two-line display")
@@ -227,9 +245,9 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		term := fixture.startSized(t, protocol.PickerCP, nil, 64, 24)
 		defer term.Close()
 		term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
-		waitForTerminalText(t, term, "rightmost-location")
+		waitForTerminalText(t, term, "rightmost-location"+string(os.PathSeparator))
 		waitForTerminalText(t, term, "[I] ")
-		if bytes.Contains(terminalEscapeSequence.ReplaceAll(term.Output(), nil), []byte("[I] "+fixture.cwd)) {
+		if bytes.Contains(visibleTerminalOutput(term.Output()), []byte("[I] "+fixture.cwd)) {
 			t.Fatalf("location rendered in input line: %q", term.Output())
 		}
 
@@ -238,10 +256,11 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitForTerminalText(t, term, "query-end")
+		beforeCtrlA := len(term.Output())
 		if err := term.Send(keyCtrlA); err != nil {
 			t.Fatal(err)
 		}
-		waitForTerminalText(t, term, "query-begin")
+		waitForTerminalTextAfter(t, term, beforeCtrlA, "query-begin")
 
 		beforeResize := len(term.Output())
 		if err := term.Resize(48, 24); err != nil {
@@ -249,23 +268,27 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		}
 		waitForTerminalTextAfter(t, term, beforeResize, "most-location")
 
+		retainedPathTail := "most-location" + string(os.PathSeparator)
+		beforeNormal := len(term.Output())
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-		waitForTerminalText(t, term, "[N] ")
+		waitForTerminalTextAfter(t, term, beforeNormal, "[N] ")
+		assertModePathSeparated(t, term, beforeNormal, "[N] ", fixture.cwd, retainedPathTail)
+		beforeAdd := len(term.Output())
 		sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
-		waitForTerminalText(t, term, "[A] ")
+		waitForTerminalTextAfter(t, term, beforeAdd, "[A] ")
+		assertModePathSeparated(t, term, beforeAdd, "[A] ", fixture.cwd, retainedPathTail)
 		if err := term.Send([]byte("../invalid")); err != nil {
 			t.Fatal(err)
 		}
+		beforeAddError := len(term.Output())
 		sendAndWait(t, term, keyEnter, barrier{Event: "callback.event", Operation: "en", Count: 1})
-		waitForTerminalText(t, term, "[A!] ")
+		waitForTerminalTextAfter(t, term, beforeAddError, "[A!] ")
+		assertModePathSeparated(t, term, beforeAddError, "[A!] ", fixture.cwd, retainedPathTail)
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
+		beforeInsert := len(term.Output())
 		sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
-		waitForTerminalText(t, term, "[I] ")
-		for _, mode := range []string{"[N] ", "[A] ", "[A!] ", "[I] "} {
-			if bytes.Contains(terminalEscapeSequence.ReplaceAll(term.Output(), nil), []byte(mode+fixture.cwd)) {
-				t.Fatalf("location rendered in %s input line: %q", mode, term.Output())
-			}
-		}
+		waitForTerminalTextAfter(t, term, beforeInsert, "[I] ")
+		assertModePathSeparated(t, term, beforeInsert, "[I] ", fixture.cwd, retainedPathTail)
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
 		beforeNavigation := len(term.Output())
 		sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 2, Count: 1})
@@ -298,18 +321,30 @@ func assertRealFZFSelectionInfo(t *testing.T, fixture *realFZFFixture, picker pr
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 	waitForTerminalText(t, term, "3/3")
-	if bytes.Contains(terminalEscapeSequence.ReplaceAll(term.Output(), nil), []byte("(0)")) {
+	if bytes.Contains(visibleTerminalOutput(term.Output()), []byte("(0)")) {
 		t.Fatalf("zero selection count rendered: %q", term.Output())
 	}
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	before := len(term.Output())
+	beforeSelection := len(term.Output())
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
-	term.WaitOutputAfter(testContext(t), before)
+	sendAndWait(t, term, keyDown, barrier{Event: "preview.dispatch", Count: 2})
 	if wantSelected {
-		waitForTerminalText(t, term, "3/3 (1)")
-	} else if bytes.Contains(terminalEscapeSequence.ReplaceAll(term.Output(), nil), []byte("(1)")) {
+		waitForTerminalTextAfter(t, term, beforeSelection, "3/3 (1)")
+	} else {
+		waitForTerminalTextAfter(t, term, beforeSelection, "3/3")
+	}
+	output := term.Output()
+	selectedOutput := visibleTerminalOutput(output[beforeSelection:])
+	if bytes.Contains(selectedOutput, []byte("(0)")) {
+		t.Fatalf("zero selection count rendered after active selection: %q", output[beforeSelection:])
+	}
+	if wantSelected && !bytes.Contains(selectedOutput, []byte("(1)")) {
+		t.Fatalf("CP selection count missing: %q", output[beforeSelection:])
+	}
+	if !wantSelected && bytes.Contains(selectedOutput, []byte("(1)")) {
 		t.Fatalf("CD selection count rendered: %q", term.Output())
 	}
 }
