@@ -71,7 +71,11 @@ func TestCompactHomeWindows(t *testing.T) {
 }
 
 func TestPromptDisplayHomeWindows(t *testing.T) {
-	got := PromptDisplayHome(Filesystem([]byte(`C:\Users\Test\app`)), Filesystem([]byte(`C:\Users\Test`)))
+	home := Filesystem([]byte(`C:\Users\Test`))
+	if got := PromptDisplayHome(home, home); got != `~\` {
+		t.Fatalf("exact home display=%q", got)
+	}
+	got := PromptDisplayHome(Filesystem([]byte(`C:\Users\Test\app`)), home)
 	if got != `~\app\` {
 		t.Fatalf("PromptDisplayHome=%q", got)
 	}

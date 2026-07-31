@@ -73,6 +73,9 @@ func TestCompactHomeUnix(t *testing.T) {
 func TestPromptDisplayHomeUnix(t *testing.T) {
 	location := Filesystem([]byte("/home/test/a\\b"))
 	home := Filesystem([]byte("/home/test"))
+	if got := PromptDisplayHome(home, home); got != "~/" {
+		t.Fatalf("exact home display=%q", got)
+	}
 	if got := PromptDisplayHome(location, home); got != `~/a\\b/` {
 		t.Fatalf("PromptDisplayHome=%q", got)
 	}
