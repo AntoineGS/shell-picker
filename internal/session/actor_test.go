@@ -222,6 +222,44 @@ func TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically(t *testing.T)
 	}
 }
 
+func TestActorCurrentStateReturnsImmutableSerializedStateAndPreservesCancellation(t *testing.T) {
+	actor, generator := initializeActor(t)
+	pending := asyncApply(actor, context.Background(), testProposal(1,
+		testState("/next", protocol.ModeNormal, "[N] "), true, protocol.Effect{}))
+	call := generator.Next(t)
+
+	state, err := actor.CurrentState(context.Background())
+	if err != nil {
+		t.Fatalf("CurrentState() = %v", err)
+	}
+	if string(state.Location.Path) != "/start" || string(state.Home.Path) != "/home/test" || state.Prompt != "[I] " {
+		t.Fatalf("pending CurrentState() = %+v", state)
+	}
+	state.Location.Path[0] = 'X'
+	state.Home.Path[0] = 'X'
+	again, err := actor.CurrentState(context.Background())
+	if err != nil {
+		t.Fatalf("second CurrentState() = %v", err)
+	}
+	if string(again.Location.Path) != "/start" || string(again.Home.Path) != "/home/test" {
+		t.Fatalf("CurrentState aliases actor storage: %+v", again)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := actor.CurrentState(canceled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CurrentState(canceled) = %v", err)
+	}
+	if _, err := actor.CurrentState(nil); !errors.Is(err, errNilContext) {
+		t.Fatalf("CurrentState(nil) = %v", err)
+	}
+
+	call.Complete([]candidate.Record{testRecord("next", "/next")}, nil)
+	if outcome := awaitApply(t, pending); outcome.err != nil {
+		t.Fatalf("Apply() = %v", outcome.err)
+	}
+}
+
 func TestActorFailureAndMaliciousSupersedeDiscardWholeProposal(t *testing.T) {
 	actor, generator := initializeActor(t)
 	first := asyncApply(actor, context.Background(), testProposal(1, testState("/one", protocol.ModeNormal, "one"), true, protocol.Effect{Accept: true}))

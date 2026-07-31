@@ -28,7 +28,7 @@ type task20GatePackage struct {
 }
 
 var task20GateManifest = []task20GatePackage{
-	{path: "./internal/session", selectedUnix: 31, selectedWindows: 33, tests: []string{
+	{path: "./internal/session", selectedUnix: 32, selectedWindows: 34, tests: []string{
 		"TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically",
 		"TestActorAssignsMonotonicGenerationOwnershipAcrossQueuedReplacement",
 		"TestActorCreatedTreeDiscardOrdering",
@@ -121,7 +121,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 21, selectedWindows: 19, tests: []string{
+	{path: "./internal/app", selectedUnix: 22, selectedWindows: 20, tests: []string{
 		"TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks",
 		"TestPickerBackendRejectsAuthorizedVirtualBeforeFilesystemAndOutput",
 		"TestRunPickerClosesCallbackEndpointBeforeReturning",

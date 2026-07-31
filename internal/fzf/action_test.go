@@ -117,12 +117,12 @@ func FuzzActionArgumentsRejectInjection(f *testing.F) {
 	})
 }
 
-func TestWindowsPromptBackslashIsPreservedByTerminalAction(t *testing.T) {
-	got, err := changeHeader(`C:\ `)
+func TestWindowsHeaderTerminalBackslashIsPreservedByTerminalAction(t *testing.T) {
+	got, err := changeHeader(`C:\`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTerminalHeaderAction(t, got.text, `C:\ `)
+	assertTerminalHeaderAction(t, got.text, `C:\`)
 }
 
 func assertTerminalHeaderAction(t *testing.T, rendered, header string) {

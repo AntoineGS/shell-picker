@@ -79,6 +79,16 @@ type currentCommand struct {
 	reply chan snapshotReply
 }
 
+type currentStateCommand struct {
+	ctx   context.Context
+	reply chan stateReply
+}
+
+type stateReply struct {
+	state State
+	err   error
+}
+
 type snapshotCommand struct {
 	ctx        context.Context
 	generation uint64

@@ -75,6 +75,18 @@ func (actor *Actor) Current(ctx context.Context) (Snapshot, error) {
 	return reply.snapshot, reply.err
 }
 
+func (actor *Actor) CurrentState(ctx context.Context) (State, error) {
+	if ctx == nil {
+		return State{}, errNilContext
+	}
+	command := currentStateCommand{ctx: ctx, reply: make(chan stateReply, 1)}
+	if err := actor.enqueue(ctx, command); err != nil {
+		return State{}, err
+	}
+	reply := <-command.reply
+	return reply.state, reply.err
+}
+
 func (actor *Actor) Snapshot(ctx context.Context, generation uint64) (Snapshot, error) {
 	if ctx == nil {
 		return Snapshot{}, errNilContext
@@ -242,6 +254,14 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 					command.reply <- snapshotReply{err: cause}
 				} else {
 					command.reply <- snapshotReply{snapshot: cloneSnapshot(current)}
+				}
+			case currentStateCommand:
+				if shutdownErr != nil {
+					command.reply <- stateReply{err: shutdownErr}
+				} else if cause := context.Cause(command.ctx); cause != nil {
+					command.reply <- stateReply{err: cause}
+				} else {
+					command.reply <- stateReply{state: cloneState(current.state)}
 				}
 			case snapshotCommand:
 				if shutdownErr != nil {

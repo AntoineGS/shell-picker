@@ -31,12 +31,12 @@ func TestInstalledFZFActionSemantics(t *testing.T) {
 	}
 
 	headers := []string{
-		`[windows] C:\ end `,
-		`[unix] escaped\\name end `,
-		`[close-plus] x)+execute(id) end `,
-		`[comma-colon] x,y:z end `,
-		`[substitution] {q} $(id) end `,
-		`[actions] transform(e:en)+abort end `,
+		`[windows] C:\`,
+		`[unix] escaped\\name end`,
+		`[close-plus] x)+execute(id) end`,
+		`[comma-colon] x,y:z end`,
+		`[substitution] {q} $(id) end`,
+		`[actions] transform(e:en)+abort end`,
 	}
 	for _, header := range headers {
 		t.Run(header, func(t *testing.T) {
@@ -44,9 +44,8 @@ func TestInstalledFZFActionSemantics(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			expected := strings.TrimSuffix(header, " ")
-			screen := runFZFUntilText(t, path, action.text, expected)
-			if !bytes.Contains(screen, []byte(expected)) {
+			screen := runFZFUntilText(t, path, action.text, header)
+			if !bytes.Contains(screen, []byte(header)) {
 				t.Fatalf("header %q not rendered unchanged; terminal output=%q", header, screen)
 			}
 		})
