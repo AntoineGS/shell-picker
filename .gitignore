@@ -6,3 +6,4 @@
 /host-baseline.json
 /performance.json
 .shell-picker-cache/
+.worktrees/
