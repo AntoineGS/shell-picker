@@ -71,6 +71,20 @@ func TestEnumerateCDIncludesIgnoredDirectoriesAndNoFiles(t *testing.T) {
 	}
 }
 
+func TestEnumerateCDSkipsDanglingSymlink(t *testing.T) {
+	root := t.TempDir()
+	mustMkdir(t, root, "visible")
+	if err := os.Symlink(filepath.Join(root, "missing"), filepath.Join(root, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+
+	records, err := EnumerateLocal(context.Background(), protocol.PickerCD, pathutil.Filesystem([]byte(root)), LocalOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDisplays(t, records, []string{".", "..", "visible"})
+}
+
 func TestDeterministicFoldedOrderUsesRawByteTie(t *testing.T) {
 	names := [][]byte{[]byte("a"), []byte("A"), []byte("ä"), []byte("Ä"), {'a', 0xff}, {'A', 0xff}}
 	sort.Slice(names, func(i, j int) bool { return lessFolded(names[i], names[j]) })

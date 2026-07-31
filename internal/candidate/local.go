@@ -150,6 +150,9 @@ func classifySymlinks(ctx context.Context, entries []localEntry, requestedWorker
 					}
 					info, err := statLocalPath(string(entries[index].path))
 					if err != nil {
+						if errors.Is(err, os.ErrNotExist) {
+							continue
+						}
 						select {
 						case errorsFound <- fmt.Errorf("stat local entry %q: %w", entries[index].path, err):
 							cancel()
