@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -469,18 +471,47 @@ func refreshTerminal(t *testing.T, term terminalSession) {
 func realFZFWithPromptBinding(t *testing.T, fzfPath, prompt string) string {
 	t.Helper()
 	// The wrapper adds only a test-side prompt redraw key; production fzf options stay unchanged.
-	path := filepath.Join(t.TempDir(), "fzf-refresh")
-	binding := "--bind=ctrl-r:change-prompt(" + prompt + ")"
-	script := "#!/bin/sh\nexec " + shellQuoteForFZFWrapper(fzfPath) + " \"$@\" " + shellQuoteForFZFWrapper(binding)
-	script += "\n"
-	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+	root, err := filepath.Abs("..")
+	if err != nil {
 		t.Fatal(err)
 	}
-	return path
-}
+	wrapper := filepath.Join(t.TempDir(), "fzf-prompt-wrapper")
+	if runtime.GOOS == "windows" {
+		wrapper += ".exe"
+	}
+	source := filepath.Join(t.TempDir(), "main.go")
+	binding := "--bind=ctrl-r:change-prompt(" + prompt + ")"
+	program := fmt.Sprintf(`package main
 
-func shellQuoteForFZFWrapper(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+import (
+	"os"
+	"os/exec"
+)
+
+func main() {
+	args := append([]string(nil), os.Args[1:]...)
+	args = append(args, %s)
+	command := exec.Command(%s, args...)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		if exit, ok := err.(*exec.ExitError); ok {
+			os.Exit(exit.ExitCode())
+		}
+		os.Exit(1)
+	}
+}
+`, strconv.Quote(binding), strconv.Quote(fzfPath))
+	if err := os.WriteFile(source, []byte(program), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("go", "build", "-o", wrapper, source)
+	command.Dir = root
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build fzf prompt wrapper: %v\n%s", err, output)
+	}
+	return wrapper
 }
 
 func waitForTerminalTextCountAfter(t *testing.T, term terminalSession, before int, text string, count int) {
