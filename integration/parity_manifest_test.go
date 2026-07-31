@@ -164,7 +164,7 @@ func TestParityManifestCoverage(t *testing.T) {
 	wantCategoryGoldens := map[string]string{
 		"operations.json":    "4018ef031f9f5294f1c93d6a4cfe515327cccce2e2a927b6b51e4b2cd365095f",
 		"slash.json":         "a4353f35d905f7d173408edb7ddd769ef71559d5e3252a195fbe8432900c23eb",
-		"modal.json":         "9559da329e3417cc260b347c93508b35d0a817d393768683ae315ec1bf136699",
+		"modal.json":         "e19c754fe9396444ca7f4838827746819ddc9a2b0c49516a454525cd334d2f40",
 		"create.json":        "33a2e4d0f67637d2ab7d38b96861794e43ae56d66eaea3bc5d8938d6148df4d2",
 		"preview.json":       "fc8586501996c635152c07f3138794ec24398ec0a042bd63883e0ef010894921",
 		"zsh-adapter.json":   "a396d1dbfc358ad7defa890dadcc53b17765cdb996dc643c3d2daf5ad2c5c68c",

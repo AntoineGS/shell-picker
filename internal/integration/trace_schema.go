@@ -39,7 +39,7 @@ var productionTraceSchema = traceSchemaRules{
 		"generation.discard": {"cancelled", "error", "stale", "superseded"},
 		"fzf.start":          {"ok"},
 		"fzf.exit":           {"ok", "aborted", "error"},
-		"callback.event":     {"mi", "ma", "es", "fw", "up", "sl", "hm", "en"},
+		"callback.event":     {"mi", "ma", "es", "fw", "up", "sl", "hm", "en", "rs"},
 		"callback.load":      {"ok", "error"},
 		"preview.dispatch":   {"ok", "error"},
 		"preview.finished":   {"ok", "error"},

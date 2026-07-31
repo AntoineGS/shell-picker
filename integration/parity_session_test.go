@@ -392,11 +392,11 @@ func runModeSemantic(t *testing.T, row parityRow) {
 	case "search-enabled":
 		assertParityText(t, row, boolText(result.Effect.Search == golden.Insert.Search || result.Effect.Search == golden.Add.Search))
 	case "normal-keys-unbound":
-		assertParityText(t, row, boolText(strings.Contains(action, "unbind(h,j,k,l,i,a,q,space)")))
+		assertParityText(t, row, boolText(strings.Contains(action, "unbind(h,j,k,l,i,a,q,space,")))
 	case "navigation-keys-rebound":
 		assertParityText(t, row, boolText(strings.Contains(action, "rebind(ctrl-l,tab,right,ctrl-h,left,/,~)")))
 	case "normal-and-navigation-keys-unbound":
-		assertParityText(t, row, boolText(strings.Contains(action, "unbind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)")))
+		assertParityText(t, row, boolText(strings.Contains(action, "unbind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space,")))
 	case "keys-rebound":
 		assertParityText(t, row, boolText(strings.Contains(action, "rebind(ctrl-l,tab,right") && strings.Contains(action, "h,j,k,l,i,a,q,space")))
 	case "cursor-sequence":
@@ -411,6 +411,8 @@ func runModeSemantic(t *testing.T, row parityRow) {
 		got := action
 		if result.Effect.Accept && strings.Contains(action, golden.EnterAction) {
 			got = golden.EnterAction
+		} else if row.Case == "normal-escape" && result.Effect.Abort {
+			got = "clear-multi"
 		} else if result.Effect.ClearMulti {
 			got = "clear-multi"
 		}

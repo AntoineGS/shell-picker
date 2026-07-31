@@ -3,6 +3,7 @@ package integration
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -24,6 +25,48 @@ func TestDocumentedModeTableMatchesFZFBindings(t *testing.T) {
 	if strings.Join(flattenModeRows(got), "\n") != strings.Join(flattenModeRows(want), "\n") {
 		t.Fatalf("README mode table differs from fzf bindings\n got: %#v\nwant: %#v", got, want)
 	}
+}
+
+func TestDocumentedBindingKeySplittingPreservesEscapedPunctuation(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want []string
+	}{
+		{raw: `ctrl-l,tab,right`, want: []string{"ctrl-l", "tab", "right"}},
+		{raw: `\,`, want: []string{","}},
+		{raw: `\\`, want: []string{`\`}},
+	}
+	for _, test := range tests {
+		if got := splitFZFBindingKeys(test.raw); !reflect.DeepEqual(got, test.want) {
+			t.Errorf("splitFZFBindingKeys(%q)=%q, want %q", test.raw, got, test.want)
+		}
+	}
+}
+
+func splitFZFBindingKeys(keys string) []string {
+	result := []string{}
+	var key strings.Builder
+	escaped := false
+	for _, value := range keys {
+		if escaped {
+			key.WriteRune(value)
+			escaped = false
+			continue
+		}
+		switch value {
+		case '\\':
+			escaped = true
+		case ',':
+			result = append(result, key.String())
+			key.Reset()
+		default:
+			key.WriteRune(value)
+		}
+	}
+	if escaped {
+		key.WriteByte('\\')
+	}
+	return append(result, key.String())
 }
 
 func TestArchitectureDocumentsActualOwnership(t *testing.T) {
@@ -132,11 +175,19 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 			continue
 		}
 		render := strings.TrimPrefix(option, "--bind=")
+		if strings.HasSuffix(render, ":ignore") {
+			continue
+		}
 		keys, _, ok := strings.Cut(render, ":")
 		if !ok || keys == "start" || keys == "resize" {
 			continue
 		}
-		parts := strings.Split(keys, ",")
+		var parts []string
+		if render == ",:preview-half-page-up" {
+			parts = []string{","}
+		} else {
+			parts = splitFZFBindingKeys(keys)
+		}
 		bindings = append(bindings, binding{keys: parts, render: render})
 		for _, key := range parts {
 			active[key] = true
@@ -147,7 +198,7 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 		t.Fatal(err)
 	}
 	for _, match := range regexp.MustCompile(`(rebind|unbind)\(([^)]*)\)`).FindAllStringSubmatch(effect, -1) {
-		for _, key := range strings.Split(match[2], ",") {
+		for _, key := range splitFZFBindingKeys(match[2]) {
 			active[key] = match[1] == "rebind"
 		}
 	}
@@ -160,6 +211,9 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 		if allActive {
 			result = append(result, binding.render)
 		}
+	}
+	if mode == protocol.ModeNormal {
+		result = append(result, "other printable keys:ignore")
 	}
 	return result
 }

@@ -110,7 +110,7 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 	case "add-mode-callback":
 		assertParityText(t, row, boolText(strings.Contains(joined, "transform(e:"+string(protocol.OpModeAdd)+")")))
 	case "normal-keys-unbound":
-		assertParityText(t, row, boolText(strings.Contains(joined, "--bind=start:unbind(h,j,k,l,i,a,q,space)")))
+		assertParityText(t, row, boolText(strings.Contains(joined, "--bind=start:unbind(h,j,k,l,i,a,q,space,")))
 	case "initialized", "feeds-fzf":
 		assertParityText(t, row, boolText(len(options) > 20 && strings.Contains(joined, "--read0") && strings.Contains(joined, "--print0")))
 	case "excludes-cd-local":

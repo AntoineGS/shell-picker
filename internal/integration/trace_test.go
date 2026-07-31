@@ -205,7 +205,8 @@ func TestTraceAcceptsOnlyTask19EventsAndBoundedFields(t *testing.T) {
 	valid := []TraceEvent{
 		{Name: "session.start", Outcome: "cp"}, {Name: "generation.publish", Generation: 1, Outcome: "ok"},
 		{Name: "fzf.start", Outcome: "ok"}, {Name: "fzf.exit", Outcome: "aborted"},
-		{Name: "callback.event", Outcome: "en"}, {Name: "callback.load", Generation: 2, Outcome: "ok"},
+		{Name: "callback.event", Outcome: "en"}, {Name: "callback.event", Outcome: "rs"},
+		{Name: "callback.load", Generation: 2, Outcome: "ok"},
 		{Name: "preview.dispatch", Renderer: "native", Outcome: "ok"},
 		{Name: "preview.finished", Renderer: "native", Outcome: "ok"},
 		{Name: "preview.finished", Renderer: "eza-fallback", Outcome: "error"}, {Name: "session.close", Outcome: "accepted"},

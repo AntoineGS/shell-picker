@@ -38,7 +38,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestHandleTransfersActualCreatedTreeForStaleBaseRollback",
 		"TestHandleAddPublishesCompleteStateAtomicallyAfterSingleGeneration",
 		"TestReduceValidAddIsPureAndClonesIntent",
-		"TestNormalEscapeHasOnlyClearMultiEffect",
+		"TestNormalEscapeAbortsWithoutChangingState",
 		"TestValidateCDRequiresOneExactFilesystemDirectoryRecord",
 		"TestValidateCPRejectsMalformedUnknownResidualAndVirtual",
 	}},

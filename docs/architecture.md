@@ -6,6 +6,8 @@ Each session owns one *candidate.Builder, configures it before use, and it must 
 
 Candidate records carry an authoritative target independently of their wire payload: filesystem targets may preview or become final output; a Windows root virtual `..` targets Drives for navigation only. Drives has no dot record.
 
+Insert-preserving navigation keeps Insert active, Normal navigation keeps Normal active, and successful Add navigation returns to Normal. Exact slash resolution reads only authorized immediate child records from the immutable snapshot; reduction never performs filesystem access. Normal Escape intentionally aborts the picker rather than applying the legacy clear-multi effect.
+
 ## State and Add ownership
 
 Reduction is deliberately pure. Its exclusive branches contain either a cloned `AddIntent` or a complete `ProposedTransition`, and each reduction reads exactly one immutable snapshot. The event path calls `Reduce` exactly once, `CreateDirectoryTree` exactly once for Add, and `Actor.Apply` exactly once. No unresolved intent is passed to the actor.
@@ -38,6 +40,8 @@ These modes keep callback cancellation, independent query cancellation, and term
 There is one picker parent and one fzf child. Unix foreground TTY setup uses parent-fd `Ctty`; separate child fd 3 is supplied through `ExtraFiles`, with its lifetime and restoration handled separately. `Foreground` uses a parent fd while `Setctty` uses a child fd.
 
 Fzf renders a two-line layout with a bounded mode-only prompt and a separate location header. Startup and resize invoke the typed `d` display callback; picker-specific `i:cd` and `i:cp` commands render info text. The display callback reads the current actor snapshot without applying a transition, changing generation, rebuilding candidates, or affecting selection. Navigation effects carry the full escaped location, and the terminal adapter emits the final width-aware `change-header` action.
+
+An invalid slash result switches to the fixed local empty source and invalid preview without shell execution. `result-final` arms `change` only after that rendering completes; the resulting one-shot restore reloads the authenticated current generation without rebuilding candidates or changing session state.
 
 Foreground restoration locks the OS thread, uses `unix.PthreadSigmask` to save the exact prior thread mask, blocks SIGTTOU, performs bounded `TIOCSPGRP`, restores the exact prior thread mask on every path, then unlocks. It does not change process-global signal disposition or caller notification state.
 

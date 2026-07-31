@@ -2,9 +2,11 @@
 
 Candidate rows use exactly `KIND<TAB>ESCAPED_DISPLAY<TAB>PADDED_BASE64_PAYLOAD`, framed by NUL for fzf input. The closed kind set is local, directory, file, zoxide, drive, and `KindVirtual`. Payloads are nonempty canonical payload base64: decoding then re-encoding must produce the identical padded text. The only virtual payload is the target `drives`, whose canonical payload is `ZHJpdmVz`; it is navigation metadata, not a filesystem path.
 
-Callbacks have a closed grammar: events are exactly `e:mi`, `e:ma`, `e:es`, `e:fw`, `e:up`, `e:sl`, `e:hm`, or `e:en`; preview is exactly `p`; display is exactly `d`; info is exactly `i:cd` or `i:cp`; load is `l:<positive decimal generation>` (no zero, sign, or leading zero). `FZF_CURRENT_ITEM` carries the selected wire row. The callback parser rejects every other form instead of interpreting shell text.
+Callbacks have a closed grammar: events are exactly `e:mi`, `e:ma`, `e:es`, `e:fw`, `e:up`, `e:sl`, `e:hm`, `e:en`, or `e:rs`; preview is exactly `p` or the fixed local `p:invalid`; display is exactly `d`; info is exactly `i:cd` or `i:cp`; load is `l:<positive decimal generation>` (no zero, sign, or leading zero) or the fixed local `l:empty`. `l:empty` is a zero-byte candidate source, and `p:invalid` writes exactly `[Invalid Path]`. Fixed local callbacks accept no query or path arguments and bypass IPC. `FZF_CURRENT_ITEM` carries the selected wire row. The callback parser rejects every other form instead of interpreting shell text.
 
 Event JSON is `opcode`, `key`, `query_base64`, and `current_item_base64`; load JSON is `generation`; the display request is `{}` and its response is `{"header":"..."}`; preview JSON is `phase`, `current_item_base64`, and, only where the phase permits it, `renderer`, `duration_us`, `child_starts`, `max_live_children`, and `outcome`. Preview phases are `resolve`, `started`, and `finished`; native finished telemetry has zero child starts/live children. The callback environment accepts only the controlled loopback address and token credentials (`SHELL_PICKER_ADDR` and `SHELL_PICKER_TOKEN`); credentials are strict canonical encodings, not shell arguments.
+
+`e:rs` is the one-shot transient-view restore event. An invalid list/preview first reloads `l:empty`, selects `p:invalid`, and binds `result-final`; only `result-final`, after invalid rendering completes, arms one `change` callback. The next edit sends `e:rs`, which reloads the authenticated current generation and resets the normal preview without rebuilding candidates or mutating session state.
 
 ## Loopback IPC
 
@@ -20,7 +22,7 @@ generation.publish,ok,0|nonzero,none,0/0,actor_queue_wait_us|candidate_count|loc
 generation.discard,cancelled|error|stale|superseded,0|nonzero,none,0/0,actor_queue_wait_us|local_us|transform_us|zoxide_*:policy+outcome
 fzf.start,ok,0,none,0/0,
 fzf.exit,aborted|error|ok,0,none,0/0,
-callback.event,en|es|fw|hm|ma|mi|sl|up,0,none,0/0,callback_ipc_us
+callback.event,en|es|fw|hm|ma|mi|rs|sl|up,0,none,0/0,callback_ipc_us
 callback.load,error|ok,0|nonzero,none,0/0,load_us
 preview.dispatch,error|ok,0,required:@renderers,0/0,
 preview.finished,error|ok,0,required:@renderers,native=0/0;non-native=0/0|1/0|1/1|2/0|2/1|3/0|3/1,

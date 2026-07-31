@@ -21,10 +21,10 @@ func TestDocumentedProtocolMatchesConstants(t *testing.T) {
 	for _, kind := range []protocol.Kind{protocol.KindLocal, protocol.KindDirectory, protocol.KindFile, protocol.KindZoxide, protocol.KindDrive, protocol.KindVirtual} {
 		requireDocumented(t, doc, string(kind))
 	}
-	for _, opcode := range []protocol.Opcode{protocol.OpModeInsert, protocol.OpModeAdd, protocol.OpEscape, protocol.OpForward, protocol.OpParent, protocol.OpSlash, protocol.OpHome, protocol.OpEnter} {
+	for _, opcode := range []protocol.Opcode{protocol.OpModeInsert, protocol.OpModeAdd, protocol.OpEscape, protocol.OpForward, protocol.OpParent, protocol.OpSlash, protocol.OpHome, protocol.OpEnter, protocol.OpRestoreView} {
 		requireDocumented(t, doc, "e:"+string(opcode))
 	}
-	for _, value := range []string{protocol.VirtualDrivesTarget, protocol.EncodePath([]byte(protocol.VirtualDrivesTarget)), "p", "l:<positive decimal generation>", "64 KiB", "64 MiB", "1 KiB"} {
+	for _, value := range []string{protocol.VirtualDrivesTarget, protocol.EncodePath([]byte(protocol.VirtualDrivesTarget)), "p", "l:<positive decimal generation>", "l:empty", "p:invalid", "64 KiB", "64 MiB", "1 KiB"} {
 		requireDocumented(t, doc, value)
 	}
 	for _, source := range []string{"internal/sessionipc/server.go", "internal/sessionipc/client.go"} {
