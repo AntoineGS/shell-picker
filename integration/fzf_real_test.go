@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -19,11 +20,13 @@ import (
 )
 
 var (
-	keyEsc   = []byte{0x1b}
-	keyEnter = []byte{'\r'}
-	keySpace = []byte{' '}
-	keyLeft  = []byte{0x1b, '[', 'D'}
-	keyDown  = []byte{0x1b, '[', 'B'}
+	keyCtrlA               = []byte{0x01}
+	keyEsc                 = []byte{0x1b}
+	keyEnter               = []byte{'\r'}
+	keySpace               = []byte{' '}
+	keyLeft                = []byte{0x1b, '[', 'D'}
+	keyDown                = []byte{0x1b, '[', 'B'}
+	terminalEscapeSequence = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 )
 
 type traceEvent struct {
@@ -141,6 +144,12 @@ func (fixture *realFZFFixture) Start(t *testing.T, picker protocol.Picker) termi
 
 func (fixture *realFZFFixture) start(t *testing.T, picker protocol.Picker, extraEnvironment []string) terminalSession {
 	t.Helper()
+	return fixture.startSized(t, picker, extraEnvironment, 120, 35)
+}
+
+func (fixture *realFZFFixture) startSized(t *testing.T, picker protocol.Picker, extraEnvironment []string,
+	columns, lines uint16) terminalSession {
+	t.Helper()
 	fixture.wantOutput = nil
 	args := []string{string(picker), "--cwd", fixture.cwd, "--home", fixture.home, "--fzf", fixture.fzf,
 		"--zoxide-policy", "cached", "--zoxide-timeout", "5ms"}
@@ -149,7 +158,7 @@ func (fixture *realFZFFixture) start(t *testing.T, picker protocol.Picker, extra
 		"SHELL_PICKER_ADDR=http://127.0.0.1:1", "SHELL_PICKER_TOKEN=forged", "TERM=xterm-256color")
 	environment = replaceEnvironment(environment, extraEnvironment...)
 	return newTerminalSession(t, terminalConfig{Path: fixture.picker, Args: args, Environment: environment,
-		Directory: fixture.cwd, Columns: 120, Lines: 35})
+		Directory: fixture.cwd, Columns: columns, Lines: lines})
 }
 
 func (fixture *realFZFFixture) AssertAccepted(t *testing.T, term terminalSession, paths ...string) {
@@ -178,6 +187,131 @@ func sendAndWait(t *testing.T, term terminalSession, input []byte, wanted barrie
 		t.Fatal(err)
 	}
 	return term.WaitBarrier(testContext(t), wanted)
+}
+
+func waitForTerminalText(t *testing.T, term terminalSession, text string) {
+	t.Helper()
+	ctx := testContext(t)
+	for {
+		output := term.Output()
+		if bytes.Contains(terminalEscapeSequence.ReplaceAll(output, nil), []byte(text)) {
+			return
+		}
+		term.WaitOutputAfter(ctx, len(output))
+	}
+}
+
+func waitForTerminalTextAfter(t *testing.T, term terminalSession, before int, text string) {
+	t.Helper()
+	ctx := testContext(t)
+	for {
+		output := term.Output()
+		if before <= len(output) &&
+			bytes.Contains(terminalEscapeSequence.ReplaceAll(output[before:], nil), []byte(text)) {
+			return
+		}
+		term.WaitOutputAfter(ctx, len(output))
+	}
+}
+
+func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
+	t.Run("narrow display preserves right tails across interaction", func(t *testing.T) {
+		fixture := newRealFZFFixture(t, requireRealFZF(t), "two-line display")
+		parentName := strings.Repeat("prefix-", 8)
+		fixture.cwd = filepath.Join(fixture.cwd, parentName, "rightmost-location")
+		for _, directory := range []string{fixture.cwd, filepath.Join(fixture.cwd, "alpha"), filepath.Join(fixture.cwd, "beta")} {
+			if err := os.MkdirAll(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		term := fixture.startSized(t, protocol.PickerCP, nil, 64, 24)
+		defer term.Close()
+		term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+		waitForTerminalText(t, term, "rightmost-location")
+		waitForTerminalText(t, term, "[I] ")
+		if bytes.Contains(terminalEscapeSequence.ReplaceAll(term.Output(), nil), []byte("[I] "+fixture.cwd)) {
+			t.Fatalf("location rendered in input line: %q", term.Output())
+		}
+
+		query := "query-begin-abcdefghijklmnopqrstuvwxyz-query-end"
+		if err := term.Send([]byte(query)); err != nil {
+			t.Fatal(err)
+		}
+		waitForTerminalText(t, term, "query-end")
+		if err := term.Send(keyCtrlA); err != nil {
+			t.Fatal(err)
+		}
+		waitForTerminalText(t, term, "query-begin")
+
+		beforeResize := len(term.Output())
+		if err := term.Resize(48, 24); err != nil {
+			t.Fatal(err)
+		}
+		waitForTerminalTextAfter(t, term, beforeResize, "most-location")
+
+		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+		waitForTerminalText(t, term, "[N] ")
+		sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
+		waitForTerminalText(t, term, "[A] ")
+		if err := term.Send([]byte("../invalid")); err != nil {
+			t.Fatal(err)
+		}
+		sendAndWait(t, term, keyEnter, barrier{Event: "callback.event", Operation: "en", Count: 1})
+		waitForTerminalText(t, term, "[A!] ")
+		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
+		sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
+		waitForTerminalText(t, term, "[I] ")
+		for _, mode := range []string{"[N] ", "[A] ", "[A!] ", "[I] "} {
+			if bytes.Contains(terminalEscapeSequence.ReplaceAll(term.Output(), nil), []byte(mode+fixture.cwd)) {
+				t.Fatalf("location rendered in %s input line: %q", mode, term.Output())
+			}
+		}
+		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
+		beforeNavigation := len(term.Output())
+		sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 2, Count: 1})
+		waitForTerminalTextAfter(t, term, beforeNavigation, "prefix-prefix-")
+	})
+
+	for _, test := range []struct {
+		name         string
+		picker       protocol.Picker
+		wantSelected bool
+	}{
+		{name: "CD omits selection count", picker: protocol.PickerCD},
+		{name: "CP shows selection count", picker: protocol.PickerCP, wantSelected: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newRealFZFFixture(t, requireRealFZF(t), "selection info")
+			for _, name := range []string{"visible", "z-last"} {
+				if err := os.Remove(filepath.Join(fixture.cwd, name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertRealFZFSelectionInfo(t, fixture, test.picker, test.wantSelected)
+		})
+	}
+}
+
+func assertRealFZFSelectionInfo(t *testing.T, fixture *realFZFFixture, picker protocol.Picker, wantSelected bool) {
+	t.Helper()
+	term := fixture.start(t, picker, []string{"PATH=" + t.TempDir()})
+	defer term.Close()
+	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	waitForTerminalText(t, term, "3/3")
+	if bytes.Contains(terminalEscapeSequence.ReplaceAll(term.Output(), nil), []byte("(0)")) {
+		t.Fatalf("zero selection count rendered: %q", term.Output())
+	}
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	before := len(term.Output())
+	if err := term.Send(keySpace); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitOutputAfter(testContext(t), before)
+	if wantSelected {
+		waitForTerminalText(t, term, "3/3 (1)")
+	} else if bytes.Contains(terminalEscapeSequence.ReplaceAll(term.Output(), nil), []byte("(1)")) {
+		t.Fatalf("CD selection count rendered: %q", term.Output())
+	}
 }
 
 func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
