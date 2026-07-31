@@ -48,6 +48,8 @@ func TestCIWorkflowContract(t *testing.T) {
 	rejectAll(t, text, "continue-on-error: true", "--listen", "go get")
 	requireAll(t, text, "go list -m all", "needs.cross-build.result")
 	requireAll(t, text, "SHELL_PICKER_REAL_FZF=", "TestModuleGraphExact")
+	requireAll(t, text, "Verify make build", "make build", "./bin/shell-picker version",
+		"Verify make install", "GOBIN=\"$install_dir\" make install", "\"$install_dir/shell-picker\" version")
 	if strings.Contains(text, "FZF_PATH=") || strings.Contains(text, "if: false") {
 		t.Fatal("stable CI contains a disconnected fzf path or disabled action")
 	}

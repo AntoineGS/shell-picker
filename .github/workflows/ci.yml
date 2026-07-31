@@ -29,6 +29,21 @@ jobs:
       - run: go vet ./...
       - run: go list -m all
       - run: go test ./integration -run TestModuleGraphExact -count=1
+      - name: Verify make build
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          make build
+          test -x ./bin/shell-picker
+          ./bin/shell-picker version
+
+      - name: Verify make install
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          install_dir="$RUNNER_TEMP/shell-picker-install"
+          mkdir -p "$install_dir"
+          GOBIN="$install_dir" make install
+          test -x "$install_dir/shell-picker"
+          "$install_dir/shell-picker" version
 
   race-linux:
     runs-on: ubuntu-24.04

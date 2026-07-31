@@ -6,6 +6,15 @@
 
 Build with Go 1.26.5 (the module declares the `go1.26.5` toolchain), or install a release binary for the host OS and architecture. fzf 0.74.1 or newer is an **external installation/runtime precondition**. The normal picker Run does not verify the version or launch a version probe; behavior with an older fzf is unsupported. `probe`, CI, and real-fzf gates call `CheckVersion`.
 
+Build and install from source with:
+
+```console
+$ make build
+$ make install
+```
+
+`make build` writes `bin/shell-picker`. `make install` uses Go's `GOBIN`, or the default `GOPATH/bin` when `GOBIN` is unset. Go 1.26.5 and external fzf 0.74.1 remain prerequisites.
+
 ```sh check
 shell-picker version
 ```
