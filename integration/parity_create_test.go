@@ -91,7 +91,11 @@ func runCreateSemantic(t *testing.T, row parityRow) {
 		local := len(records) >= 2 && records[0].Kind == protocol.KindLocal && bytes.Equal(records[0].Path, result.Snapshot.State().Location.Path)
 		assertParityText(t, row, map[bool]string{true: "local"}[local])
 	case "prompt":
-		actual := result.Snapshot.State().Prompt
+		header := result.Effect.Header
+		if header == "" {
+			header = pathutil.PromptDisplay(result.Snapshot.State().Location)
+		}
+		actual := result.Snapshot.State().Prompt + header + " "
 		location := pathutil.PromptDisplay(location)
 		if valid {
 			want := strings.ReplaceAll(strings.ReplaceAll(golden.ValidPrompt, "{location}", location), "{query}", protocol.EscapeDisplay(query))

@@ -181,7 +181,7 @@ func testPureAllocationGates(t *testing.T) {
 	path := []byte("directory with spaces/and\\controls\t")
 	wire := protocol.WireRecord{Kind: protocol.KindDirectory, Display: "directory", Payload: "L3RtcA=="}
 	effect := protocol.Effect{Search: "on", Rebind: protocol.ModeNormal, ClearMulti: true, ReloadGeneration: 2,
-		ClearQuery: true, Prompt: "[N] /tmp "}
+		ClearQuery: true, Prompt: "[N] ", Header: "/tmp/"}
 	local := []candidate.Record{performanceRecord(protocol.KindLocal, "/local"), performanceRecord(protocol.KindDirectory, "/same")}
 	zoxide := []candidate.Record{performanceRecord(protocol.KindZoxide, "/same"), performanceRecord(protocol.KindZoxide, "/zoxide")}
 

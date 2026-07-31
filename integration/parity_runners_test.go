@@ -184,7 +184,7 @@ func parityState(picker protocol.Picker, mode protocol.Mode, location, home path
 		prefix = "[A]"
 	}
 	return session.State{Picker: picker, Mode: mode, Location: location, Home: home,
-		Prompt: prefix + " " + pathutil.PromptDisplay(location) + " "}
+		Prompt: prefix + " "}
 }
 
 func parityEffectAction(t *testing.T, effect protocol.Effect) string {

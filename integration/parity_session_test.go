@@ -89,7 +89,8 @@ func runOperationSemantic(t *testing.T, row parityRow) {
 			}
 			assertParityText(t, row, string(findParityRecord(t, records, "escaped-directory").Kind))
 		case "prompt":
-			valid := result.Snapshot.State().Prompt == "[N] "+pathutil.PromptDisplay(pathutil.Filesystem([]byte(target)))+" "
+			valid := result.Snapshot.State().Prompt == "[N] " &&
+				result.Effect.Header == pathutil.PromptDisplay(pathutil.Filesystem([]byte(target)))
 			got := ""
 			if valid {
 				got = "[N] escaped-directory/ "
@@ -111,7 +112,8 @@ func runOperationSemantic(t *testing.T, row parityRow) {
 		if opcode == protocol.OpModeInsert {
 			prefix = "[I]"
 		}
-		valid := strings.HasPrefix(result.Snapshot.State().Prompt, prefix+" ") && strings.Contains(result.Snapshot.State().Prompt, "escaped-directory")
+		valid := result.Snapshot.State().Prompt == prefix+" " &&
+			pathutil.PromptDisplay(result.Snapshot.State().Location) == pathutil.PromptDisplay(pathutil.Filesystem([]byte(target)))
 		got := ""
 		if valid {
 			got = prefix + " escaped-directory/ "
