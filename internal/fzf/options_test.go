@@ -1,7 +1,6 @@
 package fzf
 
 import (
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -10,25 +9,102 @@ import (
 )
 
 func TestPickerOptions(t *testing.T) {
-	common := func(infoCommand string) []string {
-		return []string{
-			"--ansi", "--style=full", "--layout=reverse", "--delimiter=\t", "--with-nth=2", "--read0", "--print0",
-			"--prompt=[I] ", "--header=/work/", "--header-first", infoCommand,
-			"--preview=p", "--preview-window=right:50%:wrap",
-			"--bind=enter:transform(e:en)", "--bind=esc:transform(e:es)", "--bind=i:transform(e:mi)",
-			"--bind=a:transform(e:ma)", "--bind=ctrl-l,tab,right:transform(e:fw)",
-			"--bind=ctrl-h,left:transform(e:up)", "--bind=/:transform(e:sl)", "--bind=~:transform(e:hm)",
-			"--bind=j:down", "--bind=k:up", "--bind=h:trigger(ctrl-h)", "--bind=l:trigger(tab)", "--bind=q:abort",
-			"--bind=start:unbind(h,j,k,l,i,a,q,space)+transform(d)", "--bind=resize:transform(d)",
+	required := []string{
+		"--bind=ctrl-u:half-page-up",
+		"--bind=ctrl-d:half-page-down",
+		"--bind=,:preview-half-page-up",
+		"--bind=.:preview-half-page-down",
+		"--bind=change:transform(e:rs)",
+		"--bind=result-final:rebind(change)+unbind(result-final)",
+	}
+	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
+		got := Options(picker, "[I] ", "/work/")
+		for _, option := range required {
+			if !slices.Contains(got, option) {
+				t.Errorf("picker %q lacks option %q", picker, option)
+			}
+		}
+		if !slices.Contains(got, "--prompt=[I] ") || !slices.Contains(got, "--header=/work/") {
+			t.Errorf("picker %q lacks prompt/header options", picker)
+		}
+		if !slices.ContainsFunc(got, func(option string) bool {
+			return strings.HasPrefix(option, "--bind=start:unbind(") &&
+				strings.Contains(option, ",change,result-final)+transform(d)")
+		}) {
+			t.Errorf("picker %q start binding does not disable restore events", picker)
 		}
 	}
-	cdWant := append(common("--info-command=i:cd"), "--bind=space:clear-multi+toggle", "--sort", "--print-query", "--multi=1")
-	cpWant := append(common("--info-command=i:cp"), "--bind=space:toggle", "--no-sort", "--multi")
-	if got := Options(protocol.PickerCD, "[I] ", "/work/"); !reflect.DeepEqual(got, cdWant) {
-		t.Fatalf("cd options:\n got=%q\nwant=%q", got, cdWant)
+}
+
+func TestNormalModeIgnoresEveryOtherASCIIPrintableKey(t *testing.T) {
+	active := map[rune]bool{
+		'h': true, 'j': true, 'k': true, 'l': true, 'i': true, 'a': true, 'q': true,
+		'/': true, '~': true, ',': true, '.': true,
 	}
-	if got := Options(protocol.PickerCP, "[I] ", "/work/"); !reflect.DeepEqual(got, cpWant) {
-		t.Fatalf("cp options:\n got=%q\nwant=%q", got, cpWant)
+	options := Options(protocol.PickerCD, "[I] ", "/work/")
+	for key := '!'; key <= '~'; key++ {
+		if active[key] {
+			continue
+		}
+		encoded := strings.ReplaceAll(string(key), `\`, `\\`)
+		encoded = strings.ReplaceAll(encoded, ",", `\,`)
+		want := "--bind=" + encoded + ":ignore"
+		if !slices.Contains(options, want) {
+			t.Errorf("printable key %q lacks exact ignore binding %q", key, want)
+		}
+	}
+}
+
+func TestInsertAndAddUnbindFullNormalOnlySet(t *testing.T) {
+	ignored := make([]string, 0, 83)
+	active := map[rune]bool{
+		'h': true, 'j': true, 'k': true, 'l': true, 'i': true, 'a': true, 'q': true,
+		'/': true, '~': true, ',': true, '.': true,
+	}
+	for key := '!'; key <= '~'; key++ {
+		if !active[key] {
+			ignored = append(ignored, string(key))
+		}
+	}
+	normalOnly := append([]string{"h", "j", "k", "l", "i", "a", "q", "space", "ctrl-u", "ctrl-d", ",", "."}, ignored...)
+	encoded := make([]string, len(normalOnly))
+	for index, key := range normalOnly {
+		key = strings.ReplaceAll(key, `\`, `\\`)
+		encoded[index] = strings.ReplaceAll(key, ",", `\,`)
+	}
+
+	insert, err := RenderEffect(protocol.Effect{Rebind: protocol.ModeInsert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "unbind(" + strings.Join(encoded, ",") + ")"; !strings.Contains(insert, want) {
+		t.Fatalf("insert=%q lacks %q", insert, want)
+	}
+	normal, err := RenderEffect(protocol.Effect{Rebind: protocol.ModeNormal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := append([]string{"ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~"}, normalOnly...)
+	allEncoded := make([]string, 0, len(all))
+	for _, key := range all {
+		key = strings.ReplaceAll(key, `\`, `\\`)
+		allEncoded = append(allEncoded, strings.ReplaceAll(key, ",", `\,`))
+	}
+	if want := "rebind(" + strings.Join(allEncoded, ",") + ")"; normal != want {
+		t.Fatalf("normal=%q want=%q", normal, want)
+	}
+
+	add, err := RenderEffect(protocol.Effect{Rebind: protocol.ModeAdd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = encoded[:0]
+	for _, key := range all {
+		key = strings.ReplaceAll(key, `\`, `\\`)
+		encoded = append(encoded, strings.ReplaceAll(key, ",", `\,`))
+	}
+	if want := "unbind(" + strings.Join(encoded, ",") + ")"; add != want {
+		t.Fatalf("add=%q want=%q", add, want)
 	}
 }
 

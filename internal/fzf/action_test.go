@@ -11,9 +11,46 @@ func TestRenderNavigationEffectEndsWithHeader(t *testing.T) {
 	effect := protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Header: `a\)b/`,
 		ClearMulti: true, ClearQuery: true, ReloadGeneration: 7}
 	got, err := RenderEffect(effect)
-	want := `clear-multi+reload-sync(l:7)+clear-query+wait+first+change-prompt([N] )+change-header:a\)b/`
+	want := `clear-multi+reload-sync(l:7)+clear-query+wait+first+change-preview(p)+unbind(change,result-final)+change-prompt([N] )+change-header:a\)b/`
 	if err != nil || got != want {
 		t.Fatalf("got=%q want=%q err=%v", got, want, err)
+	}
+}
+
+func TestRenderInvalidPathAndRestoreEffects(t *testing.T) {
+	invalid, err := RenderEffect(protocol.Effect{Put: "/", InvalidPath: true})
+	if err != nil || invalid != "put(/)+reload-sync(l:empty)+change-preview(p:invalid)+rebind(result-final)" {
+		t.Fatalf("invalid=%q err=%v", invalid, err)
+	}
+	restore, err := RenderEffect(protocol.Effect{RestoreGeneration: 7})
+	if err != nil || restore != "reload-sync(l:7)+change-preview(p)+unbind(change,result-final)" {
+		t.Fatalf("restore=%q err=%v", restore, err)
+	}
+}
+
+func TestRenderAbortEffect(t *testing.T) {
+	got, err := RenderEffect(protocol.Effect{Abort: true})
+	if err != nil || got != "abort" {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestRenderEffectRejectsImpossibleTransientCombinations(t *testing.T) {
+	for _, effect := range []protocol.Effect{
+		{InvalidPath: true},
+		{Put: "~", InvalidPath: true},
+		{ReloadGeneration: 1, RestoreGeneration: 2},
+	} {
+		if _, err := RenderEffect(effect); err == nil || !strings.HasPrefix(err.Error(), "fzf:") {
+			t.Fatalf("RenderEffect(%+v) err=%v, want descriptive fzf error", effect, err)
+		}
+	}
+}
+
+func TestKeyActionsEscapeCommaAndBackslash(t *testing.T) {
+	got := keyAction("unbind", []string{",", `\`, `x\,y`}).text
+	if want := `unbind(\,,\\,x\\\,y)`; got != want {
+		t.Fatalf("got=%q want=%q", got, want)
 	}
 }
 
@@ -32,22 +69,23 @@ func TestModePromptActionAcceptsOnlyClosedVocabulary(t *testing.T) {
 
 func TestRenderModeEffects(t *testing.T) {
 	tests := []struct {
-		name   string
-		effect protocol.Effect
-		want   string
+		name       string
+		effect     protocol.Effect
+		wantPrefix string
+		wantSuffix string
 	}{
 		{"insert", protocol.Effect{Search: "on", Rebind: protocol.ModeInsert, Prompt: "[I] ", Header: "/work/"},
-			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(h,j,k,l,i,a,q,space)+change-prompt([I] )+change-header:/work/"},
+			"enable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~)+unbind(", ")+change-prompt([I] )+change-header:/work/"},
 		{"normal", protocol.Effect{Search: "off", Rebind: protocol.ModeNormal, Prompt: "[N] ", Header: "/work/"},
-			"disable-search+rebind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+change-prompt([N] )+change-header:/work/"},
+			"disable-search+rebind(", ")+change-prompt([N] )+change-header:/work/"},
 		{"add", protocol.Effect{Search: "on", Rebind: protocol.ModeAdd, Prompt: "[A] ", Header: "/work/", ClearQuery: true},
-			"enable-search+unbind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space)+clear-query+change-prompt([A] )+change-header:/work/"},
+			"enable-search+unbind(", ")+clear-query+change-prompt([A] )+change-header:/work/"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := RenderEffect(test.effect)
-			if err != nil || got != test.want {
-				t.Fatalf("got=%q want=%q err=%v", got, test.want, err)
+			if err != nil || !strings.HasPrefix(got, test.wantPrefix) || !strings.HasSuffix(got, test.wantSuffix) {
+				t.Fatalf("got=%q want prefix=%q suffix=%q err=%v", got, test.wantPrefix, test.wantSuffix, err)
 			}
 		})
 	}

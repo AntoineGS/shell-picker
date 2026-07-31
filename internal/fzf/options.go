@@ -39,8 +39,17 @@ func Options(picker protocol.Picker, prompt, header string) []string {
 		binding("h", trigger("ctrl-h")),
 		binding("l", trigger("tab")),
 		binding("q", abort()),
+		binding("ctrl-u", halfPageUp()),
+		binding("ctrl-d", halfPageDown()),
+		binding(",", previewHalfPageUp()),
+		binding(".", previewHalfPageDown()),
+		binding("change", transformEvent(protocol.OpRestoreView)),
+		binding("result-final", keyAction("rebind", []string{"change"}), keyAction("unbind", []string{"result-final"})),
 		binding("start", startUnbind(), transformDisplay()),
 		binding("resize", transformDisplay()),
+	}
+	for _, key := range normalPrintableKeys {
+		options = append(options, binding(encodeActionKey(key), ignore()))
 	}
 	if picker == protocol.PickerCD {
 		return append(options, binding("space", clearMulti(), toggle()), "--sort", "--print-query", "--multi=1")

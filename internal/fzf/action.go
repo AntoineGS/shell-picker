@@ -11,8 +11,11 @@ import (
 type action struct{ text string }
 
 var (
-	navigationKeys = []string{"ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~"}
-	normalKeys     = []string{"h", "j", "k", "l", "i", "a", "q", "space"}
+	navigationKeys      = []string{"ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~"}
+	normalCommandKeys   = []string{"h", "j", "k", "l", "i", "a", "q", "space"}
+	normalPagingKeys    = []string{"ctrl-u", "ctrl-d", ",", "."}
+	normalPrintableKeys = buildNormalPrintableKeys()
+	normalKeys          = appendKeys(normalCommandKeys, normalPagingKeys, normalPrintableKeys)
 )
 
 func sequence(actions ...action) string {
@@ -37,6 +40,17 @@ func down() action          { return action{text: "down"} }
 func up() action            { return action{text: "up"} }
 func abort() action         { return action{text: "abort"} }
 func toggle() action        { return action{text: "toggle"} }
+func halfPageUp() action    { return action{text: "half-page-up"} }
+func halfPageDown() action  { return action{text: "half-page-down"} }
+func previewHalfPageUp() action {
+	return action{text: "preview-half-page-up"}
+}
+func previewHalfPageDown() action {
+	return action{text: "preview-half-page-down"}
+}
+func reloadEmpty() action          { return action{text: "reload-sync(l:empty)"} }
+func changePreviewDefault() action { return action{text: "change-preview(p)"} }
+func changePreviewInvalid() action { return action{text: "change-preview(p:invalid)"} }
 
 func rebind(mode protocol.Mode) action {
 	switch mode {
@@ -64,10 +78,57 @@ func unbind(mode protocol.Mode) action {
 	}
 }
 
-func startUnbind() action { return keyAction("unbind", normalKeys) }
+func startUnbind() action {
+	return keyAction("unbind", appendKeys(normalKeys, []string{"change", "result-final"}))
+}
 
 func keyAction(name string, keys []string) action {
-	return action{text: name + "(" + strings.Join(keys, ",") + ")"}
+	var size int
+	for _, key := range keys {
+		size += len(key) + strings.Count(key, `\`) + strings.Count(key, ",")
+	}
+	var text strings.Builder
+	text.Grow(len(name) + 2 + size + max(0, len(keys)-1))
+	text.WriteString(name)
+	text.WriteByte('(')
+	for index, key := range keys {
+		if index != 0 {
+			text.WriteByte(',')
+		}
+		writeActionKey(&text, key)
+	}
+	text.WriteByte(')')
+	return action{text: text.String()}
+}
+
+func encodeActionKey(key string) string {
+	var encoded strings.Builder
+	encoded.Grow(len(key) + strings.Count(key, `\`) + strings.Count(key, ","))
+	writeActionKey(&encoded, key)
+	return encoded.String()
+}
+
+func writeActionKey(encoded *strings.Builder, key string) {
+	for index := range len(key) {
+		if key[index] == '\\' || key[index] == ',' {
+			encoded.WriteByte('\\')
+		}
+		encoded.WriteByte(key[index])
+	}
+}
+
+func buildNormalPrintableKeys() []string {
+	active := map[rune]bool{
+		'h': true, 'j': true, 'k': true, 'l': true, 'i': true, 'a': true, 'q': true,
+		'/': true, '~': true, ',': true, '.': true,
+	}
+	keys := make([]string, 0, 83)
+	for key := '!'; key <= '~'; key++ {
+		if !active[key] {
+			keys = append(keys, string(key))
+		}
+	}
+	return keys
 }
 
 func appendKeys(groups ...[]string) []string {
@@ -130,6 +191,12 @@ func binding(keys string, actions ...action) string {
 }
 
 func RenderEffect(effect protocol.Effect) (string, error) {
+	if effect.InvalidPath && effect.Put != "/" {
+		return "", errors.New("fzf: invalid path effect requires put slash")
+	}
+	if effect.ReloadGeneration != 0 && effect.RestoreGeneration != 0 {
+		return "", errors.New("fzf: reload and restore generations are mutually exclusive")
+	}
 	actions := make([]action, 0, 12)
 	switch effect.Search {
 	case "":
@@ -152,6 +219,9 @@ func RenderEffect(effect protocol.Effect) (string, error) {
 	if effect.ReloadGeneration != 0 {
 		actions = append(actions, reload(effect.ReloadGeneration))
 	}
+	if effect.RestoreGeneration != 0 {
+		actions = append(actions, reload(effect.RestoreGeneration))
+	}
 	if effect.ClearQuery {
 		actions = append(actions, clearQuery())
 	}
@@ -162,6 +232,12 @@ func RenderEffect(effect protocol.Effect) (string, error) {
 		}
 		actions = append(actions, putAction)
 	}
+	if effect.InvalidPath {
+		actions = append(actions, reloadEmpty(), changePreviewInvalid(), keyAction("rebind", []string{"result-final"}))
+	}
+	if effect.Abort {
+		actions = append(actions, abort())
+	}
 	if effect.Accept {
 		actions = append(actions, acceptEnter())
 	}
@@ -170,6 +246,9 @@ func RenderEffect(effect protocol.Effect) (string, error) {
 	}
 	if effect.ReloadGeneration != 0 {
 		actions = append(actions, wait(), first())
+	}
+	if effect.ReloadGeneration != 0 || effect.RestoreGeneration != 0 {
+		actions = append(actions, changePreviewDefault(), keyAction("unbind", []string{"change", "result-final"}))
 	}
 	if effect.Prompt != "" {
 		prompt, err := changeModePrompt(effect.Prompt)
