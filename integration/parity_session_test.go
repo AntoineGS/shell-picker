@@ -394,9 +394,9 @@ func runModeSemantic(t *testing.T, row parityRow) {
 	case "normal-keys-unbound":
 		assertParityText(t, row, boolText(strings.Contains(action, "unbind(h,j,k,l,i,a,q,space,")))
 	case "navigation-keys-rebound":
-		assertParityText(t, row, boolText(strings.Contains(action, "rebind(ctrl-l,tab,right,ctrl-h,left,/,~)")))
+		assertParityText(t, row, boolText(strings.Contains(action, "rebind(ctrl-l,tab,right,ctrl-h,left,/,~,ctrl-u,ctrl-d)")))
 	case "normal-and-navigation-keys-unbound":
-		assertParityText(t, row, boolText(strings.Contains(action, "unbind(ctrl-l,tab,right,ctrl-h,left,/,~,h,j,k,l,i,a,q,space,")))
+		assertParityText(t, row, boolText(strings.Contains(action, "unbind(ctrl-l,tab,right,ctrl-h,left,/,~,ctrl-u,ctrl-d,h,j,k,l,i,a,q,space,g,G,jump,")))
 	case "keys-rebound":
 		assertParityText(t, row, boolText(strings.Contains(action, "rebind(ctrl-l,tab,right") && strings.Contains(action, "h,j,k,l,i,a,q,space")))
 	case "cursor-sequence":
