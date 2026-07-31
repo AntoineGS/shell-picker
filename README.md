@@ -13,7 +13,7 @@ $ make build
 $ make install
 ```
 
-`make build` writes `bin/shell-picker`. `make install` uses Go's `GOBIN`, or the default `GOPATH/bin` when `GOBIN` is unset. Go 1.26.5 and external fzf 0.74.1 remain prerequisites.
+`make build` writes bin/shell-picker. `make install` uses Go's `GOBIN`, or the default `GOPATH/bin` when `GOBIN` is unset. Go 1.26.5 and external fzf 0.74.1 remain prerequisites.
 
 ```sh check
 shell-picker version
