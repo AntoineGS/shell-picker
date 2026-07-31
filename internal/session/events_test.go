@@ -46,18 +46,18 @@ func TestModeAndQueryTransitionMatrix(t *testing.T) {
 		event protocol.Event
 		want  protocol.Effect
 	}{
-		{"normal i", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeInsert}, protocol.Effect{Mode: protocol.ModeInsert, Prompt: "[I] ", Search: "on", Rebind: protocol.ModeInsert, Cursor: protocol.CursorLine}},
-		{"normal a", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeAdd}, protocol.Effect{Mode: protocol.ModeAdd, Prompt: "[A] ", Search: "on", Rebind: protocol.ModeAdd, ClearQuery: true, Cursor: protocol.CursorLine}},
-		{"insert escape", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Search: "off", Rebind: protocol.ModeNormal, Cursor: protocol.CursorBlock}},
-		{"normal escape", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{ClearMulti: true}},
-		{"add escape", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Search: "off", Rebind: protocol.ModeNormal, ClearQuery: true, Cursor: protocol.CursorBlock}},
+		{"normal i", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeInsert}, protocol.Effect{Mode: protocol.ModeInsert, Prompt: "[I] ", Search: "on", Rebind: protocol.ModeInsert, Cursor: protocol.CursorLine, RestoreGeneration: 7}},
+		{"normal a", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpModeAdd}, protocol.Effect{Mode: protocol.ModeAdd, Prompt: "[A] ", Search: "on", Rebind: protocol.ModeAdd, ClearQuery: true, Cursor: protocol.CursorLine, RestoreGeneration: 7}},
+		{"insert escape", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Search: "off", Rebind: protocol.ModeNormal, Cursor: protocol.CursorBlock, RestoreGeneration: 7}},
+		{"normal escape", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Abort: true}},
+		{"add escape", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpEscape}, protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Search: "off", Rebind: protocol.ModeNormal, ClearQuery: true, Cursor: protocol.CursorBlock, RestoreGeneration: 7}},
 		{"add forward", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpForward, CurrentItem: []byte(record.FullKey())}, protocol.Effect{Ignore: true}},
 		{"add parent", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpParent}, protocol.Effect{Ignore: true}},
 		{"add slash", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("..")}, protocol.Effect{Put: "/"}},
 		{"add home", protocol.ModeAdd, protocol.Event{Opcode: protocol.OpHome, Query: []byte("x")}, protocol.Effect{Put: "~"}},
 		{"normal slash query", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("name")}, protocol.Effect{Ignore: true}},
 		{"normal home query", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpHome, Query: []byte("name")}, protocol.Effect{Ignore: true}},
-		{"insert slash query", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("name")}, protocol.Effect{Put: "/"}},
+		{"insert slash query", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("name")}, protocol.Effect{Put: "/", InvalidPath: true}},
 		{"insert home query", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpHome, Query: []byte("name")}, protocol.Effect{Put: "~"}},
 	}
 	for _, test := range tests {
@@ -178,8 +178,12 @@ func TestNavigationTargetsKindsAndEffects(t *testing.T) {
 				if kind == protocol.KindVirtual {
 					wantKind, wantPath = pathutil.KindDrives, ""
 				}
+				wantCursor := protocol.CursorLine
+				if mode := proposal.State.Mode; mode != protocol.ModeInsert {
+					t.Fatalf("mode=%s want=%s", mode, protocol.ModeInsert)
+				}
 				if proposal.State.Location.Kind != wantKind || string(proposal.State.Location.Path) != wantPath || proposal.Build == nil ||
-					!proposal.Effect.ClearMulti || !proposal.Effect.ClearQuery || proposal.Effect.Cursor != protocol.CursorBlock {
+					!proposal.Effect.ClearMulti || !proposal.Effect.ClearQuery || proposal.Effect.Cursor != wantCursor {
 					t.Fatalf("proposal=%+v", proposal)
 				}
 			})

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/pathutil"
@@ -102,7 +103,16 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 		} else if state.Mode == protocol.ModeInsert && bytes.Equal(event.Query, []byte("..")) {
 			setNavigationUnchecked(&proposal, pathutil.Parent(state.Location))
 		} else if state.Mode == protocol.ModeInsert {
-			proposal.Effect.Put = "/"
+			record, ok := exactImmediateChild(snapshot, event.Query)
+			if !ok {
+				proposal.Effect = protocol.Effect{Put: "/", InvalidPath: true}
+				break
+			}
+			target, err := navigationTarget(record)
+			if err != nil {
+				return Reduction{}, err
+			}
+			setNavigationUnchecked(&proposal, target)
 		} else {
 			proposal.Effect.Ignore = true
 		}
@@ -116,6 +126,8 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 		}
 	case protocol.OpEnter:
 		return reduceEnter(snapshot, proposal, event)
+	case protocol.OpRestoreView:
+		proposal.Effect = protocol.Effect{RestoreGeneration: snapshot.generation}
 	default:
 		return Reduction{}, fmt.Errorf("%w: unknown opcode %q", ErrInvalidEvent, event.Opcode)
 	}
@@ -127,7 +139,7 @@ func reduceEscape(proposal *ProposedTransition) {
 	case protocol.ModeInsert:
 		setMode(proposal, protocol.ModeNormal, false)
 	case protocol.ModeNormal:
-		proposal.Effect = protocol.Effect{ClearMulti: true}
+		proposal.Effect = protocol.Effect{Abort: true}
 	case protocol.ModeAdd:
 		setMode(proposal, protocol.ModeNormal, true)
 	}
@@ -173,13 +185,13 @@ func setMode(proposal *ProposedTransition, mode protocol.Mode, clearQuery bool) 
 	proposal.State.Mode = mode
 	proposal.State.AddError = false
 	proposal.State.Prompt = modePrompt(mode, false)
-	proposal.Effect = modeEffect(proposal.State, clearQuery)
+	proposal.Effect = modeEffect(proposal.State, clearQuery, proposal.BaseGeneration)
 }
 
-func modeEffect(state State, clearQuery bool) protocol.Effect {
+func modeEffect(state State, clearQuery bool, restoreGeneration uint64) protocol.Effect {
 	effect := protocol.Effect{
 		Mode: state.Mode, Prompt: state.Prompt, Search: "on", Rebind: state.Mode,
-		ClearQuery: clearQuery, Cursor: protocol.CursorLine,
+		ClearQuery: clearQuery, Cursor: protocol.CursorLine, RestoreGeneration: restoreGeneration,
 	}
 	if state.Mode == protocol.ModeNormal {
 		effect.Search = "off"
@@ -202,6 +214,25 @@ func modePrompt(mode protocol.Mode, addError bool) string {
 	}
 }
 
+func exactImmediateChild(snapshot Snapshot, query []byte) (candidate.Record, bool) {
+	state := snapshot.state
+	if state.Location.Kind != pathutil.KindFilesystem {
+		return candidate.Record{}, false
+	}
+	for _, record := range snapshot.records {
+		if record.Kind != protocol.KindLocal && record.Kind != protocol.KindDirectory {
+			continue
+		}
+		if record.Target.Kind != pathutil.KindFilesystem ||
+			!bytes.Equal([]byte(filepath.Dir(string(record.Target.Path))), state.Location.Path) ||
+			!bytes.EqualFold([]byte(filepath.Base(string(record.Target.Path))), query) {
+			continue
+		}
+		return cloneRecord(record), true
+	}
+	return candidate.Record{}, false
+}
+
 func navigationTarget(record candidate.Record) (pathutil.Location, error) {
 	if record.Kind == protocol.KindVirtual {
 		if record.Target.Kind != pathutil.KindDrives || len(record.Target.Path) != 0 {
@@ -217,11 +248,13 @@ func navigationTarget(record candidate.Record) (pathutil.Location, error) {
 
 func setNavigationUnchecked(proposal *ProposedTransition, target pathutil.Location) {
 	proposal.State.Location = cloneLocation(target)
-	proposal.State.Mode = protocol.ModeNormal
+	if proposal.State.Mode == protocol.ModeAdd {
+		proposal.State.Mode = protocol.ModeNormal
+	}
 	proposal.State.AddError = false
-	proposal.State.Prompt = modePrompt(protocol.ModeNormal, false)
+	proposal.State.Prompt = modePrompt(proposal.State.Mode, false)
 	proposal.Build = &candidate.BuildRequest{Picker: proposal.State.Picker, Location: cloneLocation(target)}
-	proposal.Effect = modeEffect(proposal.State, true)
+	proposal.Effect = modeEffect(proposal.State, true, 0)
 	proposal.Effect.Header = pathutil.PromptDisplay(target)
 	proposal.Effect.ClearMulti = true
 }

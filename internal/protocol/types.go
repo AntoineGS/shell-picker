@@ -38,14 +38,15 @@ const (
 type Opcode string
 
 const (
-	OpModeInsert Opcode = "mi"
-	OpModeAdd    Opcode = "ma"
-	OpEscape     Opcode = "es"
-	OpForward    Opcode = "fw"
-	OpParent     Opcode = "up"
-	OpSlash      Opcode = "sl"
-	OpHome       Opcode = "hm"
-	OpEnter      Opcode = "en"
+	OpModeInsert  Opcode = "mi"
+	OpModeAdd     Opcode = "ma"
+	OpEscape      Opcode = "es"
+	OpForward     Opcode = "fw"
+	OpParent      Opcode = "up"
+	OpSlash       Opcode = "sl"
+	OpHome        Opcode = "hm"
+	OpEnter       Opcode = "en"
+	OpRestoreView Opcode = "rs"
 )
 
 type Event struct {
@@ -56,19 +57,22 @@ type Event struct {
 }
 
 type Effect struct {
-	Mode             Mode        `json:"mode"`
-	Prompt           string      `json:"prompt"`
-	Header           string      `json:"header"`
-	Search           string      `json:"search"`
-	Rebind           Mode        `json:"rebind"`
-	ClearQuery       bool        `json:"clear_query"`
-	ClearMulti       bool        `json:"clear_multi"`
-	Accept           bool        `json:"accept"`
-	Ignore           bool        `json:"ignore"`
-	Put              string      `json:"put"`
-	ReloadGeneration uint64      `json:"reload_generation"`
-	Cursor           CursorShape `json:"cursor"`
-	ErrorPrompt      bool        `json:"error_prompt"`
+	Mode              Mode        `json:"mode"`
+	Prompt            string      `json:"prompt"`
+	Header            string      `json:"header"`
+	Search            string      `json:"search"`
+	Rebind            Mode        `json:"rebind"`
+	ClearQuery        bool        `json:"clear_query"`
+	ClearMulti        bool        `json:"clear_multi"`
+	Accept            bool        `json:"accept"`
+	Abort             bool        `json:"abort"`
+	Ignore            bool        `json:"ignore"`
+	Put               string      `json:"put"`
+	InvalidPath       bool        `json:"invalid_path"`
+	ReloadGeneration  uint64      `json:"reload_generation"`
+	RestoreGeneration uint64      `json:"restore_generation"`
+	Cursor            CursorShape `json:"cursor"`
+	ErrorPrompt       bool        `json:"error_prompt"`
 }
 
 type OutputFormat string

@@ -48,7 +48,7 @@ func TestReduceValidAddIsPureAndClonesIntent(t *testing.T) {
 	}
 }
 
-func TestNormalEscapeHasOnlyClearMultiEffect(t *testing.T) {
+func TestNormalEscapeAbortsWithoutChangingState(t *testing.T) {
 	actor := New(context.Background(), nil)
 	t.Cleanup(func() { _ = actor.Close() })
 	state := eventSnapshot(protocol.PickerCP, protocol.ModeNormal, pathutil.Filesystem([]byte("/work"))).state
@@ -63,7 +63,7 @@ func TestNormalEscapeHasOnlyClearMultiEffect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Effect != (protocol.Effect{ClearMulti: true}) {
+	if result.Effect != (protocol.Effect{Abort: true}) {
 		t.Fatalf("effect=%+v", result.Effect)
 	}
 	if !reflect.DeepEqual(result.Snapshot.State(), before.State()) {
