@@ -221,6 +221,7 @@ func testRealFZFNormalPaging(t *testing.T) {
 
 func testRealFZFInsertPaging(t *testing.T) {
 	fixture := newRealFZFFixture(t, requireRealFZF(t), "insert list paging")
+	fixture.fzf = realFZFWithPromptBinding(t, fixture.fzf, "[I] ")
 	removeFixtureCandidates(t, fixture)
 	for index := 0; index < 36; index++ {
 		name := fmt.Sprintf("item-%02d.txt", index)
@@ -250,9 +251,12 @@ func testRealFZFInsertPaging(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
 	down := waitForChangedNavigationMarkerAfter(t, term, beforeDown, "LIST", 0)
+	refreshTerminal(t, term)
 	assertLatestModePromptAfter(t, term, beforeDown, "[I] item-", fmt.Sprintf("LIST-PREVIEW-%02d", down))
 	assertTraceCount(t, term.TraceEvents(), "callback.event", "", callbackCount)
 
+	previewCount = traceCount(term.TraceEvents(), "preview.dispatch", "")
+	finishedCount = traceCount(term.TraceEvents(), "preview.finished", "")
 	beforeUp := len(term.Output())
 	if err := term.Send([]byte{0x15}); err != nil {
 		t.Fatal(err)
@@ -260,6 +264,7 @@ func testRealFZFInsertPaging(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
 	up := waitForChangedNavigationMarkerAfter(t, term, beforeUp, "LIST", down)
+	refreshTerminal(t, term)
 	assertLatestModePromptAfter(t, term, beforeUp, "[I] item-", fmt.Sprintf("LIST-PREVIEW-%02d", up))
 	if down <= 0 || up >= down {
 		t.Fatalf("Ctrl-D/Ctrl-U visible markers=%d/%d, want down then up", down, up)
@@ -269,6 +274,7 @@ func testRealFZFInsertPaging(t *testing.T) {
 
 func testRealFZFNormalFirstLast(t *testing.T) {
 	fixture := newRealFZFFixture(t, requireRealFZF(t), "normal first and last")
+	fixture.fzf = realFZFWithPromptBinding(t, fixture.fzf, "[N] ")
 	removeFixtureCandidates(t, fixture)
 	for index := 0; index < 36; index++ {
 		name := fmt.Sprintf("item-%02d.txt", index)
@@ -311,16 +317,34 @@ func testRealFZFNormalFirstLast(t *testing.T) {
 	if marker, changed := changedNavigationMarker(visibleTerminalOutput(term.Output()[beforePrefix:]), "LIST", 35); changed {
 		t.Fatalf("first g changed preview marker to %d, want 35", marker)
 	}
-	assertLatestModePromptAfter(t, term, beforePrefix, "[N] item-", "▌ item-35.txt")
-	if marker, ok := latestNavigationMarker(visibleTerminalOutput(term.Output()), "LIST"); !ok || marker != 35 {
-		t.Fatalf("first g selected marker=%d/%t, want 35/true", marker, ok)
+	firstGEnd := len(term.Output())
+	firstGOutput := visibleTerminalOutput(term.Output()[beforePrefix:firstGEnd])
+	if marker, changed := changedNavigationMarker(firstGOutput, "LIST", 35); changed {
+		t.Fatalf("first g changed preview marker to %d, want 35", marker)
 	}
-	if item, ok := latestSelectedNavigationItem(visibleTerminalOutput(term.Output())); !ok || item != "item-35.txt" {
+	if item, ok := latestSelectedNavigationItem(firstGOutput); !ok || item != "item-35.txt" {
 		t.Fatalf("first g selected item=%q/%t, want item-35.txt/true", item, ok)
 	}
+	// Complete the prefix with a consumed different key before refreshing the prompt.
+	beforeCancel := len(term.Output())
+	if err := term.Send([]byte{'x'}); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitOutputAfter(testContext(t), beforeCancel)
+	beforePrompt := len(term.Output())
+	if item, ok := latestSelectedNavigationItem(visibleTerminalOutput(term.Output()[beforePrefix:beforePrompt])); !ok || item != "item-35.txt" {
+		t.Fatalf("cancelled first g selected item=%q/%t, want item-35.txt/true", item, ok)
+	}
+	refreshTerminal(t, term)
+	assertLatestModePromptAfter(t, term, beforePrefix, "[N] item-", "▌ item-35.txt")
 
 	previewCount = traceCount(term.TraceEvents(), "preview.dispatch", "")
 	finishedCount = traceCount(term.TraceEvents(), "preview.finished", "")
+	beforeReenter := len(term.Output())
+	if err := term.Send([]byte{'g'}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalTextAfter(t, term, beforeReenter, "▌ item-35.txt")
 	beforeFirst := len(term.Output())
 	if err := term.Send([]byte{'g'}); err != nil {
 		t.Fatal(err)
@@ -328,6 +352,7 @@ func testRealFZFNormalFirstLast(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
 	first := waitForChangedNavigationMarkerAfter(t, term, beforeFirst, "LIST", 35)
+	refreshTerminal(t, term)
 	assertLatestModePromptAfter(t, term, beforeFirst, "[N] item-", fmt.Sprintf("LIST-PREVIEW-%02d", first))
 	if first != 0 {
 		t.Fatalf("gg selected marker=%d, want 0", first)
@@ -397,18 +422,6 @@ func changedNavigationMarker(output []byte, prefix string, previous int) (int, b
 	return 0, false
 }
 
-func latestNavigationMarker(output []byte, prefix string) (int, bool) {
-	marker := regexp.MustCompile(regexp.QuoteMeta(prefix) + `-PREVIEW-([0-9]{2})`)
-	matches := marker.FindAllSubmatch(output, -1)
-	for index := len(matches) - 1; index >= 0; index-- {
-		value, err := strconv.Atoi(string(matches[index][1]))
-		if err == nil {
-			return value, true
-		}
-	}
-	return 0, false
-}
-
 func latestSelectedNavigationItem(output []byte) (string, bool) {
 	marker := regexp.MustCompile(`▌ (item-[0-9]{2}\.txt)`)
 	matches := marker.FindAllSubmatch(output, -1)
@@ -421,14 +434,15 @@ func latestSelectedNavigationItem(output []byte) (string, bool) {
 func assertLatestModePromptAfter(t *testing.T, term terminalSession, before int, want, evidence string) {
 	t.Helper()
 	waitForTerminalTextAfter(t, term, before, evidence)
+	waitForTerminalTextAfter(t, term, before, want)
 	raw := term.Output()
 	if before >= len(raw) {
 		t.Fatalf("action produced no output after %d bytes", before)
 	}
-	visible := visibleTerminalOutput(raw)
+	visible := visibleTerminalOutput(raw[before:])
 	wantIndex := bytes.LastIndex(visible, []byte(want))
 	if wantIndex < 0 {
-		t.Fatalf("latest mode prompt lacks %q in output after %d bytes: %q", want, before, raw)
+		t.Fatalf("latest mode prompt lacks %q in output after %d bytes: %q", want, before, raw[before:])
 	}
 	separator := strings.Index(want, "] ")
 	if separator < 0 {
@@ -438,9 +452,35 @@ func assertLatestModePromptAfter(t *testing.T, term terminalSession, before int,
 	for _, prefix := range []string{"[I] ", "[N] ", "[A] ", "[A!] "} {
 		candidate := []byte(prefix + query)
 		if candidateIndex := bytes.LastIndex(visible, candidate); candidateIndex > wantIndex {
-			t.Fatalf("latest mode prompt is %q, want %q; output=%q", prefix+query, want, raw)
+			t.Fatalf("latest mode prompt is %q, want %q; output=%q", prefix+query, want, raw[before:])
 		}
 	}
+}
+
+func refreshTerminal(t *testing.T, term terminalSession) {
+	t.Helper()
+	before := len(term.Output())
+	if err := term.Send([]byte{0x12}); err != nil {
+		t.Fatal(err)
+	}
+	term.WaitOutputAfter(testContext(t), before)
+}
+
+func realFZFWithPromptBinding(t *testing.T, fzfPath, prompt string) string {
+	t.Helper()
+	// The wrapper adds only a test-side prompt redraw key; production fzf options stay unchanged.
+	path := filepath.Join(t.TempDir(), "fzf-refresh")
+	binding := "--bind=ctrl-r:change-prompt(" + prompt + ")"
+	script := "#!/bin/sh\nexec " + shellQuoteForFZFWrapper(fzfPath) + " \"$@\" " + shellQuoteForFZFWrapper(binding)
+	script += "\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func shellQuoteForFZFWrapper(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func waitForTerminalTextCountAfter(t *testing.T, term terminalSession, before int, text string, count int) {
