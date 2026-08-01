@@ -109,6 +109,7 @@ func TestParityWindowsSemanticSubstitutions(t *testing.T) {
 		VirtualParentDecoded  string   `json:"virtual_parent_decoded"`
 		VirtualParentTarget   string   `json:"virtual_parent_target"`
 		DrivesAddPrompt       string   `json:"drives_add_prompt"`
+		DrivesAddHeader       string   `json:"drives_add_header"`
 		IntentionalSubstitute []string `json:"intentional_substitutions"`
 	}](t, "windows-paths.json")
 	if golden.Root != "Drives" || golden.Separator != `\` || len(golden.IntentionalSubstitute) != 4 {
@@ -172,8 +173,11 @@ func TestParityWindowsSemanticSubstitutions(t *testing.T) {
 	drivesState := parityState(protocol.PickerCD, protocol.ModeAdd, pathutil.Drives(), state.Home)
 	drivesActor, drivesSnapshot := newParityActor(t, drivesState, drives)
 	addResult, err := session.Handle(context.Background(), drivesActor, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("new")})
-	if err != nil || addResult.Snapshot.State().Prompt != golden.DrivesAddPrompt {
-		t.Fatalf("Drives Add=%+v err=%v", addResult, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addResult.Snapshot.State().Prompt != golden.DrivesAddPrompt || addResult.Effect.Header != golden.DrivesAddHeader {
+		t.Fatalf("Drives Add prompt=%q header=%q", addResult.Snapshot.State().Prompt, addResult.Effect.Header)
 	}
 	if _, err := session.ValidateCD(drivesSnapshot, [][]byte{virtual.Wire().Bytes()}); !errors.Is(err, session.ErrUnknownSelection) && !errors.Is(err, session.ErrInvalidSelection) {
 		t.Fatalf("virtual cd selection err=%v", err)

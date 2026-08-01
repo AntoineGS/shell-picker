@@ -5,6 +5,7 @@
   "virtual_parent_payload": "ZHJpdmVz",
   "virtual_parent_decoded": "drives",
   "virtual_parent_target": "Drives",
-  "drives_add_prompt": "[A!] Drives\\ ",
+  "drives_add_prompt": "[A!] ",
+  "drives_add_header": "Drives\\",
   "intentional_substitutions": ["drive and UNC share roots use virtual ..", "slash opens Drives", "cross-volume cp remains absolute", "virtual records are navigation-only"]
 }

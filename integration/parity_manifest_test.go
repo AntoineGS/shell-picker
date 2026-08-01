@@ -168,7 +168,7 @@ func TestParityManifestCoverage(t *testing.T) {
 		"create.json":        "33a2e4d0f67637d2ab7d38b96861794e43ae56d66eaea3bc5d8938d6148df4d2",
 		"preview.json":       "fc8586501996c635152c07f3138794ec24398ec0a042bd63883e0ef010894921",
 		"zsh-adapter.json":   "a396d1dbfc358ad7defa890dadcc53b17765cdb996dc643c3d2daf5ad2c5c68c",
-		"windows-paths.json": "dcc60dfa9f10daae4e15032488df044e8cc1ef96faafff6f520769743added43",
+		"windows-paths.json": "3623d0dd988006eb0c18fa7f64a77047e93c42d36489d6f3e3d4ff14c0de30f4",
 	}
 	for name, wantHash := range wantCategoryGoldens {
 		raw, err := os.ReadFile(filepath.Join("testdata", "parity", "golden", name))

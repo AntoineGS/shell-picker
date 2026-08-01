@@ -174,10 +174,14 @@ func addErrorProposal(snapshot Snapshot) ProposedTransition {
 	state := cloneState(snapshot.state)
 	state.AddError = true
 	state.Prompt = modePrompt(protocol.ModeAdd, true)
+	effect := protocol.Effect{Prompt: state.Prompt, ErrorPrompt: true}
+	if state.Location.Kind == pathutil.KindDrives && filepath.VolumeName(string(state.Home.Path)) != "" {
+		effect.Header = pathutil.PromptDisplayHome(state.Location, state.Home)
+	}
 	return ProposedTransition{
 		BaseGeneration: snapshot.generation,
 		State:          state,
-		Effect:         protocol.Effect{Prompt: state.Prompt, ErrorPrompt: true},
+		Effect:         effect,
 	}
 }
 
