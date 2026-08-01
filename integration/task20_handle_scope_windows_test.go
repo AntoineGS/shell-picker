@@ -63,6 +63,9 @@ func (scope *task20HandleScope) RequireClosed(t *testing.T) {
 func (scope *task20HandleScope) requireClosed(ctx context.Context,
 	query func() (map[task20HandleIdentity]struct{}, error)) ([]task20HandleIdentity, error) {
 	remaining, err := task20WaitForHandleIdentities(ctx, scope.owned, query)
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		return remaining, err
+	}
 	remainingSet := make(map[task20HandleIdentity]struct{}, len(remaining))
 	for _, identity := range remaining {
 		remainingSet[identity] = struct{}{}
@@ -142,6 +145,22 @@ func TestWindowsTask20HandleScopeReportsPersistentIdentity(t *testing.T) {
 	}
 	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; !exists {
 		t.Fatal("persistent identity was unregistered")
+	}
+}
+
+func TestWindowsTask20HandleScopeRetainsEvidenceOnQueryError(t *testing.T) {
+	owned := []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}
+	seedTask20OwnedHandle(t, owned[0])
+	scope := task20HandleScope{owned: owned}
+	queryErr := errors.New("snapshot unavailable")
+	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]struct{}, error) {
+		return nil, queryErr
+	})
+	if !errors.Is(err, queryErr) || remaining != nil {
+		t.Fatalf("remaining=%v err=%v", remaining, err)
+	}
+	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; !exists {
+		t.Fatal("query error unregistered indeterminate identity")
 	}
 }
 
