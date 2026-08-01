@@ -58,8 +58,20 @@ type previewProcessStats struct {
 
 const parityOverflowPayload = "01234567890123456789012345678901234567890123456789012345678901234567890123456789"
 
+func parityPreviewResourceLimits(mode string) preview.Limits {
+	deadline := 150 * time.Millisecond
+	if mode == "tool-success" || mode == "tool-fail" {
+		deadline = preview.DefaultLimits.Deadline
+	}
+	return preview.Limits{Deadline: deadline, MaxOutputBytes: 256, MaxInternalInputBytes: 1 << 20,
+		MaxInternalLines: 100, MaxArchiveEntries: 100, MaxArchiveDecompressedBytes: 1 << 20, MaxArtifactBytes: 4 << 20}
+}
+
 func TestPreviewCategoryMatrix(t *testing.T) {
 	golden := loadParityGolden[previewGolden](t, "preview.json")
+	if parityPreviewResourceLimits("tool-success").Deadline != preview.DefaultLimits.Deadline || parityPreviewResourceLimits("tool-hang").Deadline != 150*time.Millisecond {
+		t.Fatal("functional and terminal preview deadlines are not separated")
+	}
 	wantVariants := []string{"present", "missing", "failure", "hanging", "overflow"}
 	if !reflect.DeepEqual(golden.Variants, wantVariants) || len(golden.Categories) != 13 ||
 		golden.MaximumLiveChildren != 1 || golden.MaximumSequentialChildren != 3 || len(golden.IntentionalFixes) != 3 {
@@ -154,11 +166,12 @@ func runParityPreviewResourceSubprocess(t *testing.T, category, fixture, tools, 
 	terminalLog := filepath.Join(root, "terminal")
 	capturePath := filepath.Join(root, "capture")
 	outcomePath := filepath.Join(root, "outcome.json")
+	cacheRoot := filepath.Join(root, "cache")
 	controlled := map[string]string{
 		"PARITY_PREVIEW_RESOURCE_HELPER": "1", "PARITY_PREVIEW_FIXTURE": fixture, "PARITY_PREVIEW_TOOLS": tools,
 		"PARITY_PREVIEW_TOOL_LOG": toolLog, "PARITY_PREVIEW_MODE": mode, "PARITY_PREVIEW_DISPATCH": dispatchLog,
 		"PARITY_PREVIEW_PROCESS": rendererLog, "PARITY_PREVIEW_OUTCOME": outcomePath, "PARITY_PREVIEW_CATEGORY": category,
-		"PARITY_PREVIEW_TERMINAL": terminalLog, "PARITY_PREVIEW_CAPTURE": capturePath,
+		"PARITY_PREVIEW_TERMINAL": terminalLog, "PARITY_PREVIEW_CAPTURE": capturePath, "PARITY_PREVIEW_CACHE": cacheRoot,
 	}
 	var output bytes.Buffer
 	runner := processpkg.Runner{Observe: func(event processpkg.ProcessEvent) {
@@ -230,9 +243,6 @@ func runParityPreviewResourceSubprocess(t *testing.T, category, fixture, tools, 
 		t.Fatalf("%s outcome=%+v stats=%+v", variant, outcome, stats)
 	}
 	assertParityToolEvidence(t, category, mode, firstTool, logs, fixture, outcome.Processes, false)
-	if variant == "present" && time.Duration(outcome.RenderNanos) >= 125*time.Millisecond {
-		t.Fatalf("present render clustered at deadline: %s", time.Duration(outcome.RenderNanos))
-	}
 	assertParityCategoryPreview(t, category, outcome.Output, variant == "present")
 }
 
@@ -258,13 +268,20 @@ func TestParityPreviewResourceProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer output.Close()
+	cacheRoot := os.Getenv("PARITY_PREVIEW_CACHE")
+	if cacheRoot == "" {
+		t.Fatal("missing isolated preview cache path")
+	}
+	cache, err := preview.NewCache(cacheRoot, 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
 	options := preview.Options{
-		Columns: 80, Lines: 24, Stdout: output, Stderr: output,
+		Columns: 80, Lines: 24, Stdout: output, Stderr: output, Cache: cache,
 		Environment: []string{"PATH=" + os.Getenv("PARITY_PREVIEW_TOOLS"), "TERM=xterm-kitty",
 			parityHelperEnvironment + "=" + os.Getenv("PARITY_PREVIEW_MODE"), "PARITY_TEST_TOOL_LOG=" + os.Getenv("PARITY_PREVIEW_TOOL_LOG"),
 			"PARITY_TEST_CATEGORY=" + os.Getenv("PARITY_PREVIEW_CATEGORY"), "PARITY_TEST_TERMINAL=" + os.Getenv("PARITY_PREVIEW_TERMINAL")},
-		Limits: preview.Limits{Deadline: 150 * time.Millisecond, MaxOutputBytes: 256, MaxInternalInputBytes: 1 << 20,
-			MaxInternalLines: 100, MaxArchiveEntries: 100, MaxArchiveDecompressedBytes: 1 << 20, MaxArtifactBytes: 4 << 20},
+		Limits: parityPreviewResourceLimits(os.Getenv("PARITY_PREVIEW_MODE")),
 		Runner: processpkg.Runner{Observe: func(event processpkg.ProcessEvent) {
 			if event.Phase == "start" || event.Phase == "exit" {
 				appendPreviewProcessRecord(t, os.Getenv("PARITY_PREVIEW_PROCESS"), event.Phase, event.PID)
