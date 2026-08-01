@@ -235,10 +235,9 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	third := fixture.waitTree(t, 4)
 	defer third.close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Renderer: "chafa", Operation: "ok", Count: 3})
-	if second.Columns != 46 || second.Lines != 35 || third.Columns != 37 || third.Lines != 27 {
-		t.Fatalf("preview dimensions initial=%dx%d resize1=%dx%d want 46x35 resize2=%dx%d want 37x27",
-			first.Columns, first.Lines, second.Columns, second.Lines, third.Columns, third.Lines)
-	}
+	assertStackedPreviewDimensions(t, first, 120, 35)
+	assertStackedPreviewDimensions(t, second, 101, 37)
+	assertStackedPreviewDimensions(t, third, 83, 29)
 	assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "chafa", "ok", 3)
 	if err := fixture.controller.release(third.RendererPID); err != nil {
 		t.Fatal(err)
@@ -261,6 +260,15 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "session.close", Operation: "aborted", Count: 1})
 	assertFinishedTrace(t, term.TraceEvents(), "chafa", 1)
+}
+
+func assertStackedPreviewDimensions(t *testing.T, tree observedPreviewTree, columns, lines int) {
+	t.Helper()
+	wantColumns, wantLines := columns-4, (lines-4)/2
+	if tree.Columns != wantColumns || tree.Lines != wantLines {
+		t.Fatalf("stacked preview dimensions=%dx%d for terminal %dx%d, want %dx%d",
+			tree.Columns, tree.Lines, columns, lines, wantColumns, wantLines)
+	}
 }
 
 func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {

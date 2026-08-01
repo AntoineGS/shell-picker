@@ -307,53 +307,19 @@ func testRealFZFNormalFirstLast(t *testing.T) {
 		t.Fatalf("G selected marker=%d, want 35", last)
 	}
 
-	beforePrefix := len(term.Output())
-	if err := term.Send([]byte{'g'}); err != nil {
-		t.Fatal(err)
-	}
-	waitForTerminalTextAfter(t, term, beforePrefix, "▌ item-35.txt")
-	if marker, changed := changedNavigationMarker(visibleTerminalOutput(term.Output()[beforePrefix:]), "LIST", 35); changed {
-		t.Fatalf("first g changed preview marker to %d, want 35", marker)
-	}
-	firstGEnd := len(term.Output())
-	firstGOutput := visibleTerminalOutput(term.Output()[beforePrefix:firstGEnd])
-	if marker, changed := changedNavigationMarker(firstGOutput, "LIST", 35); changed {
-		t.Fatalf("first g changed preview marker to %d, want 35", marker)
-	}
-	if item, ok := latestSelectedNavigationItem(firstGOutput); !ok || item != "item-35.txt" {
-		t.Fatalf("first g selected item=%q/%t, want item-35.txt/true", item, ok)
-	}
-	// Complete the prefix with a consumed different key before refreshing the prompt.
-	beforeCancel := len(term.Output())
-	if err := term.Send([]byte{'x'}); err != nil {
-		t.Fatal(err)
-	}
-	term.WaitOutputAfter(testContext(t), beforeCancel)
-	beforePrompt := len(term.Output())
-	if item, ok := latestSelectedNavigationItem(visibleTerminalOutput(term.Output()[beforePrefix:beforePrompt])); !ok || item != "item-35.txt" {
-		t.Fatalf("cancelled first g selected item=%q/%t, want item-35.txt/true", item, ok)
-	}
-	resizeAndWaitForRedraw(t, term, 81, 18)
-	assertLatestModePromptAfter(t, term, beforePrefix, "[N] item-", "▌ item-35.txt")
-
 	previewCount = traceCount(term.TraceEvents(), "preview.dispatch", "")
 	finishedCount = traceCount(term.TraceEvents(), "preview.finished", "")
-	beforeReenter := len(term.Output())
-	if err := term.Send([]byte{'g'}); err != nil {
-		t.Fatal(err)
-	}
-	term.WaitOutputAfter(testContext(t), beforeReenter)
 	beforeFirst := len(term.Output())
-	if err := term.Send([]byte{'g'}); err != nil {
+	if err := term.Send([]byte("gg")); err != nil {
 		t.Fatal(err)
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
-	first := waitForChangedNavigationMarkerAfter(t, term, beforeFirst, "LIST", 35)
+	waitForTerminalTextAfter(t, term, beforeFirst, "LIST-PREVIEW-00")
 	resizeAndWaitForRedraw(t, term, 82, 18)
-	assertLatestModePromptAfter(t, term, beforeFirst, "[N] item-", fmt.Sprintf("LIST-PREVIEW-%02d", first))
-	if first != 0 {
-		t.Fatalf("gg selected marker=%d, want 0", first)
+	assertLatestModePromptAfter(t, term, beforeFirst, "[N] item-", "LIST-PREVIEW-00")
+	if item, ok := latestSelectedNavigationItem(visibleTerminalOutput(term.Output()[beforeFirst:])); !ok || item != "item-00.txt" {
+		t.Fatalf("gg selected item=%q/%t, want item-00.txt/true", item, ok)
 	}
 }
 

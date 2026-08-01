@@ -190,6 +190,7 @@ func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 3})
 	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
+	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("visiblx")); err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +200,7 @@ func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
+	waitForTerminalTextAfter(t, term, beforeQuery, "1/6")
 	if err := term.Send(keyEnter); err != nil {
 		t.Fatal(err)
 	}
@@ -285,9 +287,11 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 3})
 	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
+	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("visible")); err != nil {
 		t.Fatal(err)
 	}
+	waitForTerminalTextAfter(t, term, beforeQuery, "1/4")
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
@@ -322,24 +326,38 @@ func TestRealFZFCPAcceptanceOrder(t *testing.T) {
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	term.AssertProcessTopology(t)
+	beforeNormal := len(term.Output())
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	for count := 2; count <= 4; count++ {
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 2})
+	waitForTerminalTextAfter(t, term, beforeNormal, "[N] ")
+	for index, name := range []string{"..", "alpha", "visible"} {
+		count := index + 2
+		beforeDown := len(term.Output())
 		if err := term.Send(keyDown); err != nil {
 			t.Fatal(err)
 		}
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: count})
+		waitForTerminalTextAfter(t, term, beforeDown, "▌ "+name)
 	}
+	beforeFirstSelection := len(term.Output())
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
+	waitForTerminalTextAfter(t, term, beforeFirstSelection, "5/5 (1)")
+	beforeUp := len(term.Output())
 	if err := term.Send([]byte{0x1b, '[', 'A'}); err != nil {
 		t.Fatal(err)
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 5})
+	waitForTerminalTextAfter(t, term, beforeUp, "▌ alpha")
+	beforeSecondSelection := len(term.Output())
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
+	waitForTerminalTextAfter(t, term, beforeSecondSelection, "5/5 (2)")
 	if err := term.Send(keyEnter); err != nil {
 		t.Fatal(err)
 	}
