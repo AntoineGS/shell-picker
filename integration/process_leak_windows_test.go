@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"unsafe"
@@ -64,6 +65,7 @@ var task20NtQuerySystemInformation = windows.NewLazySystemDLL("ntdll.dll").NewPr
 const (
 	task20SystemExtendedHandleInformation = 64
 	task20StatusInfoLengthMismatch        = 0xc0000004
+	task20MaxHandleSnapshotSize           = uint32(256 << 20)
 )
 
 type task20SystemHandleTableEntry struct {
@@ -107,11 +109,10 @@ func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
 }
 
 func platformResourceDifference(baseline, current resourceSnapshot) string {
-	if current.handles != baseline.handles {
-		return fmt.Sprintf("handles baseline=%d current=%d", baseline.handles, current.handles)
-	}
-	if !reflect.DeepEqual(current.handleIdentities, baseline.handleIdentities) {
-		return fmt.Sprintf("exact handle identities baseline=%d current=%d", len(baseline.handleIdentities), len(current.handleIdentities))
+	if current.handles != baseline.handles || !reflect.DeepEqual(current.handleIdentities, baseline.handleIdentities) {
+		added, removed := task20HandleIdentityDifference(baseline.handleIdentities, current.handleIdentities)
+		return fmt.Sprintf("handles baseline=%d current=%d; %s", baseline.handles, current.handles,
+			formatTask20HandleIdentityDifference(added, removed))
 	}
 	if !reflect.DeepEqual(current.ownedHandles, baseline.ownedHandles) {
 		return fmt.Sprintf("Task20 owned handle registry baseline=%v current=%v", baseline.ownedHandles, current.ownedHandles)
@@ -144,17 +145,17 @@ func task20CurrentProcessHandleIdentities() (map[task20HandleIdentity]struct{}, 
 		return nil, err
 	}
 	size := uint32(1 << 20)
-	for attempts := 0; attempts < 8; attempts++ {
+	for {
 		buffer := make([]byte, size)
 		var needed uint32
 		status, _, _ := task20NtQuerySystemInformation.Call(task20SystemExtendedHandleInformation,
 			uintptr(unsafe.Pointer(&buffer[0])), uintptr(size), uintptr(unsafe.Pointer(&needed)))
 		if uint32(status) == task20StatusInfoLengthMismatch {
-			if needed > size {
-				size = needed
-			} else {
-				size *= 2
+			next, err := task20NextHandleSnapshotSize(size, needed)
+			if err != nil {
+				return nil, err
 			}
+			size = next
 			continue
 		}
 		if status != 0 {
@@ -177,7 +178,23 @@ func task20CurrentProcessHandleIdentities() (map[task20HandleIdentity]struct{}, 
 		}
 		return task20HandleIdentitiesForProcess(entries, pid), nil
 	}
-	return nil, errors.New("extended handle response kept growing")
+}
+
+func task20NextHandleSnapshotSize(size, needed uint32) (uint32, error) {
+	if size > task20MaxHandleSnapshotSize {
+		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
+	}
+	if needed > size {
+		if needed > task20MaxHandleSnapshotSize {
+			return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
+		}
+		return needed, nil
+	}
+	next := size * 2
+	if next <= size || next > task20MaxHandleSnapshotSize {
+		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
+	}
+	return next, nil
 }
 
 func task20HandleIdentitiesForProcess(entries []task20SystemHandleTableEntry, pid uintptr) map[task20HandleIdentity]struct{} {
@@ -190,12 +207,111 @@ func task20HandleIdentitiesForProcess(entries []task20SystemHandleTableEntry, pi
 	return identities
 }
 
+func task20HandleIdentityDifference(baseline, current map[task20HandleIdentity]struct{}) (added, removed []task20HandleIdentity) {
+	for identity := range current {
+		if _, existed := baseline[identity]; !existed {
+			added = append(added, identity)
+		}
+	}
+	for identity := range baseline {
+		if _, remains := current[identity]; !remains {
+			removed = append(removed, identity)
+		}
+	}
+	sort.Slice(added, func(i, j int) bool { return task20HandleIdentityLess(added[i], added[j]) })
+	sort.Slice(removed, func(i, j int) bool { return task20HandleIdentityLess(removed[i], removed[j]) })
+	return added, removed
+}
+
+func task20HandleIdentityLess(left, right task20HandleIdentity) bool {
+	if left.Value != right.Value {
+		return left.Value < right.Value
+	}
+	return left.Object < right.Object
+}
+
+func formatTask20HandleIdentityDifference(added, removed []task20HandleIdentity) string {
+	format := func(identities []task20HandleIdentity) string {
+		parts := make([]string, len(identities))
+		for index, identity := range identities {
+			parts[index] = fmt.Sprintf("value=%#x object=%#x", identity.Value, identity.Object)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
+	return fmt.Sprintf("added=%s removed=%s", format(added), format(removed))
+}
+
 func TestWindowsHandleIdentityIncludesObjectForReusedSlot(t *testing.T) {
 	const pid = 17
 	before := task20HandleIdentitiesForProcess([]task20SystemHandleTableEntry{{UniqueProcessID: pid, HandleValue: 0x40, Object: 0x1000}}, pid)
 	after := task20HandleIdentitiesForProcess([]task20SystemHandleTableEntry{{UniqueProcessID: pid, HandleValue: 0x40, Object: 0x2000}}, pid)
 	if reflect.DeepEqual(before, after) {
 		t.Fatal("same numeric handle slot with a different object compared equal")
+	}
+}
+
+func TestWindowsHandleSnapshotBufferGrowth(t *testing.T) {
+	const mib = uint32(1 << 20)
+	tests := []struct {
+		name         string
+		size, needed uint32
+		want         uint32
+		wantError    bool
+	}{
+		{name: "reported size", size: mib, needed: 3 * mib, want: 3 * mib},
+		{name: "reported size near maximum", size: 130 * mib, needed: 131 * mib, want: 131 * mib},
+		{name: "stale reported size", size: 3 * mib, needed: mib, want: 6 * mib},
+		{name: "stale growth exceeds maximum", size: 130 * mib, needed: 129 * mib, wantError: true},
+		{name: "reported size exceeds maximum", size: 130 * mib, needed: 257 * mib, wantError: true},
+		{name: "size overflow", size: ^uint32(0), needed: 0, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := task20NextHandleSnapshotSize(test.size, test.needed)
+			if (err != nil) != test.wantError || !test.wantError && got != test.want {
+				t.Fatalf("next size=%d err=%v; want size=%d error=%v", got, err, test.want, test.wantError)
+			}
+		})
+	}
+}
+
+func TestWindowsHandleSnapshotCanGrowPastFormerRetryCount(t *testing.T) {
+	size := uint32(1)
+	for range 9 {
+		var err error
+		size, err = task20NextHandleSnapshotSize(size, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if size != 1<<9 {
+		t.Fatalf("size after nine growths=%d want=%d", size, 1<<9)
+	}
+}
+
+func TestWindowsHandleIdentityDifferenceListsAddedAndRemoved(t *testing.T) {
+	baseline := map[task20HandleIdentity]struct{}{
+		{Value: 0x40, Object: 0x1000}: {},
+		{Value: 0x44, Object: 0x1400}: {},
+	}
+	current := map[task20HandleIdentity]struct{}{
+		{Value: 0x44, Object: 0x1400}: {},
+		{Value: 0x48, Object: 0x1800}: {},
+	}
+	added, removed := task20HandleIdentityDifference(baseline, current)
+	if !reflect.DeepEqual(added, []task20HandleIdentity{{Value: 0x48, Object: 0x1800}}) ||
+		!reflect.DeepEqual(removed, []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}) {
+		t.Fatalf("added=%v removed=%v", added, removed)
+	}
+	diff := formatTask20HandleIdentityDifference(added, removed)
+	if !strings.Contains(diff, "added=[value=0x48 object=0x1800]") ||
+		!strings.Contains(diff, "removed=[value=0x40 object=0x1000]") {
+		t.Fatalf("diff=%q", diff)
+	}
+	platformDiff := platformResourceDifference(resourceSnapshot{handleIdentities: baseline}, resourceSnapshot{handleIdentities: current})
+	if !strings.Contains(platformDiff, "added=[value=0x48 object=0x1800]") ||
+		!strings.Contains(platformDiff, "removed=[value=0x40 object=0x1000]") {
+		t.Fatalf("platform diff=%q", platformDiff)
 	}
 }
 

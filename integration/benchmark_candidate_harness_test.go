@@ -115,7 +115,7 @@ func measureDedicatedCandidateSample(t *testing.T, scenario dedicatedCandidateSc
 	if scenario.mode == "missing" {
 		path = filepath.Join(root, "missing")
 	} else if scenario.mode == "spawn-failure" {
-		path = root
+		path = newSpawnFailureExecutable(t)
 	}
 	runner := process.Runner{Observe: counts.observe}
 	newCache := func() (*candidate.ZoxideCache, error) {

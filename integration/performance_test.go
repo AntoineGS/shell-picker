@@ -32,7 +32,7 @@ func TestStablePerformanceGates(t *testing.T) {
 	t.Run("cached cp", func(t *testing.T) { testCandidateProcessBudget(t, "cached", protocol.PickerCP, 2, "not-run") })
 	t.Run("fresh cp", func(t *testing.T) { testCandidateProcessBudget(t, "fresh", protocol.PickerCP, 2, "not-run") })
 	t.Run("missing zoxide", func(t *testing.T) { testFailedZoxideBudget(t, filepath.Join(t.TempDir(), "missing"), "missing") })
-	t.Run("spawn failure", func(t *testing.T) { testFailedZoxideBudget(t, t.TempDir(), "process-error") })
+	t.Run("spawn failure", func(t *testing.T) { testFailedZoxideBudget(t, newSpawnFailureExecutable(t), "process-error") })
 	t.Run("fresh cancellation and independent sessions", testFreshConcurrencyPerformanceGates)
 	t.Run("owned cancellation resources", func(t *testing.T) { runTask20ResourceIterations(t, 1) })
 }
