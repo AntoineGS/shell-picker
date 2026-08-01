@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -33,10 +34,8 @@ func TestPreparedStreamsPumpCount(t *testing.T) {
 func TestWindowsStartFailureStagesCloseEverything(t *testing.T) {
 	for _, stage := range allWinStages() {
 		t.Run(stage.String(), func(t *testing.T) {
-			err, childPID, ownership := startWithInjectedFailure(stage)
-			if err == nil {
-				t.Fatal("injected stage succeeded")
-			}
+			err, childPID, ownership, fail := startWithInjectedFailure(stage)
+			ownership.assertFailure(t, stage, err, fail)
 			ownership.assertClosed(t)
 			if childPID != 0 {
 				assertProcessGoneWithin(t, childPID, 2*time.Second)
@@ -45,18 +44,149 @@ func TestWindowsStartFailureStagesCloseEverything(t *testing.T) {
 	}
 }
 
+func TestHandleOwnershipRejectsInvalidTransitions(t *testing.T) {
+	ownership := &testHandleOwnership{}
+	ownership.register(windows.Handle(0x40), "first")
+	ownership.close(windows.Handle(0x40), nil)
+	ownership.register(windows.Handle(0x40), "second")
+	ownership.close(windows.Handle(0x40), nil)
+	ownership.close(windows.Handle(0x40), nil)
+	ownership.close(windows.Handle(0x44), nil)
+	ownership.register(windows.Handle(0x48), "parent")
+	ownership.transfer(windows.Handle(0x48), "os.File")
+	ownership.transfer(windows.Handle(0x48), "os.File")
+	ownership.close(windows.Handle(0x48), nil)
+	if got, want := len(ownership.violations), 4; got != want {
+		t.Fatalf("invalid transitions=%d want=%d: %v", got, want, ownership.violations)
+	}
+}
+
 type testHandleOwnership struct {
-	created map[windows.Handle]string
-	closed  map[windows.Handle]struct{}
+	lifetimes  []testHandleLifetime
+	violations []error
+	injected   []winStage
+}
+
+type testHandleLifetime struct {
+	handle windows.Handle
+	phase  string
+	owner  string
+	state  testHandleState
+}
+
+type testHandleState uint8
+
+const (
+	testHandleOpen testHandleState = iota
+	testHandleTransferred
+	testHandleClosed
+)
+
+func (ownership *testHandleOwnership) register(handle windows.Handle, phase string) {
+	if handle == 0 {
+		ownership.violations = append(ownership.violations, fmt.Errorf("%s returned zero handle", phase))
+		return
+	}
+	if lifetime := ownership.latest(handle); lifetime != nil && lifetime.state != testHandleClosed {
+		ownership.violations = append(ownership.violations,
+			fmt.Errorf("%s reused live %s handle %#x", phase, lifetime.phase, handle))
+		return
+	}
+	ownership.lifetimes = append(ownership.lifetimes, testHandleLifetime{handle: handle, phase: phase})
+}
+
+func (ownership *testHandleOwnership) close(handle windows.Handle, closeErr error) {
+	lifetime := ownership.latest(handle)
+	if lifetime == nil {
+		ownership.violations = append(ownership.violations, fmt.Errorf("unknown close of handle %#x", handle))
+		return
+	}
+	switch lifetime.state {
+	case testHandleClosed:
+		ownership.violations = append(ownership.violations, fmt.Errorf("duplicate close of %s handle %#x", lifetime.phase, handle))
+	case testHandleTransferred:
+		ownership.violations = append(ownership.violations,
+			fmt.Errorf("close of transferred %s handle %#x owned by %s", lifetime.phase, handle, lifetime.owner))
+	case testHandleOpen:
+		if closeErr != nil {
+			ownership.violations = append(ownership.violations,
+				fmt.Errorf("close of %s handle %#x failed: %w", lifetime.phase, handle, closeErr))
+			return
+		}
+		lifetime.state = testHandleClosed
+	}
+}
+
+func (ownership *testHandleOwnership) transfer(handle windows.Handle, owner string) {
+	lifetime := ownership.latest(handle)
+	if lifetime == nil {
+		ownership.violations = append(ownership.violations, fmt.Errorf("unknown transfer of handle %#x to %s", handle, owner))
+		return
+	}
+	switch lifetime.state {
+	case testHandleClosed:
+		ownership.violations = append(ownership.violations,
+			fmt.Errorf("transfer of closed %s handle %#x to %s", lifetime.phase, handle, owner))
+	case testHandleTransferred:
+		ownership.violations = append(ownership.violations,
+			fmt.Errorf("duplicate transfer of %s handle %#x to %s", lifetime.phase, handle, owner))
+	case testHandleOpen:
+		lifetime.owner = owner
+		lifetime.state = testHandleTransferred
+	}
+}
+
+func (ownership *testHandleOwnership) markInjected(stage winStage) {
+	ownership.injected = append(ownership.injected, stage)
+}
+
+func (ownership *testHandleOwnership) latest(handle windows.Handle) *testHandleLifetime {
+	for index := len(ownership.lifetimes) - 1; index >= 0; index-- {
+		if ownership.lifetimes[index].handle == handle {
+			return &ownership.lifetimes[index]
+		}
+	}
+	return nil
+}
+
+func (ownership *testHandleOwnership) assertFailure(t *testing.T, stage winStage, err, fail error) {
+	t.Helper()
+	if len(ownership.injected) != 1 || ownership.injected[0] != stage {
+		t.Fatalf("stage %s injection calls=%v, want exactly one selected-stage call", stage, ownership.injected)
+	}
+	if !errors.Is(err, fail) {
+		t.Fatalf("stage %s error=%v, want errors.Is(error, %v)", stage, err, fail)
+	}
 }
 
 func (ownership *testHandleOwnership) assertClosed(t *testing.T) {
 	t.Helper()
-	for handle, phase := range ownership.created {
-		if _, ok := ownership.closed[handle]; !ok {
-			t.Errorf("%s handle %#x was not closed", phase, handle)
+	for _, violation := range ownership.violations {
+		t.Errorf("ownership transition: %v", violation)
+	}
+	for index := range ownership.lifetimes {
+		lifetime := &ownership.lifetimes[index]
+		switch lifetime.state {
+		case testHandleOpen:
+			t.Errorf("%s handle %#x remains owned", lifetime.phase, lifetime.handle)
+		case testHandleTransferred:
+			if err := assertWindowsHandleClosed(lifetime.handle); err != nil {
+				t.Errorf("%s handle %#x transferred to %s was not closed: %v", lifetime.phase, lifetime.handle, lifetime.owner, err)
+				continue
+			}
+			lifetime.state = testHandleClosed
 		}
 	}
+}
+
+// os.File.Close bypasses winCloseHandle, so transferred pipe ownership is probed after cleanup.
+func assertWindowsHandleClosed(handle windows.Handle) error {
+	if _, err := windows.GetFileType(handle); err == nil {
+		return errors.New("handle is still open")
+	} else if !errors.Is(err, windows.ERROR_INVALID_HANDLE) {
+		return fmt.Errorf("probe handle: %w", err)
+	}
+	return nil
 }
 
 type winStage uint8
@@ -85,16 +215,13 @@ func (s winStage) String() string {
 		"attribute-list", "update-handle-list", "create-process", "assign-job", "resume-thread"}[s]
 }
 
-func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership) {
-	fail := syscall.Errno(windows.ERROR_INVALID_FUNCTION)
+func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership, error) {
+	fail := error(syscall.Errno(windows.ERROR_INVALID_FUNCTION))
 	oldCreateFile, oldDuplicate, oldPipe, oldClose := winCreateFile, winDuplicateHandle, winCreatePipe, winCloseHandle
 	oldSetHandle, oldCreateJob, oldSetJob := winSetHandleInformation, winCreateJobObject, winSetInformationJobObject
 	oldAttributes, oldUpdate := winNewAttributeList, winUpdateHandleList
 	oldCreateProcess, oldAssign, oldResume := winCreateProcess, winAssignProcessToJobObject, winResumeThread
-	ownership := &testHandleOwnership{
-		created: make(map[windows.Handle]string),
-		closed:  make(map[windows.Handle]struct{}),
-	}
+	ownership := &testHandleOwnership{}
 	childPID := 0
 	defer func() {
 		winCreateFile, winDuplicateHandle, winCreatePipe, winCloseHandle = oldCreateFile, oldDuplicate, oldPipe, oldClose
@@ -104,16 +231,14 @@ func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership)
 	}()
 	winCloseHandle = func(handle windows.Handle) error {
 		err := oldClose(handle)
-		if err == nil {
-			ownership.closed[handle] = struct{}{}
-		}
+		ownership.close(handle, err)
 		return err
 	}
 	winCreateFile = func(name *uint16, access, share uint32, sa *windows.SecurityAttributes, disposition, flags uint32,
 		template windows.Handle) (windows.Handle, error) {
 		handle, err := oldCreateFile(name, access, share, sa, disposition, flags, template)
 		if err == nil {
-			ownership.created[handle] = "CreateFile"
+			ownership.register(handle, "CreateFile")
 		}
 		return handle, err
 	}
@@ -121,47 +246,29 @@ func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership)
 		desiredAccess uint32, inherit bool, options uint32) error {
 		err := oldDuplicate(sourceProcess, sourceHandle, targetProcess, target, desiredAccess, inherit, options)
 		if err == nil {
-			ownership.created[*target] = "DuplicateHandle"
+			ownership.register(*target, "DuplicateHandle")
 		}
 		return err
-	}
-	type pipeHandles struct {
-		read, write windows.Handle
-	}
-	var pendingPipe *pipeHandles
-	recordPipe := func(parent windows.Handle, err error) {
-		pipe := pendingPipe
-		pendingPipe = nil
-		if pipe == nil {
-			return
-		}
-		if err != nil {
-			ownership.created[pipe.read] = "CreatePipe read"
-			ownership.created[pipe.write] = "CreatePipe write"
-			return
-		}
-		child := pipe.read
-		if parent == child {
-			child = pipe.write
-		}
-		ownership.created[child] = "CreatePipe child"
 	}
 	winCreatePipe = func(read, write *windows.Handle, sa *windows.SecurityAttributes, size uint32) error {
 		err := oldPipe(read, write, sa, size)
 		if err == nil {
-			pendingPipe = &pipeHandles{read: *read, write: *write}
+			ownership.register(*read, "CreatePipe read")
+			ownership.register(*write, "CreatePipe write")
 		}
 		return err
 	}
 	winSetHandleInformation = func(handle windows.Handle, mask, flags uint32) error {
 		err := oldSetHandle(handle, mask, flags)
-		recordPipe(handle, err)
+		if err == nil {
+			ownership.transfer(handle, "os.File")
+		}
 		return err
 	}
 	winCreateJobObject = func(sa *windows.SecurityAttributes, name *uint16) (windows.Handle, error) {
 		handle, err := oldCreateJob(sa, name)
 		if err == nil {
-			ownership.created[handle] = "CreateJobObject"
+			ownership.register(handle, "CreateJobObject")
 		}
 		return handle, err
 	}
@@ -169,8 +276,8 @@ func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership)
 		flags uint32, environment, directory *uint16, startup *windows.StartupInfo, info *windows.ProcessInformation) error {
 		err := oldCreateProcess(app, command, processSA, threadSA, inherit, flags, environment, directory, startup, info)
 		if err == nil {
-			ownership.created[info.Process] = "CreateProcess process"
-			ownership.created[info.Thread] = "CreateProcess thread"
+			ownership.register(info.Process, "CreateProcess process")
+			ownership.register(info.Thread, "CreateProcess thread")
 			childPID = int(info.ProcessId)
 		}
 		return err
@@ -178,41 +285,65 @@ func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership)
 	switch stage {
 	case stageDevNull:
 		winCreateFile = func(*uint16, uint32, uint32, *windows.SecurityAttributes, uint32, uint32, windows.Handle) (windows.Handle, error) {
+			ownership.markInjected(stage)
 			return 0, fail
 		}
 	case stageDuplicate:
 		winDuplicateHandle = func(windows.Handle, windows.Handle, windows.Handle, *windows.Handle, uint32, bool, uint32) error {
+			ownership.markInjected(stage)
 			return fail
 		}
 	case stagePipe:
-		winCreatePipe = func(*windows.Handle, *windows.Handle, *windows.SecurityAttributes, uint32) error { return fail }
+		winCreatePipe = func(*windows.Handle, *windows.Handle, *windows.SecurityAttributes, uint32) error {
+			ownership.markInjected(stage)
+			return fail
+		}
 	case stagePipeInheritance:
 		winSetHandleInformation = func(handle windows.Handle, _ uint32, _ uint32) error {
-			recordPipe(handle, fail)
+			ownership.markInjected(stage)
 			return fail
 		}
 	case stageCreateJob:
-		winCreateJobObject = func(*windows.SecurityAttributes, *uint16) (windows.Handle, error) { return 0, fail }
+		winCreateJobObject = func(*windows.SecurityAttributes, *uint16) (windows.Handle, error) {
+			ownership.markInjected(stage)
+			return 0, fail
+		}
 	case stageConfigureJob:
-		winSetInformationJobObject = func(windows.Handle, uint32, uintptr, uint32) (int, error) { return 0, fail }
+		winSetInformationJobObject = func(windows.Handle, uint32, uintptr, uint32) (int, error) {
+			ownership.markInjected(stage)
+			return 0, fail
+		}
 	case stageAttributeList:
-		winNewAttributeList = func(uint32) (*windows.ProcThreadAttributeListContainer, error) { return nil, fail }
+		winNewAttributeList = func(uint32) (*windows.ProcThreadAttributeListContainer, error) {
+			ownership.markInjected(stage)
+			return nil, fail
+		}
 	case stageUpdateHandleList:
-		winUpdateHandleList = func(*windows.ProcThreadAttributeListContainer, []windows.Handle) error { return fail }
+		winUpdateHandleList = func(*windows.ProcThreadAttributeListContainer, []windows.Handle) error {
+			ownership.markInjected(stage)
+			return fail
+		}
 	case stageCreateProcess:
 		winCreateProcess = func(*uint16, *uint16, *windows.SecurityAttributes, *windows.SecurityAttributes, bool, uint32,
 			*uint16, *uint16, *windows.StartupInfo, *windows.ProcessInformation) error {
+			ownership.markInjected(stage)
 			return fail
 		}
 	case stageAssignJob:
-		winAssignProcessToJobObject = func(windows.Handle, windows.Handle) error { return fail }
+		winAssignProcessToJobObject = func(windows.Handle, windows.Handle) error {
+			ownership.markInjected(stage)
+			return fail
+		}
 	case stageResumeThread:
-		winResumeThread = func(windows.Handle) (uint32, error) { return 0, fail }
+		winResumeThread = func(windows.Handle) (uint32, error) {
+			ownership.markInjected(stage)
+			return 0, fail
+		}
 	}
 	spec := helperSpec("block")
 	spec.Stdin, spec.Stdout, spec.Stderr = bytes.NewReader(nil), nil, &bytes.Buffer{}
 	_, err := (Runner{}).Start(context.Background(), spec)
-	return err, childPID, ownership
+	return err, childPID, ownership, fail
 }
 
 func TestCleanupFailuresDoNotMaskStartFailure(t *testing.T) {
