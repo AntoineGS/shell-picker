@@ -33,16 +33,29 @@ func TestPreparedStreamsPumpCount(t *testing.T) {
 func TestWindowsStartFailureStagesCloseEverything(t *testing.T) {
 	for _, stage := range allWinStages() {
 		t.Run(stage.String(), func(t *testing.T) {
-			baseline := processHandleCount(t)
-			err, childPID := startWithInjectedFailure(stage)
+			err, childPID, ownership := startWithInjectedFailure(stage)
 			if err == nil {
 				t.Fatal("injected stage succeeded")
 			}
-			assertHandleCountReturns(t, baseline)
+			ownership.assertClosed(t)
 			if childPID != 0 {
 				assertProcessGoneWithin(t, childPID, 2*time.Second)
 			}
 		})
+	}
+}
+
+type testHandleOwnership struct {
+	created map[windows.Handle]string
+	closed  map[windows.Handle]struct{}
+}
+
+func (ownership *testHandleOwnership) assertClosed(t *testing.T) {
+	t.Helper()
+	for handle, phase := range ownership.created {
+		if _, ok := ownership.closed[handle]; !ok {
+			t.Errorf("%s handle %#x was not closed", phase, handle)
+		}
 	}
 }
 
@@ -72,23 +85,92 @@ func (s winStage) String() string {
 		"attribute-list", "update-handle-list", "create-process", "assign-job", "resume-thread"}[s]
 }
 
-func startWithInjectedFailure(stage winStage) (error, int) {
+func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership) {
 	fail := syscall.Errno(windows.ERROR_INVALID_FUNCTION)
-	oldCreateFile, oldDuplicate, oldPipe := winCreateFile, winDuplicateHandle, winCreatePipe
+	oldCreateFile, oldDuplicate, oldPipe, oldClose := winCreateFile, winDuplicateHandle, winCreatePipe, winCloseHandle
 	oldSetHandle, oldCreateJob, oldSetJob := winSetHandleInformation, winCreateJobObject, winSetInformationJobObject
 	oldAttributes, oldUpdate := winNewAttributeList, winUpdateHandleList
 	oldCreateProcess, oldAssign, oldResume := winCreateProcess, winAssignProcessToJobObject, winResumeThread
+	ownership := &testHandleOwnership{
+		created: make(map[windows.Handle]string),
+		closed:  make(map[windows.Handle]struct{}),
+	}
 	childPID := 0
 	defer func() {
-		winCreateFile, winDuplicateHandle, winCreatePipe = oldCreateFile, oldDuplicate, oldPipe
+		winCreateFile, winDuplicateHandle, winCreatePipe, winCloseHandle = oldCreateFile, oldDuplicate, oldPipe, oldClose
 		winSetHandleInformation, winCreateJobObject, winSetInformationJobObject = oldSetHandle, oldCreateJob, oldSetJob
 		winNewAttributeList, winUpdateHandleList = oldAttributes, oldUpdate
 		winCreateProcess, winAssignProcessToJobObject, winResumeThread = oldCreateProcess, oldAssign, oldResume
 	}()
+	winCloseHandle = func(handle windows.Handle) error {
+		err := oldClose(handle)
+		if err == nil {
+			ownership.closed[handle] = struct{}{}
+		}
+		return err
+	}
+	winCreateFile = func(name *uint16, access, share uint32, sa *windows.SecurityAttributes, disposition, flags uint32,
+		template windows.Handle) (windows.Handle, error) {
+		handle, err := oldCreateFile(name, access, share, sa, disposition, flags, template)
+		if err == nil {
+			ownership.created[handle] = "CreateFile"
+		}
+		return handle, err
+	}
+	winDuplicateHandle = func(sourceProcess, sourceHandle, targetProcess windows.Handle, target *windows.Handle,
+		desiredAccess uint32, inherit bool, options uint32) error {
+		err := oldDuplicate(sourceProcess, sourceHandle, targetProcess, target, desiredAccess, inherit, options)
+		if err == nil {
+			ownership.created[*target] = "DuplicateHandle"
+		}
+		return err
+	}
+	type pipeHandles struct {
+		read, write windows.Handle
+	}
+	var pendingPipe *pipeHandles
+	recordPipe := func(parent windows.Handle, err error) {
+		pipe := pendingPipe
+		pendingPipe = nil
+		if pipe == nil {
+			return
+		}
+		if err != nil {
+			ownership.created[pipe.read] = "CreatePipe read"
+			ownership.created[pipe.write] = "CreatePipe write"
+			return
+		}
+		child := pipe.read
+		if parent == child {
+			child = pipe.write
+		}
+		ownership.created[child] = "CreatePipe child"
+	}
+	winCreatePipe = func(read, write *windows.Handle, sa *windows.SecurityAttributes, size uint32) error {
+		err := oldPipe(read, write, sa, size)
+		if err == nil {
+			pendingPipe = &pipeHandles{read: *read, write: *write}
+		}
+		return err
+	}
+	winSetHandleInformation = func(handle windows.Handle, mask, flags uint32) error {
+		err := oldSetHandle(handle, mask, flags)
+		recordPipe(handle, err)
+		return err
+	}
+	winCreateJobObject = func(sa *windows.SecurityAttributes, name *uint16) (windows.Handle, error) {
+		handle, err := oldCreateJob(sa, name)
+		if err == nil {
+			ownership.created[handle] = "CreateJobObject"
+		}
+		return handle, err
+	}
 	winCreateProcess = func(app, command *uint16, processSA, threadSA *windows.SecurityAttributes, inherit bool,
 		flags uint32, environment, directory *uint16, startup *windows.StartupInfo, info *windows.ProcessInformation) error {
 		err := oldCreateProcess(app, command, processSA, threadSA, inherit, flags, environment, directory, startup, info)
 		if err == nil {
+			ownership.created[info.Process] = "CreateProcess process"
+			ownership.created[info.Thread] = "CreateProcess thread"
 			childPID = int(info.ProcessId)
 		}
 		return err
@@ -105,7 +187,10 @@ func startWithInjectedFailure(stage winStage) (error, int) {
 	case stagePipe:
 		winCreatePipe = func(*windows.Handle, *windows.Handle, *windows.SecurityAttributes, uint32) error { return fail }
 	case stagePipeInheritance:
-		winSetHandleInformation = func(windows.Handle, uint32, uint32) error { return fail }
+		winSetHandleInformation = func(handle windows.Handle, _ uint32, _ uint32) error {
+			recordPipe(handle, fail)
+			return fail
+		}
 	case stageCreateJob:
 		winCreateJobObject = func(*windows.SecurityAttributes, *uint16) (windows.Handle, error) { return 0, fail }
 	case stageConfigureJob:
@@ -127,7 +212,7 @@ func startWithInjectedFailure(stage winStage) (error, int) {
 	spec := helperSpec("block")
 	spec.Stdin, spec.Stdout, spec.Stderr = bytes.NewReader(nil), nil, &bytes.Buffer{}
 	_, err := (Runner{}).Start(context.Background(), spec)
-	return err, childPID
+	return err, childPID, ownership
 }
 
 func TestCleanupFailuresDoNotMaskStartFailure(t *testing.T) {
