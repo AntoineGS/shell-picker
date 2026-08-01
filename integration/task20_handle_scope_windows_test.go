@@ -60,6 +60,24 @@ func TestWindowsTask20ScopePolicyIsTypeExact(t *testing.T) {
 	}
 }
 
+func TestWindowsResourceGateExcludesRuntimeEventIdentity(t *testing.T) {
+	event := task20TestResource(0x41, 0x3000, "Event", task20HandleEvent)
+	socket := task20TestResource(0x40, 0x2000, "Socket", task20HandleSocket)
+	got, err := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{
+		event.Identity:  event,
+		socket.Identity: socket,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := got[event.Identity]; exists {
+		t.Fatalf("runtime event entered application handles: %v", got)
+	}
+	if resource, exists := got[socket.Identity]; !exists || resource != socket {
+		t.Fatalf("application socket=%v; want %v", resource, socket)
+	}
+}
+
 func TestWindowsRawHandleCountDoesNotChangeApplicationDifference(t *testing.T) {
 	resource := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x40, Object: 0x4000}, Type: "Process", Kind: task20HandleProcess}
 	application := map[task20HandleIdentity]task20ResourceIdentity{resource.Identity: resource}

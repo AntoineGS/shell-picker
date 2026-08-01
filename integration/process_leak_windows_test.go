@@ -71,14 +71,11 @@ func TestWindowsApplicationHandleDifferenceIncludesType(t *testing.T) {
 	}
 }
 
-func TestWindowsRuntimeHandlesDoNotEnterApplicationSnapshot(t *testing.T) {
-	event := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 1, Object: 2}, Type: "Event", Kind: task20HandleEvent}
-	got, err := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{event.Identity: event})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("application handles=%v", got)
+func TestWindowsResourceGateRejectsPersistentApplicationIdentity(t *testing.T) {
+	identity := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x40, Object: 0x2000}, Type: "Socket", Kind: task20HandleSocket}
+	diff := task20ClassifiedHandleDifference(nil, map[task20HandleIdentity]task20ResourceIdentity{identity.Identity: identity})
+	if !strings.Contains(diff, "type=Socket") {
+		t.Fatalf("difference=%q", diff)
 	}
 }
 
