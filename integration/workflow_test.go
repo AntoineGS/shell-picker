@@ -42,10 +42,12 @@ func TestCIWorkflowContract(t *testing.T) {
 	requireAll(t, text,
 		"actions/checkout@v5", "actions/setup-go@v6", "actions/upload-artifact@v4",
 		"go-version: 1.26.5", "ubuntu-24.04", "windows-2025", "go test -race", "if: ${{ always() }}",
-		"GOOS: linux", "GOOS: windows", "GOARCH: amd64", "GOARCH: arm64", "0.113.1", "adapters-windows",
+		"goos: linux", "goos: windows", "goarch: amd64", "goarch: arm64",
+		"GOOS: '${{ matrix.goos }}'", "GOARCH: '${{ matrix.goarch }}'", "0.113.1", "adapters-windows",
 		"TestNushellAdapter", "TestInstalledFZFCheckVersion", "needs.adapters-windows.result", "needs.fzf-version.result",
 		"golang.org/x/sys v0.47.0")
-	rejectAll(t, text, "continue-on-error: true", "--listen", "go get")
+	rejectAll(t, text, "continue-on-error: true", "--listen", "go get",
+		"GOOS: linux", "GOOS: windows", "GOARCH: amd64", "GOARCH: arm64")
 	requireAll(t, text, "go list -m all", "needs.cross-build.result")
 	requireAll(t, text, "SHELL_PICKER_REAL_FZF=", "TestModuleGraphExact")
 	requireAll(t, text, "Verify make build", "make build", "./bin/shell-picker version",

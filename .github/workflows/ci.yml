@@ -109,12 +109,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - {goos: linux, goarch: amd64, GOOS: linux, GOARCH: amd64, output: bin/shell-picker_linux_amd64, artifact: shell-picker-linux-amd64}
-          - {goos: linux, goarch: arm64, GOOS: linux, GOARCH: arm64, output: bin/shell-picker_linux_arm64, artifact: shell-picker-linux-arm64}
-          - {goos: windows, goarch: amd64, GOOS: windows, GOARCH: amd64, output: bin/shell-picker_windows_amd64.exe, artifact: shell-picker-windows-amd64}
-          - {goos: windows, goarch: arm64, GOOS: windows, GOARCH: arm64, output: bin/shell-picker_windows_arm64.exe, artifact: shell-picker-windows-arm64}
+          - {goos: linux, goarch: amd64, output: bin/shell-picker_linux_amd64, artifact: shell-picker-linux-amd64}
+          - {goos: linux, goarch: arm64, output: bin/shell-picker_linux_arm64, artifact: shell-picker-linux-arm64}
+          - {goos: windows, goarch: amd64, output: bin/shell-picker_windows_amd64.exe, artifact: shell-picker-windows-amd64}
+          - {goos: windows, goarch: arm64, output: bin/shell-picker_windows_arm64.exe, artifact: shell-picker-windows-arm64}
     runs-on: ubuntu-24.04
-    env: {GOOS: '${{ matrix.GOOS }}', GOARCH: '${{ matrix.GOARCH }}'}
+    env: {GOOS: '${{ matrix.goos }}', GOARCH: '${{ matrix.goarch }}'}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
