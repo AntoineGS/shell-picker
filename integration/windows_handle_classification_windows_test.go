@@ -3,12 +3,173 @@
 package integration
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"os"
 	"runtime"
 	"testing"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+func task20KindForObjectType(objectType string) (task20HandleKind, bool) {
+	switch objectType {
+	case "Process":
+		return task20HandleProcess, true
+	case "Job":
+		return task20HandleJob, true
+	case "Thread":
+		return task20HandleThread, true
+	case "Event":
+		return task20HandleEvent, true
+	case "Timer":
+		return task20HandleTimer, true
+	case "IoCompletion":
+		return task20HandleIOCompletion, true
+	case "WaitCompletionPacket":
+		return task20HandleWaitCompletion, true
+	default:
+		return task20HandleUnknown, false
+	}
+}
+
+func task20ClassifyHandle(handle windows.Handle, identity task20HandleIdentity) (task20ResourceIdentity, error) {
+	typeName, err := task20QueryObjectType(handle)
+	if err != nil {
+		return task20ResourceIdentity{}, fmt.Errorf("query handle %#x object type: %w", uintptr(handle), err)
+	}
+	if typeName == "File" {
+		if _, err := windows.Getsockname(handle); err == nil {
+			return task20ResourceIdentity{Identity: identity, Type: typeName, Kind: task20HandleSocket}, nil
+		} else if !errors.Is(err, windows.WSAENOTSOCK) {
+			return task20ResourceIdentity{}, fmt.Errorf("probe handle %#x as socket: %w", uintptr(handle), err)
+		}
+
+		fileType, err := windows.GetFileType(handle)
+		if err != nil {
+			return task20ResourceIdentity{}, fmt.Errorf("get handle %#x file type: %w", uintptr(handle), err)
+		}
+		switch fileType {
+		case windows.FILE_TYPE_PIPE:
+			return task20ResourceIdentity{Identity: identity, Type: typeName, Kind: task20HandlePipe}, nil
+		case windows.FILE_TYPE_DISK, windows.FILE_TYPE_CHAR:
+			return task20ResourceIdentity{Identity: identity, Type: typeName, Kind: task20HandleFile}, nil
+		default:
+			return task20ResourceIdentity{}, fmt.Errorf("handle %#x has unsupported file type %#x", uintptr(handle), fileType)
+		}
+	}
+
+	kind, ok := task20KindForObjectType(typeName)
+	if !ok {
+		return task20ResourceIdentity{}, fmt.Errorf("handle %#x has unsupported object type %q", uintptr(handle), typeName)
+	}
+	return task20ResourceIdentity{Identity: identity, Type: typeName, Kind: kind}, nil
+}
+
+func TestTask20KnownObjectTypePolicy(t *testing.T) {
+	cases := map[string]task20HandleKind{
+		"Process":              task20HandleProcess,
+		"Job":                  task20HandleJob,
+		"Thread":               task20HandleThread,
+		"Event":                task20HandleEvent,
+		"Timer":                task20HandleTimer,
+		"IoCompletion":         task20HandleIOCompletion,
+		"WaitCompletionPacket": task20HandleWaitCompletion,
+	}
+	for name, want := range cases {
+		got, ok := task20KindForObjectType(name)
+		if !ok || got != want {
+			t.Errorf("type %q kind=%v ok=%v want=%v", name, got, ok, want)
+		}
+	}
+}
+
+func TestTask20UnknownObjectTypeFailsClosed(t *testing.T) {
+	if _, ok := task20KindForObjectType("FutureRuntimeObject"); ok {
+		t.Fatal("unknown object type was classified")
+	}
+}
+
+func TestTask20RuntimeObjectKindsAreNotApplicationOwned(t *testing.T) {
+	for _, kind := range []task20HandleKind{
+		task20HandleThread,
+		task20HandleEvent,
+		task20HandleTimer,
+		task20HandleIOCompletion,
+		task20HandleWaitCompletion,
+	} {
+		if (task20ResourceIdentity{Kind: kind}).applicationOwned() {
+			t.Errorf("runtime kind=%v was classified as application-owned", kind)
+		}
+	}
+}
+
+func TestTask20NativeHandleClassification(t *testing.T) {
+	t.Run("File", func(t *testing.T) {
+		file, err := os.CreateTemp(t.TempDir(), "task20-file-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = file.Close() })
+		assertTask20NativeHandleClassification(t, windows.Handle(file.Fd()), "File", task20HandleFile)
+	})
+
+	t.Run("Pipe", func(t *testing.T) {
+		reader, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = reader.Close() })
+		t.Cleanup(func() { _ = writer.Close() })
+		assertTask20NativeHandleClassification(t, windows.Handle(reader.Fd()), "File", task20HandlePipe)
+		assertTask20NativeHandleClassification(t, windows.Handle(writer.Fd()), "File", task20HandlePipe)
+	})
+
+	t.Run("Socket", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = listener.Close() })
+		tcpListener, ok := listener.(*net.TCPListener)
+		if !ok {
+			t.Fatalf("listener type=%T; want *net.TCPListener", listener)
+		}
+		file, err := tcpListener.File()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = file.Close() })
+		assertTask20NativeHandleClassification(t, windows.Handle(file.Fd()), "File", task20HandleSocket)
+	})
+
+	t.Run("Process", func(t *testing.T) {
+		assertTask20NativeHandleClassification(t, windows.CurrentProcess(), "Process", task20HandleProcess)
+	})
+
+	t.Run("Job", func(t *testing.T) {
+		job, err := windows.CreateJobObject(nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = windows.CloseHandle(job) })
+		assertTask20NativeHandleClassification(t, job, "Job", task20HandleJob)
+	})
+}
+
+func assertTask20NativeHandleClassification(t *testing.T, handle windows.Handle, objectType string, kind task20HandleKind) {
+	t.Helper()
+	identity := task20HandleIdentity{Value: uintptr(handle)}
+	got, err := task20ClassifyHandle(handle, identity)
+	if err != nil {
+		t.Fatalf("classify handle %#x: %v", uintptr(handle), err)
+	}
+	if got.Identity != identity || got.Type != objectType || got.Kind != kind || !got.applicationOwned() {
+		t.Fatalf("classification=%+v; want identity=%+v type=%q kind=%v application-owned", got, identity, objectType, kind)
+	}
+}
 
 func TestTask20ObjectTypeQueryGrowsGeometrically(t *testing.T) {
 	var sizes []uint32

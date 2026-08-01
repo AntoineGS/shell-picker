@@ -70,6 +70,37 @@ const (
 	task20ObjectTypeInformation           = 2
 )
 
+type task20HandleKind uint8
+
+const (
+	task20HandleUnknown task20HandleKind = iota
+	task20HandleFile
+	task20HandlePipe
+	task20HandleSocket
+	task20HandleProcess
+	task20HandleJob
+	task20HandleThread
+	task20HandleEvent
+	task20HandleTimer
+	task20HandleIOCompletion
+	task20HandleWaitCompletion
+)
+
+type task20ResourceIdentity struct {
+	Identity task20HandleIdentity
+	Type     string
+	Kind     task20HandleKind
+}
+
+func (identity task20ResourceIdentity) applicationOwned() bool {
+	switch identity.Kind {
+	case task20HandleFile, task20HandlePipe, task20HandleSocket, task20HandleProcess, task20HandleJob:
+		return true
+	default:
+		return false
+	}
+}
+
 type task20UnicodeString struct {
 	Length        uint16
 	MaximumLength uint16
