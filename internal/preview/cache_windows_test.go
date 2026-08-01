@@ -181,3 +181,48 @@ func TestWindowsArtifactValidationFailureClosesOwnedDirectoryHandles(t *testing.
 		t.Fatalf("cache root remains held: %v", err)
 	}
 }
+
+func TestWindowsRejectedArtifactCleanupReleasesHandlesAfterSharingViolation(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	attacker := filepath.Join(t.TempDir(), "attacker-link")
+	var blocker windows.Handle
+	oldHook := cacheArtifactCreated
+	cacheArtifactCreated = func(path string) {
+		marker := filepath.Join(filepath.Dir(path), stageMarkerName)
+		pointer, err := windows.UTF16PtrFromString(marker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocker, err = windows.CreateFile(pointer, windows.GENERIC_READ, windows.FILE_SHARE_READ, nil,
+			windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(path, attacker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		cacheArtifactCreated = oldHook
+		if blocker != 0 {
+			_ = windows.CloseHandle(blocker)
+		}
+	})
+	artifact, err := newConverterArtifact(cache, ".jpg")
+	if artifact != nil || !errors.Is(err, ErrUnsafeCache) {
+		t.Fatalf("artifact=%v err=%v", artifact, err)
+	}
+	if blocker == 0 {
+		t.Fatal("sharing-violation blocker was not installed")
+	}
+	if err := windows.CloseHandle(blocker); err != nil {
+		t.Fatal(err)
+	}
+	blocker = 0
+	if _, err := os.ReadFile(attacker); err != nil {
+		t.Fatalf("attacker link changed: %v", err)
+	}
+	if err := os.RemoveAll(cache.root); err != nil {
+		t.Fatalf("cache root remains held after rejected cleanup: %v", err)
+	}
+}

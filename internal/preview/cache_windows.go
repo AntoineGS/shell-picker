@@ -258,7 +258,9 @@ func newConverterArtifact(cache *Cache, suffix string) (*converterArtifact, erro
 	}
 	if err != nil {
 		_ = windows.CloseHandle(file)
-		_ = artifact.Cleanup()
+		if !artifact.Cleanup() {
+			artifact.Abandon()
+		}
 		return nil, err
 	}
 	_ = windows.CloseHandle(file)

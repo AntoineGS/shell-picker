@@ -129,12 +129,7 @@ func (artifact *converterArtifact) Abandon() {
 	if artifact.complete {
 		return
 	}
-	if artifact.held != 0 {
-		_ = windows.CloseHandle(artifact.held)
-		artifact.held = 0
-	}
-	_ = windows.CloseHandle(artifact.directory)
-	_ = windows.CloseHandle(artifact.root)
+	artifact.closeOwnedHandles()
 	artifact.complete = true
 }
 
