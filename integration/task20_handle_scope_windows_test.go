@@ -30,6 +30,24 @@ func task20ApplicationHandles(classified map[task20HandleIdentity]task20Resource
 	return application, nil
 }
 
+func TestWindowsResourceGateReportsPersistentApplicationIdentityAfterFiltering(t *testing.T) {
+	event := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x41, Object: 0x3000}, Type: "Event", Kind: task20HandleEvent}
+	socket := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x40, Object: 0x2000}, Type: "Socket", Kind: task20HandleSocket}
+	classified := map[task20HandleIdentity]task20ResourceIdentity{
+		event.Identity:  event,
+		socket.Identity: socket,
+	}
+	application, err := task20ApplicationHandles(classified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff := resourceDifference(resourceSnapshot{}, resourceSnapshot{applicationHandles: application})
+	want := "platform=handles baseline=0 current=0; added=[type=Socket value=0x40 object=0x2000] removed=[]"
+	if diff != want {
+		t.Fatalf("difference=%q want=%q", diff, want)
+	}
+}
+
 func TestWindowsUnknownApplicationHandleKindFailsFiltering(t *testing.T) {
 	unknown := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x30, Object: 0x3000}, Type: "Future", Kind: task20HandleKind(255)}
 	got, err := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{unknown.Identity: unknown})
@@ -57,24 +75,6 @@ func TestWindowsTask20ScopePolicyIsTypeExact(t *testing.T) {
 		if got := task20ScopeTracks(test.phase, test.kind); got != test.want {
 			t.Errorf("phase=%s kind=%v got=%v want=%v", test.phase, test.kind, got, test.want)
 		}
-	}
-}
-
-func TestWindowsResourceGateExcludesRuntimeEventIdentity(t *testing.T) {
-	event := task20TestResource(0x41, 0x3000, "Event", task20HandleEvent)
-	socket := task20TestResource(0x40, 0x2000, "Socket", task20HandleSocket)
-	got, err := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{
-		event.Identity:  event,
-		socket.Identity: socket,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, exists := got[event.Identity]; exists {
-		t.Fatalf("runtime event entered application handles: %v", got)
-	}
-	if resource, exists := got[socket.Identity]; !exists || resource != socket {
-		t.Fatalf("application socket=%v; want %v", resource, socket)
 	}
 }
 

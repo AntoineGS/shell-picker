@@ -71,14 +71,6 @@ func TestWindowsApplicationHandleDifferenceIncludesType(t *testing.T) {
 	}
 }
 
-func TestWindowsResourceGateRejectsPersistentApplicationIdentity(t *testing.T) {
-	identity := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x40, Object: 0x2000}, Type: "Socket", Kind: task20HandleSocket}
-	diff := task20ClassifiedHandleDifference(nil, map[task20HandleIdentity]task20ResourceIdentity{identity.Identity: identity})
-	if !strings.Contains(diff, "type=Socket") {
-		t.Fatalf("difference=%q", diff)
-	}
-}
-
 var task20GetProcessHandleCount = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessHandleCount")
 var task20NtQuerySystemInformation = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQuerySystemInformation")
 var task20NtQueryObject = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject")
