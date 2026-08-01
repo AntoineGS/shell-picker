@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -35,19 +36,33 @@ func task20KindForObjectType(objectType string) (task20HandleKind, bool) {
 	}
 }
 
+type task20HandleClassificationAPI struct {
+	queryObjectType func(windows.Handle) (string, error)
+	getsockname     func(windows.Handle) (windows.Sockaddr, error)
+	getFileType     func(windows.Handle) (uint32, error)
+}
+
 func task20ClassifyHandle(handle windows.Handle, identity task20HandleIdentity) (task20ResourceIdentity, error) {
-	typeName, err := task20QueryObjectType(handle)
+	return task20ClassifyHandleWith(handle, identity, task20HandleClassificationAPI{
+		queryObjectType: task20QueryObjectType,
+		getsockname:     windows.Getsockname,
+		getFileType:     windows.GetFileType,
+	})
+}
+
+func task20ClassifyHandleWith(handle windows.Handle, identity task20HandleIdentity, api task20HandleClassificationAPI) (task20ResourceIdentity, error) {
+	typeName, err := api.queryObjectType(handle)
 	if err != nil {
 		return task20ResourceIdentity{}, fmt.Errorf("query handle %#x object type: %w", uintptr(handle), err)
 	}
 	if typeName == "File" {
-		if _, err := windows.Getsockname(handle); err == nil {
+		if _, err := api.getsockname(handle); err == nil {
 			return task20ResourceIdentity{Identity: identity, Type: typeName, Kind: task20HandleSocket}, nil
 		} else if !errors.Is(err, windows.WSAENOTSOCK) {
 			return task20ResourceIdentity{}, fmt.Errorf("probe handle %#x as socket: %w", uintptr(handle), err)
 		}
 
-		fileType, err := windows.GetFileType(handle)
+		fileType, err := api.getFileType(handle)
 		if err != nil {
 			return task20ResourceIdentity{}, fmt.Errorf("get handle %#x file type: %w", uintptr(handle), err)
 		}
@@ -100,9 +115,110 @@ func TestTask20RuntimeObjectKindsAreNotApplicationOwned(t *testing.T) {
 		task20HandleIOCompletion,
 		task20HandleWaitCompletion,
 	} {
-		if (task20ResourceIdentity{Kind: kind}).applicationOwned() {
+		owned, err := (task20ResourceIdentity{Kind: kind}).applicationOwned()
+		if err != nil || owned {
 			t.Errorf("runtime kind=%v was classified as application-owned", kind)
 		}
+	}
+}
+
+func TestTask20UnknownHandleKindsFailClosed(t *testing.T) {
+	for _, kind := range []task20HandleKind{task20HandleUnknown, task20HandleKind(255)} {
+		owned, err := (task20ResourceIdentity{Kind: kind}).applicationOwned()
+		if err == nil || owned {
+			t.Errorf("kind=%v owned=%v err=%v; want an ownership error", kind, owned, err)
+		}
+	}
+}
+
+func TestTask20ClassifyHandleRejectsUnknownObjectType(t *testing.T) {
+	assertTask20InjectedClassificationError(t, task20HandleClassificationAPI{
+		queryObjectType: func(windows.Handle) (string, error) {
+			return "FutureRuntimeObject", nil
+		},
+		getsockname: func(windows.Handle) (windows.Sockaddr, error) {
+			t.Fatal("socket probe ran for an unknown object type")
+			return nil, nil
+		},
+		getFileType: func(windows.Handle) (uint32, error) {
+			t.Fatal("file type probe ran for an unknown object type")
+			return 0, nil
+		},
+	}, nil, `unsupported object type "FutureRuntimeObject"`)
+}
+
+func TestTask20ClassifyHandleRejectsObjectQueryError(t *testing.T) {
+	wantErr := errors.New("object query failed")
+	assertTask20InjectedClassificationError(t, task20HandleClassificationAPI{
+		queryObjectType: func(windows.Handle) (string, error) {
+			return "", wantErr
+		},
+	}, wantErr, "")
+}
+
+func TestTask20ClassifyHandleRejectsUnexpectedSocketError(t *testing.T) {
+	wantErr := errors.New("socket probe failed")
+	fileTypeCalled := false
+	assertTask20InjectedClassificationError(t, task20HandleClassificationAPI{
+		queryObjectType: func(windows.Handle) (string, error) {
+			return "File", nil
+		},
+		getsockname: func(windows.Handle) (windows.Sockaddr, error) {
+			return nil, wantErr
+		},
+		getFileType: func(windows.Handle) (uint32, error) {
+			fileTypeCalled = true
+			return windows.FILE_TYPE_PIPE, nil
+		},
+	}, wantErr, "")
+	if fileTypeCalled {
+		t.Fatal("file type probe ran after an unexpected socket error")
+	}
+}
+
+func TestTask20ClassifyHandleRejectsFileTypeError(t *testing.T) {
+	wantErr := errors.New("file type query failed")
+	assertTask20InjectedClassificationError(t, task20HandleClassificationAPI{
+		queryObjectType: func(windows.Handle) (string, error) {
+			return "File", nil
+		},
+		getsockname: func(windows.Handle) (windows.Sockaddr, error) {
+			return nil, windows.WSAENOTSOCK
+		},
+		getFileType: func(windows.Handle) (uint32, error) {
+			return 0, wantErr
+		},
+	}, wantErr, "")
+}
+
+func TestTask20ClassifyHandleRejectsUnsupportedFileType(t *testing.T) {
+	assertTask20InjectedClassificationError(t, task20HandleClassificationAPI{
+		queryObjectType: func(windows.Handle) (string, error) {
+			return "File", nil
+		},
+		getsockname: func(windows.Handle) (windows.Sockaddr, error) {
+			return nil, windows.WSAENOTSOCK
+		},
+		getFileType: func(windows.Handle) (uint32, error) {
+			return windows.FILE_TYPE_REMOTE, nil
+		},
+	}, nil, "unsupported file type")
+}
+
+func assertTask20InjectedClassificationError(t *testing.T, api task20HandleClassificationAPI, wantErr error, wantText string) {
+	t.Helper()
+	got, err := task20ClassifyHandleWith(windows.Handle(0x1234), task20HandleIdentity{Value: 1, Object: 2}, api)
+	if err == nil {
+		t.Fatal("classification succeeded")
+	}
+	if wantErr != nil && !errors.Is(err, wantErr) {
+		t.Fatalf("error=%v; want wrapped %v", err, wantErr)
+	}
+	if wantText != "" && !strings.Contains(err.Error(), wantText) {
+		t.Fatalf("error=%q; want substring %q", err, wantText)
+	}
+	if got != (task20ResourceIdentity{}) {
+		t.Fatalf("classification=%+v on error; want zero identity", got)
 	}
 }
 
@@ -113,7 +229,8 @@ func TestTask20NativeHandleClassification(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = file.Close() })
-		assertTask20NativeHandleClassification(t, windows.Handle(file.Fd()), "File", task20HandleFile)
+		handle := windows.Handle(file.Fd())
+		assertTask20NativeHandleClassification(t, handle, task20NativeHandleIdentity(t, handle), "File", task20HandleFile)
 	})
 
 	t.Run("Pipe", func(t *testing.T) {
@@ -123,8 +240,10 @@ func TestTask20NativeHandleClassification(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = reader.Close() })
 		t.Cleanup(func() { _ = writer.Close() })
-		assertTask20NativeHandleClassification(t, windows.Handle(reader.Fd()), "File", task20HandlePipe)
-		assertTask20NativeHandleClassification(t, windows.Handle(writer.Fd()), "File", task20HandlePipe)
+		readerHandle := windows.Handle(reader.Fd())
+		writerHandle := windows.Handle(writer.Fd())
+		assertTask20NativeHandleClassification(t, readerHandle, task20NativeHandleIdentity(t, readerHandle), "File", task20HandlePipe)
+		assertTask20NativeHandleClassification(t, writerHandle, task20NativeHandleIdentity(t, writerHandle), "File", task20HandlePipe)
 	})
 
 	t.Run("Socket", func(t *testing.T) {
@@ -142,11 +261,24 @@ func TestTask20NativeHandleClassification(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = file.Close() })
-		assertTask20NativeHandleClassification(t, windows.Handle(file.Fd()), "File", task20HandleSocket)
+		handle := windows.Handle(file.Fd())
+		assertTask20NativeHandleClassification(t, handle, task20NativeHandleIdentity(t, handle), "File", task20HandleSocket)
 	})
 
 	t.Run("Process", func(t *testing.T) {
-		assertTask20NativeHandleClassification(t, windows.CurrentProcess(), "Process", task20HandleProcess)
+		handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, windows.GetCurrentProcessId())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if handle == 0 || handle == windows.CurrentProcess() {
+			t.Fatalf("OpenProcess returned pseudohandle or zero: %#x", uintptr(handle))
+		}
+		t.Cleanup(func() {
+			if err := windows.CloseHandle(handle); err != nil {
+				t.Errorf("close process handle %#x: %v", uintptr(handle), err)
+			}
+		})
+		assertTask20NativeHandleClassification(t, handle, task20NativeHandleIdentity(t, handle), "Process", task20HandleProcess)
 	})
 
 	t.Run("Job", func(t *testing.T) {
@@ -154,19 +286,48 @@ func TestTask20NativeHandleClassification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = windows.CloseHandle(job) })
-		assertTask20NativeHandleClassification(t, job, "Job", task20HandleJob)
+		t.Cleanup(func() {
+			if err := windows.CloseHandle(job); err != nil {
+				t.Errorf("close job handle %#x: %v", uintptr(job), err)
+			}
+		})
+		assertTask20NativeHandleClassification(t, job, task20NativeHandleIdentity(t, job), "Job", task20HandleJob)
 	})
 }
 
-func assertTask20NativeHandleClassification(t *testing.T, handle windows.Handle, objectType string, kind task20HandleKind) {
+func task20NativeHandleIdentity(t *testing.T, handle windows.Handle) task20HandleIdentity {
 	t.Helper()
-	identity := task20HandleIdentity{Value: uintptr(handle)}
+	identities, err := task20CurrentProcessHandleIdentities()
+	if err != nil {
+		t.Fatalf("snapshot native handle %#x identity: %v", uintptr(handle), err)
+	}
+	for identity := range identities {
+		if identity.Value != uintptr(handle) {
+			continue
+		}
+		if identity.Object == 0 {
+			t.Fatalf("native handle %#x has zero object identity", uintptr(handle))
+		}
+		return identity
+	}
+	t.Fatalf("native handle %#x was absent from current-process handle snapshot", uintptr(handle))
+	return task20HandleIdentity{}
+}
+
+func assertTask20NativeHandleClassification(t *testing.T, handle windows.Handle, identity task20HandleIdentity, objectType string, kind task20HandleKind) {
+	t.Helper()
+	if identity.Value == 0 || identity.Object == 0 {
+		t.Fatalf("fixture identity=%+v; want nonzero handle and object", identity)
+	}
 	got, err := task20ClassifyHandle(handle, identity)
 	if err != nil {
 		t.Fatalf("classify handle %#x: %v", uintptr(handle), err)
 	}
-	if got.Identity != identity || got.Type != objectType || got.Kind != kind || !got.applicationOwned() {
+	owned, err := got.applicationOwned()
+	if err != nil {
+		t.Fatalf("application-owned policy for classification=%+v: %v", got, err)
+	}
+	if got.Identity != identity || got.Type != objectType || got.Kind != kind || !owned {
 		t.Fatalf("classification=%+v; want identity=%+v type=%q kind=%v application-owned", got, identity, objectType, kind)
 	}
 }

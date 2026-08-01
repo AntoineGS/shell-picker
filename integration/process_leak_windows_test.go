@@ -92,12 +92,14 @@ type task20ResourceIdentity struct {
 	Kind     task20HandleKind
 }
 
-func (identity task20ResourceIdentity) applicationOwned() bool {
+func (identity task20ResourceIdentity) applicationOwned() (bool, error) {
 	switch identity.Kind {
 	case task20HandleFile, task20HandlePipe, task20HandleSocket, task20HandleProcess, task20HandleJob:
-		return true
+		return true, nil
+	case task20HandleThread, task20HandleEvent, task20HandleTimer, task20HandleIOCompletion, task20HandleWaitCompletion:
+		return false, nil
 	default:
-		return false
+		return false, fmt.Errorf("unsupported Windows handle kind %d", identity.Kind)
 	}
 }
 
