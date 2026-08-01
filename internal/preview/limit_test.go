@@ -177,14 +177,16 @@ func TestStagedArtifactRejectsReplacementAfterExclusiveCreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cleanupConverterArtifact(t, stage) })
-	path := stage.Path()
 	if runtime.GOOS == "windows" {
-		if err := os.Remove(path); err == nil {
+		if err := stage.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(stage.Path()); err == nil {
 			t.Fatal("Windows removed an exclusively held stage")
 		}
 		return
 	}
-	replaceWithDistinctInode(t, path, []byte("attacker"))
+	replaceWithDistinctInode(t, stage.Path(), []byte("attacker"))
 	writer, err := stage.OpenWritable()
 	if writer != nil {
 		_ = writer.Close()
