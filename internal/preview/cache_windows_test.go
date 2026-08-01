@@ -3,6 +3,7 @@
 package preview
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -219,10 +220,16 @@ func TestWindowsRejectedArtifactCleanupReleasesHandlesAfterSharingViolation(t *t
 		t.Fatal(err)
 	}
 	blocker = 0
-	if _, err := os.ReadFile(attacker); err != nil {
-		t.Fatalf("attacker link changed: %v", err)
+	attackerBefore, err := os.ReadFile(attacker)
+	if err != nil {
+		t.Fatalf("attacker link unreadable before stale cleanup: %v", err)
 	}
-	if err := os.RemoveAll(cache.root); err != nil {
-		t.Fatalf("cache root remains held after rejected cleanup: %v", err)
+	if _, err := NewCache(cache.root, 512<<20); err != nil {
+		t.Fatalf("startup stale cleanup: %v", err)
+	}
+	assertNoCacheTemps(t, cache.root)
+	attackerAfter, err := os.ReadFile(attacker)
+	if err != nil || !bytes.Equal(attackerAfter, attackerBefore) {
+		t.Fatalf("attacker link changed: before=%q after=%q err=%v", attackerBefore, attackerAfter, err)
 	}
 }

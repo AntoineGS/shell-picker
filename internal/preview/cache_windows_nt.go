@@ -60,7 +60,8 @@ func cleanupStaleStageAt(root windows.Handle, name string) {
 		}
 	}()
 	entries, err := readStageEntries(directory, name)
-	if err != nil || !stageEntrySet(entries, false) {
+	markerOnly := stageMarkerOnlySet(entries)
+	if err != nil || !markerOnly && !stageEntrySet(entries, false) {
 		return
 	}
 	marker, markerID, err := openValidatedStageFile(directory, stageMarkerName, fileIdentity{})
@@ -75,31 +76,43 @@ func cleanupStaleStageAt(root windows.Handle, name string) {
 	if err := validateStageMarker(marker, markerID, markerContents); err != nil {
 		return
 	}
-	artifact, artifactID, err := openValidatedStageFile(directory, "artifact.jpg", fileIdentity{})
-	if err != nil {
-		return
-	}
-	defer func() {
-		if artifact != 0 {
-			_ = windows.CloseHandle(artifact)
+	var artifact windows.Handle
+	var artifactID fileIdentity
+	if !markerOnly {
+		artifact, artifactID, err = openValidatedStageFile(directory, "artifact.jpg", fileIdentity{})
+		if err != nil {
+			return
 		}
-	}()
+		defer func() {
+			if artifact != 0 {
+				_ = windows.CloseHandle(artifact)
+			}
+		}()
+	}
 	confirmed, _, err := openStageDirectory(root, name, directoryID)
 	if err != nil {
 		return
 	}
 	confirmedEntries, readErr := readStageEntries(confirmed, name)
 	_ = windows.CloseHandle(confirmed)
-	if readErr != nil || !stageEntrySet(confirmedEntries, false) ||
+	if readErr != nil ||
+		(!markerOnly && !stageEntrySet(confirmedEntries, false)) ||
+		(markerOnly && !stageMarkerOnlySet(confirmedEntries)) ||
 		validateStageMarker(marker, markerID, markerContents) != nil ||
-		validateStageFile(artifact, artifactID) != nil {
+		(!markerOnly && validateStageFile(artifact, artifactID) != nil) {
 		return
 	}
-	if deleteHandle(artifact) != nil || deleteHandle(marker) != nil {
+	if markerOnly {
+		if deleteHandle(marker) != nil {
+			return
+		}
+	} else if deleteHandle(artifact) != nil || deleteHandle(marker) != nil {
 		return
 	}
-	_ = windows.CloseHandle(artifact)
-	artifact = 0
+	if artifact != 0 {
+		_ = windows.CloseHandle(artifact)
+		artifact = 0
+	}
 	_ = windows.CloseHandle(marker)
 	marker = 0
 	_ = windows.CloseHandle(directory)
@@ -114,6 +127,10 @@ func cleanupStaleStageAt(root windows.Handle, name string) {
 		return
 	}
 	_ = deleteHandle(finalDirectory)
+}
+
+func stageMarkerOnlySet(entries []os.FileInfo) bool {
+	return len(entries) == 1 && entries[0].Name() == stageMarkerName
 }
 
 type fileRenameInformation struct {
