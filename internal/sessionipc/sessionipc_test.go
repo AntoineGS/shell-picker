@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -72,12 +71,22 @@ func benignBackendForPath(path []byte) backendStub {
 
 func awaitPreviewRecord(t *testing.T, recorded <-chan PreviewRequest) PreviewRequest {
 	t.Helper()
+	waitCtx, cancel := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
+	defer cancel()
+	return awaitSessionIPC(t, waitCtx, recorded, "preview telemetry record")
+}
+
+const sessionIPCWaitTimeout = 5 * time.Second
+
+func awaitSessionIPC[T any](t *testing.T, waitCtx context.Context, values <-chan T, operation string) T {
+	t.Helper()
 	select {
-	case request := <-recorded:
-		return request
-	case <-time.After(2 * time.Second):
-		t.Fatal("preview telemetry was not recorded within 2s")
-		return PreviewRequest{}
+	case value := <-values:
+		return value
+	case <-waitCtx.Done():
+		t.Fatalf("timed out waiting for %s: %v", operation, waitCtx.Err())
+		var zero T
+		return zero
 	}
 }
 
@@ -170,12 +179,14 @@ func TestServerAuthenticatesAndPreservesOpaqueBytes(t *testing.T) {
 		return protocol.Effect{Put: "ok"}, nil
 	}
 	_, client := startServer(t, backend)
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
+	defer cancelWait()
 
 	response, err := client.Event(context.Background(), eventRequest())
 	if err != nil || response.Effect.Put != "ok" {
 		t.Fatalf("Event response=%+v err=%v", response, err)
 	}
-	event := <-seen
+	event := awaitSessionIPC(t, waitCtx, seen, "opaque event delivery")
 	if !bytes.Equal(event.Query, []byte{0xff, 'q'}) || !bytes.Equal(event.CurrentItem, []byte("file\titem\tL3RtcC94")) {
 		t.Fatalf("event bytes query=%x current=%x", event.Query, event.CurrentItem)
 	}
@@ -359,17 +370,19 @@ func TestDisplayContextCancellationFlowsToBackend(t *testing.T) {
 	}
 	_, client := startServer(t, backend)
 	ctx, cancel := context.WithCancelCause(context.Background())
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
+	defer cancelWait()
 	done := make(chan error, 1)
 	go func() {
 		_, err := client.Display(ctx)
 		done <- err
 	}()
-	<-entered
+	awaitSessionIPC(t, waitCtx, entered, "display backend entry after caller cancellation")
 	cancel(errors.New("caller stopped"))
-	if err := <-cancelled; err == nil {
+	if err := awaitSessionIPC(t, waitCtx, cancelled, "display backend cancellation"); err == nil {
 		t.Fatal("backend did not receive caller cancellation")
 	}
-	if err := <-done; !errors.Is(err, context.Canceled) {
+	if err := awaitSessionIPC(t, waitCtx, done, "display request completion after caller cancellation"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled display err=%v", err)
 	}
 }
@@ -378,6 +391,9 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 	entered := make(chan struct{}, 16)
 	release := make(chan struct{})
 	exited := make(chan struct{}, 16)
+	finished := make(chan struct{}, 16)
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
+	defer cancelWait()
 	backend := benignBackend()
 	backend.currentHeader = func(ctx context.Context) (string, error) {
 		entered <- struct{}{}
@@ -389,18 +405,16 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 		return "", context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
-	var wg sync.WaitGroup
 	for range 16 {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			_, _ = client.Display(context.Background())
+			_, _ = client.Display(waitCtx)
+			finished <- struct{}{}
 		}()
 	}
 	for range 16 {
-		<-entered
+		awaitSessionIPC(t, waitCtx, entered, "display backend entry under handler pressure")
 	}
-	if _, err := client.Display(context.Background()); !errors.Is(err, ErrTooManyRequests) {
+	if _, err := client.Display(waitCtx); !errors.Is(err, ErrTooManyRequests) {
 		t.Fatalf("seventeenth request err=%v", err)
 	}
 
@@ -410,10 +424,12 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 16 {
-		<-exited
+		awaitSessionIPC(t, waitCtx, exited, "display backend exit after server close")
 	}
-	wg.Wait()
-	if _, err := client.Display(context.Background()); err == nil {
+	for range 16 {
+		awaitSessionIPC(t, waitCtx, finished, "display request completion after server close")
+	}
+	if _, err := client.Display(waitCtx); err == nil {
 		t.Fatal("closed endpoint accepted request")
 	}
 	close(release)
@@ -435,6 +451,8 @@ func TestPreviewTelemetryUsesIndependentSoftTimeout(t *testing.T) {
 		return context.Cause(ctx)
 	}
 	_, client := startServer(t, backend)
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
+	defer cancelWait()
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := time.Now()
@@ -447,7 +465,7 @@ func TestPreviewTelemetryUsesIndependentSoftTimeout(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
 		t.Fatalf("telemetry blocked %v", elapsed)
 	}
-	<-requestObserved
+	awaitSessionIPC(t, waitCtx, requestObserved, "preview telemetry backend entry")
 }
 
 func rawRequest(t *testing.T, url string, token Token, method, contentType string, body []byte) *http.Response {

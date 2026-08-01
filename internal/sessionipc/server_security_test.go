@@ -233,12 +233,14 @@ func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 		return protocol.Effect{}, context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
+	defer cancelWait()
 	requestDone := make(chan error, 1)
 	go func() {
-		_, err := client.Event(context.Background(), eventRequest())
+		_, err := client.Event(waitCtx, eventRequest())
 		requestDone <- err
 	}()
-	<-called
+	awaitSessionIPC(t, waitCtx, called, "event backend entry before server close")
 	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := server.Close(closeCtx); err != nil {
