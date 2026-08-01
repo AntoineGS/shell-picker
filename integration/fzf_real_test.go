@@ -191,16 +191,20 @@ func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 3})
 	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
 	beforeQuery := len(term.Output())
-	if err := term.Send([]byte("visiblx")); err != nil {
+	if err := term.Send([]byte("visiblex")); err != nil {
 		t.Fatal(err)
 	}
-	if err := term.Send([]byte{0x7f, 'e'}); err != nil {
+	waitForTerminalTextAfter(t, term, beforeQuery, "[I] visiblex")
+	waitForTerminalTextAfter(t, term, beforeQuery, "0/6")
+	beforeFinalQuery := len(term.Output())
+	if err := term.Send([]byte{0x7f}); err != nil {
 		t.Fatal(err)
 	}
+	waitForTerminalTextAfter(t, term, beforeFinalQuery, "[I] visible")
+	waitForTerminalTextAfter(t, term, beforeFinalQuery, "1/6")
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
-	waitForTerminalTextAfter(t, term, beforeQuery, "1/6")
 	if err := term.Send(keyEnter); err != nil {
 		t.Fatal(err)
 	}
@@ -288,10 +292,17 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 3})
 	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
 	beforeQuery := len(term.Output())
-	if err := term.Send([]byte("visible")); err != nil {
+	if err := term.Send([]byte("visiblex")); err != nil {
 		t.Fatal(err)
 	}
-	waitForTerminalTextAfter(t, term, beforeQuery, "1/4")
+	waitForTerminalTextAfter(t, term, beforeQuery, "[I] visiblex")
+	waitForTerminalTextAfter(t, term, beforeQuery, "0/4")
+	beforeFinalQuery := len(term.Output())
+	if err := term.Send([]byte{0x7f}); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalTextAfter(t, term, beforeFinalQuery, "[I] visible")
+	waitForTerminalTextAfter(t, term, beforeFinalQuery, "1/4")
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
