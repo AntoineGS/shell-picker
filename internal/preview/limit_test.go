@@ -176,8 +176,14 @@ func TestStagedArtifactRejectsReplacementAfterExclusiveCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stage.Cleanup()
+	t.Cleanup(func() { cleanupConverterArtifact(t, stage) })
 	path := stage.Path()
+	if runtime.GOOS == "windows" {
+		if err := os.Remove(path); err == nil {
+			t.Fatal("Windows removed an exclusively held stage")
+		}
+		return
+	}
 	replaceWithDistinctInode(t, path, []byte("attacker"))
 	writer, err := stage.OpenWritable()
 	if writer != nil {
@@ -185,6 +191,17 @@ func TestStagedArtifactRejectsReplacementAfterExclusiveCreation(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnsafeCache) {
 		t.Fatalf("replacement writer error=%v", err)
+	}
+}
+
+func cleanupConverterArtifact(t *testing.T, artifact *converterArtifact) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for !artifact.Cleanup() {
+		if time.Now().After(deadline) {
+			t.Fatal("converter artifact handles did not close within 2s")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -215,7 +232,7 @@ func TestStagedArtifactTruncatesValidatedCreationIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer stage.Cleanup()
+	t.Cleanup(func() { cleanupConverterArtifact(t, stage) })
 	attacker, err := stage.OpenWritable()
 	if err != nil {
 		t.Fatal(err)

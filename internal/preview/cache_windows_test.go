@@ -78,7 +78,7 @@ func TestWindowsArtifactCleanupRetriesAfterSharingViolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer artifact.Cleanup()
+	t.Cleanup(func() { cleanupConverterArtifact(t, artifact) })
 	writer, err := artifact.OpenWritable()
 	if err != nil {
 		t.Fatal(err)
@@ -143,9 +143,11 @@ func TestWindowsStaleCleanupLeavesUnvalidatedPrivateDirectory(t *testing.T) {
 
 func TestWindowsStageCreationValidationFailureLeavesNoPrivateArtifact(t *testing.T) {
 	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	attackerRoot := t.TempDir()
+	attackerLink := filepath.Join(attackerRoot, "attacker-link")
 	oldHook := cacheArtifactCreated
 	cacheArtifactCreated = func(path string) {
-		if err := os.Link(path, filepath.Join(t.TempDir(), "attacker-link")); err != nil {
+		if err := os.Link(path, attackerLink); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -153,6 +155,9 @@ func TestWindowsStageCreationValidationFailureLeavesNoPrivateArtifact(t *testing
 	artifact, err := newConverterArtifact(cache, ".jpg")
 	if artifact != nil || !errors.Is(err, ErrUnsafeCache) {
 		t.Fatalf("artifact=%v err=%v", artifact, err)
+	}
+	if _, err := os.ReadFile(attackerLink); err != nil {
+		t.Fatalf("attacker link unreadable: %v", err)
 	}
 	assertNoCacheTemps(t, cache.root)
 }

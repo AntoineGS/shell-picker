@@ -181,7 +181,8 @@ func TestWindowsStaleCleanupRemovesGenuineAbandonedStage(t *testing.T) {
 
 func TestWindowsStageMarkerValidationFailureLeavesNoPrivateStage(t *testing.T) {
 	cache := mustNewCache(t, t.TempDir(), 512<<20)
-	attackerLink := filepath.Join(t.TempDir(), "marker-link")
+	attackerRoot := t.TempDir()
+	attackerLink := filepath.Join(attackerRoot, "marker-link")
 	oldHook := stageMarkerWritten
 	stageMarkerWritten = func(stageName string) {
 		marker := filepath.Join(cache.root, stageName, testStageMarkerName)
@@ -223,17 +224,22 @@ func makeStageFixturePermissive(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer windows.CloseHandle(handle)
 	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;WD)")
 	if err != nil {
+		_ = windows.CloseHandle(handle)
 		t.Fatal(err)
 	}
 	dacl, _, err := descriptor.DACL()
 	if err != nil {
+		_ = windows.CloseHandle(handle)
 		t.Fatal(err)
 	}
 	if err := windows.SetSecurityInfo(handle, windows.SE_FILE_OBJECT,
 		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		_ = windows.CloseHandle(handle)
+		t.Fatal(err)
+	}
+	if err := windows.CloseHandle(handle); err != nil {
 		t.Fatal(err)
 	}
 }
