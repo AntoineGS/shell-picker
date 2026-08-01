@@ -223,7 +223,8 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 	}
 	zoxidePath := filepath.Join(tools, zoxideName)
 	if scenario.zoxideMode == "spawn-failure" {
-		if err := os.Mkdir(zoxidePath, 0o700); err != nil {
+		fixture := newSpawnFailureExecutable(t)
+		if err := os.Rename(fixture, zoxidePath); err != nil {
 			return integrationpkg.BenchmarkSample{}, err
 		}
 	} else if scenario.zoxideMode != "missing" {
@@ -257,6 +258,9 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 	if countTraceEvents(events, "session.close") != 1 {
 		return integrationpkg.BenchmarkSample{}, errors.New("dedicated sample did not close session")
 	}
+	if err := assertDedicatedZoxideOutcome(events, scenario); err != nil {
+		return integrationpkg.BenchmarkSample{}, err
+	}
 	counters, err := traceBenchmarkCounters(events, scenario.generation)
 	if err != nil {
 		return integrationpkg.BenchmarkSample{}, err
@@ -266,21 +270,6 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 		return integrationpkg.BenchmarkSample{}, err
 	}
 	return integrationpkg.BenchmarkSample{Duration: duration, BenchmarkCounters: counters}, nil
-}
-
-func copyExecutable(source, destination string) error {
-	input, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer input.Close()
-	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
-	if err != nil {
-		return err
-	}
-	_, copyErr := io.Copy(output, input)
-	closeErr := output.Close()
-	return errors.Join(copyErr, closeErr)
 }
 
 func countTraceEvents(events []traceEvent, name string) int {

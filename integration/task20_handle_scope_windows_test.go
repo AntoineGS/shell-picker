@@ -51,21 +51,28 @@ func (scope *task20HandleScope) RequireClosed(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	remaining, err := task20WaitForHandleIdentities(ctx, scope.owned, task20CurrentProcessHandleIdentities)
+	remaining, err := scope.requireClosed(ctx, task20CurrentProcessHandleIdentities)
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("snapshot handles after %s: %v", scope.kind, err)
 	}
+	for _, identity := range remaining {
+		t.Errorf("%s handle %#x object %#x remains open", scope.kind, identity.Value, identity.Object)
+	}
+}
+
+func (scope *task20HandleScope) requireClosed(ctx context.Context,
+	query func() (map[task20HandleIdentity]struct{}, error)) ([]task20HandleIdentity, error) {
+	remaining, err := task20WaitForHandleIdentities(ctx, scope.owned, query)
 	remainingSet := make(map[task20HandleIdentity]struct{}, len(remaining))
 	for _, identity := range remaining {
 		remainingSet[identity] = struct{}{}
 	}
 	for _, identity := range scope.owned {
-		if _, remains := remainingSet[identity]; remains {
-			t.Errorf("%s handle %#x object %#x remains open", scope.kind, identity.Value, identity.Object)
-			continue
+		if _, remains := remainingSet[identity]; !remains {
+			deleteTask20OwnedHandle(identity.Value)
 		}
-		deleteTask20OwnedHandle(identity.Value)
 	}
+	return remaining, err
 }
 
 func task20WaitForHandleIdentities(ctx context.Context, owned []task20HandleIdentity,
@@ -103,8 +110,10 @@ func deleteTask20OwnedHandle(value uintptr) {
 
 func TestWindowsTask20HandleScopeWaitsForTransientClosure(t *testing.T) {
 	owned := []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}
+	seedTask20OwnedHandle(t, owned[0])
+	scope := task20HandleScope{owned: owned}
 	calls := 0
-	remaining, err := task20WaitForHandleIdentities(context.Background(), owned, func() (map[task20HandleIdentity]struct{}, error) {
+	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]struct{}, error) {
 		calls++
 		if calls == 1 {
 			return map[task20HandleIdentity]struct{}{owned[0]: {}}, nil
@@ -114,16 +123,48 @@ func TestWindowsTask20HandleScopeWaitsForTransientClosure(t *testing.T) {
 	if err != nil || len(remaining) != 0 || calls < 2 {
 		t.Fatalf("remaining=%v err=%v calls=%d", remaining, err, calls)
 	}
+	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; exists {
+		t.Fatal("transient identity remained registered")
+	}
 }
 
 func TestWindowsTask20HandleScopeReportsPersistentIdentity(t *testing.T) {
 	owned := []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}
+	seedTask20OwnedHandle(t, owned[0])
+	scope := task20HandleScope{owned: owned}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	remaining, err := task20WaitForHandleIdentities(ctx, owned, func() (map[task20HandleIdentity]struct{}, error) {
+	remaining, err := scope.requireClosed(ctx, func() (map[task20HandleIdentity]struct{}, error) {
 		return map[task20HandleIdentity]struct{}{owned[0]: {}}, nil
 	})
 	if !errors.Is(err, context.DeadlineExceeded) || len(remaining) != 1 || remaining[0] != owned[0] {
 		t.Fatalf("remaining=%v err=%v", remaining, err)
 	}
+	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; !exists {
+		t.Fatal("persistent identity was unregistered")
+	}
+}
+
+func TestWindowsTask20HandleScopeTreatsReusedSlotAsClosed(t *testing.T) {
+	owned := []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}
+	seedTask20OwnedHandle(t, owned[0])
+	scope := task20HandleScope{owned: owned}
+	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]struct{}, error) {
+		return map[task20HandleIdentity]struct{}{{Value: owned[0].Value, Object: 0x2000}: {}}, nil
+	})
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("remaining=%v err=%v", remaining, err)
+	}
+	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; exists {
+		t.Fatal("reused numeric handle remained registered")
+	}
+}
+
+func seedTask20OwnedHandle(t *testing.T, identity task20HandleIdentity) {
+	t.Helper()
+	handle := windows.Handle(identity.Value)
+	if err := registerTask20OwnedHandle(handle, "scope-test"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { deleteTask20OwnedHandle(identity.Value) })
 }

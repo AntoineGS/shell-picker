@@ -184,14 +184,20 @@ func task20NextHandleSnapshotSize(size, needed uint32) (uint32, error) {
 	if size > task20MaxHandleSnapshotSize {
 		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
 	}
-	if needed > size {
-		if needed > task20MaxHandleSnapshotSize {
-			return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
-		}
-		return needed, nil
+	if needed > task20MaxHandleSnapshotSize {
+		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
+	}
+	if size > ^uint32(0)/2 {
+		return 0, errors.New("extended handle response size overflowed")
 	}
 	next := size * 2
-	if next <= size || next > task20MaxHandleSnapshotSize {
+	if next > task20MaxHandleSnapshotSize {
+		next = task20MaxHandleSnapshotSize
+	}
+	if needed > next {
+		next = needed
+	}
+	if next <= size {
 		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
 	}
 	return next, nil
@@ -259,10 +265,11 @@ func TestWindowsHandleSnapshotBufferGrowth(t *testing.T) {
 		wantError    bool
 	}{
 		{name: "reported size", size: mib, needed: 3 * mib, want: 3 * mib},
-		{name: "reported size near maximum", size: 130 * mib, needed: 131 * mib, want: 131 * mib},
+		{name: "reported size near maximum", size: 130 * mib, needed: 131 * mib, want: 256 * mib},
 		{name: "stale reported size", size: 3 * mib, needed: mib, want: 6 * mib},
-		{name: "stale growth exceeds maximum", size: 130 * mib, needed: 129 * mib, wantError: true},
+		{name: "stale growth near maximum", size: 130 * mib, needed: 129 * mib, want: 256 * mib},
 		{name: "reported size exceeds maximum", size: 130 * mib, needed: 257 * mib, wantError: true},
+		{name: "already at maximum", size: 256 * mib, needed: 0, wantError: true},
 		{name: "size overflow", size: ^uint32(0), needed: 0, wantError: true},
 	}
 	for _, test := range tests {
@@ -286,6 +293,27 @@ func TestWindowsHandleSnapshotCanGrowPastFormerRetryCount(t *testing.T) {
 	}
 	if size != 1<<9 {
 		t.Fatalf("size after nine growths=%d want=%d", size, 1<<9)
+	}
+}
+
+func TestWindowsHandleSnapshotGrowthRemainsGeometricWhenNeededKeepsGrowing(t *testing.T) {
+	const mib = uint32(1 << 20)
+	size := uint32(1)
+	for calls := 0; size < 256*mib; calls++ {
+		if calls >= 32 {
+			t.Fatalf("growth required more than 32 calls at size=%d", size)
+		}
+		next, err := task20NextHandleSnapshotSize(size, size+1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next <= size {
+			t.Fatalf("growth did not progress: size=%d next=%d", size, next)
+		}
+		size = next
+	}
+	if size != 256*mib {
+		t.Fatalf("final size=%d want=%d", size, 256*mib)
 	}
 }
 

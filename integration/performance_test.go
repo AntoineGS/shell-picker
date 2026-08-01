@@ -366,7 +366,7 @@ func benchmarkCandidateScenario(b *testing.B, policy, mode string, picker protoc
 	if mode == "missing" {
 		path = filepath.Join(root, "missing")
 	} else if mode == "spawn-failure" {
-		path = root
+		path = newSpawnFailureExecutable(b)
 	}
 	runner := process.Runner{Observe: counts.observe}
 	b.ResetTimer()
@@ -389,6 +389,11 @@ func benchmarkCandidateScenario(b *testing.B, policy, mode string, picker protoc
 				Location: pathutil.Filesystem([]byte(root)), Initial: generation == 0, StatWorkers: 2})
 			if err != nil {
 				b.Fatal(err)
+			}
+			if generation == 0 {
+				if expected, ok := expectedZoxideOutcome(mode); ok && result.Metrics.ZoxideOutcome != expected {
+					b.Fatalf("mode %q outcome=%q; want %q", mode, result.Metrics.ZoxideOutcome, expected)
+				}
 			}
 			if generation > 0 && (result.Metrics.ZoxideOutcome != "not-run" || result.Metrics.ZoxideAttempts != 0 ||
 				result.Metrics.ZoxideStarts != 0 || result.Metrics.ZoxideExits != 0 || result.Metrics.ZoxideProcesses != 0 ||

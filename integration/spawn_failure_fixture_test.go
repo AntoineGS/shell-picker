@@ -21,7 +21,37 @@ func TestSpawnFailureFixtureIsRegularFile(t *testing.T) {
 	}
 }
 
-func newSpawnFailureExecutable(t *testing.T) string {
+func TestExpectedZoxideOutcomeClassifiesFailureModes(t *testing.T) {
+	tests := []struct {
+		mode string
+		want string
+	}{
+		{mode: "missing", want: "missing"},
+		{mode: "spawn-failure", want: "process-error"},
+	}
+	for _, test := range tests {
+		got, ok := expectedZoxideOutcome(test.mode)
+		if !ok || got != test.want {
+			t.Fatalf("mode=%q outcome=%q ok=%v; want %q", test.mode, got, ok, test.want)
+		}
+	}
+	if _, ok := expectedZoxideOutcome("present"); ok {
+		t.Fatal("present mode unexpectedly classified as a failure")
+	}
+}
+
+func expectedZoxideOutcome(mode string) (string, bool) {
+	switch mode {
+	case "missing":
+		return "missing", true
+	case "spawn-failure":
+		return "process-error", true
+	default:
+		return "", false
+	}
+}
+
+func newSpawnFailureExecutable(t testing.TB) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "invalid-executable")
 	if runtime.GOOS == "windows" {

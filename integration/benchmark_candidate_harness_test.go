@@ -138,6 +138,11 @@ func measureDedicatedCandidateSample(t *testing.T, scenario dedicatedCandidateSc
 		if err != nil {
 			return integrationpkg.BenchmarkSample{}, err
 		}
+		if generation == 0 {
+			if expected, ok := expectedZoxideOutcome(scenario.mode); ok && result.Metrics.ZoxideOutcome != expected {
+				return integrationpkg.BenchmarkSample{}, fmt.Errorf("mode %q outcome=%q; want %q", scenario.mode, result.Metrics.ZoxideOutcome, expected)
+			}
+		}
 		if generation > 0 && (result.Metrics.ZoxideOutcome != "not-run" || result.Metrics.ZoxideAttempts != 0 ||
 			result.Metrics.ZoxideStarts != 0 || result.Metrics.ZoxideExits != 0 || result.Metrics.ZoxideProcesses != 0 ||
 			result.Metrics.ZoxideLive != 0 || result.Metrics.ZoxideMaxLive != 0) {
