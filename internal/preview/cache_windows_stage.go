@@ -17,6 +17,21 @@ const stageMarkerName = ".shell-picker-owner-v1"
 const stageMarkerMagic = "shell-picker-stage\x00\x01"
 const privateFileAccess = windows.STANDARD_RIGHTS_REQUIRED | windows.SYNCHRONIZE | 0x1ff
 
+func (artifact *converterArtifact) closeOwnedHandles() {
+	if artifact.held != 0 {
+		_ = windows.CloseHandle(artifact.held)
+		artifact.held = 0
+	}
+	if artifact.directory != 0 {
+		_ = windows.CloseHandle(artifact.directory)
+		artifact.directory = 0
+	}
+	if artifact.root != 0 {
+		_ = windows.CloseHandle(artifact.root)
+		artifact.root = 0
+	}
+}
+
 // Wine does not apply protected create-time NT descriptors. Its closest private
 // representation grants only the emulated owner and LocalSystem.
 var wineRuntime = windows.NewLazySystemDLL("ntdll.dll").NewProc("wine_get_version").Find() == nil

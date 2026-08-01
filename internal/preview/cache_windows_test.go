@@ -161,3 +161,23 @@ func TestWindowsStageCreationValidationFailureLeavesNoPrivateArtifact(t *testing
 	}
 	assertNoCacheTemps(t, cache.root)
 }
+
+func TestWindowsArtifactValidationFailureClosesOwnedDirectoryHandles(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	attacker := filepath.Join(t.TempDir(), "attacker-link")
+	oldHook := cacheArtifactCreated
+	cacheArtifactCreated = func(path string) {
+		if err := os.Link(path, attacker); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { cacheArtifactCreated = oldHook })
+	artifact, err := newConverterArtifact(cache, ".jpg")
+	if artifact != nil || !errors.Is(err, ErrUnsafeCache) {
+		t.Fatalf("artifact=%v err=%v", artifact, err)
+	}
+	assertNoCacheTemps(t, cache.root)
+	if err := os.RemoveAll(cache.root); err != nil {
+		t.Fatalf("cache root remains held: %v", err)
+	}
+}

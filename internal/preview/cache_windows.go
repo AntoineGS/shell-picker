@@ -305,8 +305,7 @@ func (artifact *converterArtifact) Cleanup() bool {
 	if err = deleteHandle(artifact.directory); err != nil {
 		return false
 	}
-	_ = windows.CloseHandle(artifact.directory)
-	_ = windows.CloseHandle(artifact.root)
+	artifact.closeOwnedHandles()
 	artifact.complete = true
 	return true
 }
