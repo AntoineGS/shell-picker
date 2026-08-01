@@ -5,11 +5,136 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
+	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+func task20ApplicationHandles(classified map[task20HandleIdentity]task20ResourceIdentity) map[task20HandleIdentity]task20ResourceIdentity {
+	application := make(map[task20HandleIdentity]task20ResourceIdentity, len(classified))
+	for identity, resource := range classified {
+		owned, err := resource.applicationOwned()
+		if err != nil || !owned {
+			continue
+		}
+		application[identity] = resource
+	}
+	return application
+}
+
+func task20ClassifiedHandleDifference(baseline, current map[task20HandleIdentity]task20ResourceIdentity) string {
+	var added, removed []task20ResourceIdentity
+	for identity, resource := range current {
+		previous, existed := baseline[identity]
+		if existed && previous == resource {
+			continue
+		}
+		resource.Identity = identity
+		added = append(added, resource)
+	}
+	for identity, resource := range baseline {
+		latest, remains := current[identity]
+		if remains && latest == resource {
+			continue
+		}
+		resource.Identity = identity
+		removed = append(removed, resource)
+	}
+	sort.Slice(added, func(i, j int) bool { return task20ResourceIdentityLess(added[i], added[j]) })
+	sort.Slice(removed, func(i, j int) bool { return task20ResourceIdentityLess(removed[i], removed[j]) })
+
+	format := func(resources []task20ResourceIdentity) string {
+		parts := make([]string, len(resources))
+		for index, resource := range resources {
+			parts[index] = fmt.Sprintf("type=%s value=%#x object=%#x", resource.Type,
+				resource.Identity.Value, resource.Identity.Object)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	}
+	return fmt.Sprintf("added=%s removed=%s", format(added), format(removed))
+}
+
+func task20ResourceIdentityLess(left, right task20ResourceIdentity) bool {
+	if !task20HandleIdentityLess(left.Identity, right.Identity) {
+		if task20HandleIdentityLess(right.Identity, left.Identity) {
+			return false
+		}
+		return left.Type < right.Type
+	}
+	return true
+}
+
+func task20CurrentProcessClassifiedHandles() (map[task20HandleIdentity]task20ResourceIdentity, error) {
+	entries, err := task20CurrentProcessHandleEntries()
+	if err != nil {
+		return nil, err
+	}
+	classified := make(map[task20HandleIdentity]task20ResourceIdentity, len(entries))
+	for _, entry := range entries {
+		identity := task20HandleIdentity{Value: entry.HandleValue, Object: entry.Object}
+		resource, err := task20ClassifyHandle(windows.Handle(entry.HandleValue), identity)
+		if err != nil {
+			return nil, fmt.Errorf("classify handle %#x object %#x: %w", entry.HandleValue, entry.Object, err)
+		}
+		classified[identity] = resource
+	}
+	return classified, nil
+}
+
+func task20CurrentProcessHandleIdentities() (map[task20HandleIdentity]struct{}, error) {
+	entries, err := task20CurrentProcessHandleEntries()
+	if err != nil {
+		return nil, err
+	}
+	return task20HandleIdentitiesForProcess(entries, uintptr(windows.GetCurrentProcessId())), nil
+}
+
+func task20CurrentProcessHandleEntries() ([]task20SystemHandleTableEntry, error) {
+	if err := task20NtQuerySystemInformation.Find(); err != nil {
+		return nil, err
+	}
+	size := uint32(1 << 20)
+	for {
+		buffer := make([]byte, size)
+		var needed uint32
+		status, _, _ := task20NtQuerySystemInformation.Call(task20SystemExtendedHandleInformation,
+			uintptr(unsafe.Pointer(&buffer[0])), uintptr(size), uintptr(unsafe.Pointer(&needed)))
+		if uint32(status) == task20StatusInfoLengthMismatch {
+			next, err := task20NextHandleSnapshotSize(size, needed)
+			if err != nil {
+				return nil, err
+			}
+			size = next
+			continue
+		}
+		if status != 0 {
+			return nil, fmt.Errorf("NTSTATUS %#x", uint32(status))
+		}
+		headerSize := 2 * unsafe.Sizeof(uintptr(0))
+		if len(buffer) < int(headerSize) {
+			return nil, errors.New("short extended handle response")
+		}
+		count := *(*uintptr)(unsafe.Pointer(&buffer[0]))
+		entrySize := unsafe.Sizeof(task20SystemHandleTableEntry{})
+		if count > uintptr((len(buffer)-int(headerSize))/int(entrySize)) {
+			return nil, errors.New("extended handle response count exceeds buffer")
+		}
+		pid := uintptr(windows.GetCurrentProcessId())
+		entries := make([]task20SystemHandleTableEntry, 0, count)
+		for index := uintptr(0); index < count; index++ {
+			entry := (*task20SystemHandleTableEntry)(unsafe.Pointer(&buffer[headerSize+index*entrySize]))
+			if entry.UniqueProcessID == pid {
+				entries = append(entries, *entry)
+			}
+		}
+		return entries, nil
+	}
+}
 
 type task20HandleScope struct {
 	kind     string

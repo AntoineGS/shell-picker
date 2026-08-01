@@ -18,8 +18,8 @@ import (
 
 func TestWindowsResourceSnapshotUsesExactHandleIdentities(t *testing.T) {
 	snapshot := snapshotResources(t)
-	if len(snapshot.handleIdentities) == 0 {
-		t.Fatal("native current-process handle identity snapshot was empty")
+	if len(snapshot.applicationHandles) == 0 {
+		t.Fatal("native current-process application handle snapshot was empty")
 	}
 }
 
@@ -56,6 +56,24 @@ func TestWindowsResourceSnapshotFingerprintsDirectoryReplacement(t *testing.T) {
 	after := snapshotArtifacts(t, []string{root})
 	if reflect.DeepEqual(before, after) {
 		t.Fatal("same-path directory replacement escaped Windows file identity")
+	}
+}
+
+func TestWindowsApplicationHandleDifferenceIncludesType(t *testing.T) {
+	process := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x20, Object: 0x1000}, Type: "Process", Kind: task20HandleProcess}
+	baseline := map[task20HandleIdentity]task20ResourceIdentity{}
+	current := map[task20HandleIdentity]task20ResourceIdentity{process.Identity: process}
+	diff := task20ClassifiedHandleDifference(baseline, current)
+	if !strings.Contains(diff, "type=Process") || !strings.Contains(diff, "value=0x20") {
+		t.Fatalf("difference=%q", diff)
+	}
+}
+
+func TestWindowsRuntimeHandlesDoNotEnterApplicationSnapshot(t *testing.T) {
+	event := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 1, Object: 2}, Type: "Event", Kind: task20HandleEvent}
+	got := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{event.Identity: event})
+	if len(got) != 0 {
+		t.Fatalf("application handles=%v", got)
 	}
 }
 
@@ -128,11 +146,11 @@ type task20HandleIdentity struct {
 }
 
 type resourceSnapshot struct {
-	handles          uint32
-	handleIdentities map[task20HandleIdentity]struct{}
-	ownedHandles     map[windows.Handle]string
-	goroutineStacks  map[uint64]string
-	artifacts        map[string]artifactFingerprint
+	handles            uint32
+	applicationHandles map[task20HandleIdentity]task20ResourceIdentity
+	ownedHandles       map[windows.Handle]string
+	goroutineStacks    map[uint64]string
+	artifacts          map[string]artifactFingerprint
 }
 
 func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
@@ -143,19 +161,19 @@ func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
 	if result == 0 {
 		t.Fatalf("GetProcessHandleCount: %v", err)
 	}
-	identities, err := task20CurrentProcessHandleIdentities()
+	classified, err := task20CurrentProcessClassifiedHandles()
 	if err != nil {
-		t.Fatalf("NtQuerySystemInformation(SystemExtendedHandleInformation): %v", err)
+		t.Fatalf("classify current-process handles: %v", err)
 	}
-	return resourceSnapshot{handles: count, handleIdentities: identities, ownedHandles: snapshotTask20OwnedHandles(),
-		goroutineStacks: snapshotGoroutineStacks(), artifacts: snapshotArtifacts(t, roots)}
+	return resourceSnapshot{handles: count, applicationHandles: task20ApplicationHandles(classified),
+		ownedHandles: snapshotTask20OwnedHandles(), goroutineStacks: snapshotGoroutineStacks(),
+		artifacts: snapshotArtifacts(t, roots)}
 }
 
 func platformResourceDifference(baseline, current resourceSnapshot) string {
-	if current.handles != baseline.handles || !reflect.DeepEqual(current.handleIdentities, baseline.handleIdentities) {
-		added, removed := task20HandleIdentityDifference(baseline.handleIdentities, current.handleIdentities)
+	if !reflect.DeepEqual(current.applicationHandles, baseline.applicationHandles) {
 		return fmt.Sprintf("handles baseline=%d current=%d; %s", baseline.handles, current.handles,
-			formatTask20HandleIdentityDifference(added, removed))
+			task20ClassifiedHandleDifference(baseline.applicationHandles, current.applicationHandles))
 	}
 	if !reflect.DeepEqual(current.ownedHandles, baseline.ownedHandles) {
 		return fmt.Sprintf("Task20 owned handle registry baseline=%v current=%v", baseline.ownedHandles, current.ownedHandles)
@@ -181,46 +199,6 @@ func artifactIdentity(path string, _ os.FileInfo) (uint64, uint64, error) {
 	}
 	index := uint64(identity.FileIndexHigh)<<32 | uint64(identity.FileIndexLow)
 	return uint64(identity.VolumeSerialNumber), index, nil
-}
-
-func task20CurrentProcessHandleIdentities() (map[task20HandleIdentity]struct{}, error) {
-	if err := task20NtQuerySystemInformation.Find(); err != nil {
-		return nil, err
-	}
-	size := uint32(1 << 20)
-	for {
-		buffer := make([]byte, size)
-		var needed uint32
-		status, _, _ := task20NtQuerySystemInformation.Call(task20SystemExtendedHandleInformation,
-			uintptr(unsafe.Pointer(&buffer[0])), uintptr(size), uintptr(unsafe.Pointer(&needed)))
-		if uint32(status) == task20StatusInfoLengthMismatch {
-			next, err := task20NextHandleSnapshotSize(size, needed)
-			if err != nil {
-				return nil, err
-			}
-			size = next
-			continue
-		}
-		if status != 0 {
-			return nil, fmt.Errorf("NTSTATUS %#x", uint32(status))
-		}
-		headerSize := 2 * unsafe.Sizeof(uintptr(0))
-		if len(buffer) < int(headerSize) {
-			return nil, errors.New("short extended handle response")
-		}
-		count := *(*uintptr)(unsafe.Pointer(&buffer[0]))
-		entrySize := unsafe.Sizeof(task20SystemHandleTableEntry{})
-		if count > uintptr((len(buffer)-int(headerSize))/int(entrySize)) {
-			return nil, errors.New("extended handle response count exceeds buffer")
-		}
-		pid := uintptr(windows.GetCurrentProcessId())
-		entries := make([]task20SystemHandleTableEntry, 0, count)
-		for index := uintptr(0); index < count; index++ {
-			entry := (*task20SystemHandleTableEntry)(unsafe.Pointer(&buffer[headerSize+index*entrySize]))
-			entries = append(entries, *entry)
-		}
-		return task20HandleIdentitiesForProcess(entries, pid), nil
-	}
 }
 
 func task20NextHandleSnapshotSize(size, needed uint32) (uint32, error) {
@@ -451,9 +429,17 @@ func TestWindowsHandleIdentityDifferenceListsAddedAndRemoved(t *testing.T) {
 		!strings.Contains(diff, "removed=[value=0x40 object=0x1000]") {
 		t.Fatalf("diff=%q", diff)
 	}
-	platformDiff := platformResourceDifference(resourceSnapshot{handleIdentities: baseline}, resourceSnapshot{handleIdentities: current})
-	if !strings.Contains(platformDiff, "added=[value=0x48 object=0x1800]") ||
-		!strings.Contains(platformDiff, "removed=[value=0x40 object=0x1000]") {
+	classifiedBaseline := map[task20HandleIdentity]task20ResourceIdentity{
+		{Value: 0x40, Object: 0x1000}: {Identity: task20HandleIdentity{Value: 0x40, Object: 0x1000}, Type: "Process", Kind: task20HandleProcess},
+		{Value: 0x44, Object: 0x1400}: {Identity: task20HandleIdentity{Value: 0x44, Object: 0x1400}, Type: "Process", Kind: task20HandleProcess},
+	}
+	classifiedCurrent := map[task20HandleIdentity]task20ResourceIdentity{
+		{Value: 0x44, Object: 0x1400}: {Identity: task20HandleIdentity{Value: 0x44, Object: 0x1400}, Type: "Process", Kind: task20HandleProcess},
+		{Value: 0x48, Object: 0x1800}: {Identity: task20HandleIdentity{Value: 0x48, Object: 0x1800}, Type: "Process", Kind: task20HandleProcess},
+	}
+	platformDiff := platformResourceDifference(resourceSnapshot{applicationHandles: classifiedBaseline}, resourceSnapshot{applicationHandles: classifiedCurrent})
+	if !strings.Contains(platformDiff, "type=Process") || !strings.Contains(platformDiff, "value=0x48") ||
+		!strings.Contains(platformDiff, "value=0x40") {
 		t.Fatalf("platform diff=%q", platformDiff)
 	}
 }
