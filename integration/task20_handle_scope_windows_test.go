@@ -15,16 +15,40 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func task20ApplicationHandles(classified map[task20HandleIdentity]task20ResourceIdentity) map[task20HandleIdentity]task20ResourceIdentity {
+func task20ApplicationHandles(classified map[task20HandleIdentity]task20ResourceIdentity) (map[task20HandleIdentity]task20ResourceIdentity, error) {
 	application := make(map[task20HandleIdentity]task20ResourceIdentity, len(classified))
 	for identity, resource := range classified {
 		owned, err := resource.applicationOwned()
-		if err != nil || !owned {
+		if err != nil {
+			return nil, fmt.Errorf("determine ownership for handle %#x object %#x: %w", identity.Value, identity.Object, err)
+		}
+		if !owned {
 			continue
 		}
 		application[identity] = resource
 	}
-	return application
+	return application, nil
+}
+
+func TestWindowsUnknownApplicationHandleKindFailsFiltering(t *testing.T) {
+	unknown := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x30, Object: 0x3000}, Type: "Future", Kind: task20HandleKind(255)}
+	got, err := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{unknown.Identity: unknown})
+	if err == nil || !strings.Contains(err.Error(), "unsupported Windows handle kind") {
+		t.Fatalf("application handles=%v err=%v; want an ownership error", got, err)
+	}
+	if got != nil {
+		t.Fatalf("application handles=%v; want nil on ownership error", got)
+	}
+}
+
+func TestWindowsRawHandleCountDoesNotChangeApplicationDifference(t *testing.T) {
+	resource := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x40, Object: 0x4000}, Type: "Process", Kind: task20HandleProcess}
+	application := map[task20HandleIdentity]task20ResourceIdentity{resource.Identity: resource}
+	baseline := resourceSnapshot{handles: 1, applicationHandles: application}
+	current := resourceSnapshot{handles: 2, applicationHandles: application}
+	if diff := platformResourceDifference(baseline, current); diff != "" {
+		t.Fatalf("platform difference=%q; want no difference", diff)
+	}
 }
 
 func task20ClassifiedHandleDifference(baseline, current map[task20HandleIdentity]task20ResourceIdentity) string {

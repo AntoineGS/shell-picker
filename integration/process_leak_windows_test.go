@@ -60,18 +60,23 @@ func TestWindowsResourceSnapshotFingerprintsDirectoryReplacement(t *testing.T) {
 }
 
 func TestWindowsApplicationHandleDifferenceIncludesType(t *testing.T) {
-	process := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x20, Object: 0x1000}, Type: "Process", Kind: task20HandleProcess}
-	baseline := map[task20HandleIdentity]task20ResourceIdentity{}
-	current := map[task20HandleIdentity]task20ResourceIdentity{process.Identity: process}
+	baselineResource := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x20, Object: 0x1000}, Type: "Process", Kind: task20HandleProcess}
+	currentResource := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x20, Object: 0x2000}, Type: "File", Kind: task20HandleFile}
+	baseline := map[task20HandleIdentity]task20ResourceIdentity{baselineResource.Identity: baselineResource}
+	current := map[task20HandleIdentity]task20ResourceIdentity{currentResource.Identity: currentResource}
 	diff := task20ClassifiedHandleDifference(baseline, current)
-	if !strings.Contains(diff, "type=Process") || !strings.Contains(diff, "value=0x20") {
-		t.Fatalf("difference=%q", diff)
+	want := "added=[type=File value=0x20 object=0x2000] removed=[type=Process value=0x20 object=0x1000]"
+	if diff != want {
+		t.Fatalf("difference=%q want=%q", diff, want)
 	}
 }
 
 func TestWindowsRuntimeHandlesDoNotEnterApplicationSnapshot(t *testing.T) {
 	event := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 1, Object: 2}, Type: "Event", Kind: task20HandleEvent}
-	got := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{event.Identity: event})
+	got, err := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{event.Identity: event})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 0 {
 		t.Fatalf("application handles=%v", got)
 	}
@@ -165,7 +170,11 @@ func snapshotResources(t *testing.T, roots ...string) resourceSnapshot {
 	if err != nil {
 		t.Fatalf("classify current-process handles: %v", err)
 	}
-	return resourceSnapshot{handles: count, applicationHandles: task20ApplicationHandles(classified),
+	applicationHandles, err := task20ApplicationHandles(classified)
+	if err != nil {
+		t.Fatalf("filter current-process application handles: %v", err)
+	}
+	return resourceSnapshot{handles: count, applicationHandles: applicationHandles,
 		ownedHandles: snapshotTask20OwnedHandles(), goroutineStacks: snapshotGoroutineStacks(),
 		artifacts: snapshotArtifacts(t, roots)}
 }
