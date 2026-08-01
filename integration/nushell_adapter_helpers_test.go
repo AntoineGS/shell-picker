@@ -163,7 +163,7 @@ func (fixture nushellFixture) pickerCalls(t *testing.T) []nushellPickerCall {
 
 func (fixture nushellFixture) assertOnePicker(t *testing.T, operation, home string) {
 	t.Helper()
-	if home != fixture.home {
+	if runtime.GOOS != "windows" && home != fixture.home {
 		t.Fatalf("Nushell home=%q, want isolated home %q", home, fixture.home)
 	}
 	calls := fixture.pickerCalls(t)

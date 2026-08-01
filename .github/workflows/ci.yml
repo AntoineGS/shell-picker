@@ -61,7 +61,7 @@ jobs:
         with: {go-version: '1.26.5'}
       - run: sudo apt-get update && sudo apt-get install -y zsh
       - run: cargo install nu --locked --version 0.113.1
-      - run: zsh adapters/zsh/shell-picker.test.zsh
+      - run: zsh adapters/zsh/shell-picker.plugin.test.zsh
       - run: nu --no-config-file adapters/nushell/shell-picker.test.nu
       - run: go test ./integration -run 'Test(NushellAdapter|ZshAdapter)' -count=1
 
