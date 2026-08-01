@@ -195,7 +195,6 @@ func replaceWithDistinctInode(t *testing.T, path string, data []byte) {
 		t.Fatal(err)
 	}
 	replacementPath := replacement.Name()
-	defer os.Remove(replacementPath)
 	if _, err := replacement.Write(data); err != nil {
 		_ = replacement.Close()
 		t.Fatal(err)
