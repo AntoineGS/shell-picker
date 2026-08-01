@@ -52,3 +52,17 @@ func TestWindowsRootParentAndHomeTransitions(t *testing.T) {
 		})
 	}
 }
+
+func TestWindowsDriveAddHeaderUsesPlatformAuthority(t *testing.T) {
+	for _, homePath := range []string{`C:\Users\test`, `\Users\test`} {
+		t.Run(homePath, func(t *testing.T) {
+			snapshot := eventSnapshot(protocol.PickerCD, protocol.ModeAdd, pathutil.Drives())
+			snapshot.state.Home = pathutil.Filesystem([]byte(homePath))
+			reduction, err := Reduce(snapshot, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("new")})
+			proposal := reduction.proposalForTest()
+			if err != nil || proposal.Effect.Header != `Drives\` {
+				t.Fatalf("proposal=%+v err=%v", proposal, err)
+			}
+		})
+	}
+}

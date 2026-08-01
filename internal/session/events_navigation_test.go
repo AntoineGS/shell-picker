@@ -36,7 +36,7 @@ func TestPickerExactSlashChoosesFirstCaseInsensitiveImmediateChild(t *testing.T)
 	snapshot := eventSnapshot(protocol.PickerCD, protocol.ModeInsert, pathutil.Filesystem([]byte("/work")), first, second)
 	reduction, err := Reduce(snapshot, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("FOO")})
 	proposal := reduction.proposalForTest()
-	if err != nil || string(proposal.State.Location.Path) != "/work/foo" || proposal.State.Mode != protocol.ModeInsert {
+	if err != nil || string(proposal.State.Location.Path) != sessionTestPath("/work/foo") || proposal.State.Mode != protocol.ModeInsert {
 		t.Fatalf("proposal=%+v err=%v", proposal, err)
 	}
 }
@@ -88,7 +88,7 @@ func TestPickerExactImmediateChildUsesTargetBasename(t *testing.T) {
 		t.Fatal("matched display instead of target basename")
 	}
 	got, ok := exactImmediateChild(snapshot, []byte("ACTUAL"))
-	if !ok || !bytes.Equal(got.Target.Path, []byte("/work/actual")) {
+	if !ok || !bytes.Equal(got.Target.Path, []byte(sessionTestPath("/work/actual"))) {
 		t.Fatalf("record=%+v ok=%t", got, ok)
 	}
 }
@@ -126,9 +126,9 @@ func TestPickerSlashSpecialCasesPreserveMode(t *testing.T) {
 		query []byte
 		want  []byte
 	}{
-		{name: "insert empty", mode: protocol.ModeInsert, want: []byte("/")},
-		{name: "normal empty", mode: protocol.ModeNormal, want: []byte("/")},
-		{name: "insert exact dotdot", mode: protocol.ModeInsert, query: []byte(".."), want: []byte("/work")},
+		{name: "insert empty", mode: protocol.ModeInsert, want: sessionTestRootPath()},
+		{name: "normal empty", mode: protocol.ModeNormal, want: sessionTestRootPath()},
+		{name: "insert exact dotdot", mode: protocol.ModeInsert, query: []byte(".."), want: []byte(sessionTestPath("/work"))},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

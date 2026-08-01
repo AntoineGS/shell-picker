@@ -17,7 +17,7 @@ func TestValidateCDRequiresOneExactFilesystemDirectoryRecord(t *testing.T) {
 
 	for _, record := range []string{directory.FullKey(), local.FullKey()} {
 		outcome, err := ValidateCD(s, [][]byte{[]byte(record)})
-		if err != nil || outcome.Status != protocol.StatusAccepted || len(outcome.Paths) != 1 || !bytes.HasPrefix(outcome.Paths[0], []byte("/work/")) {
+		if err != nil || outcome.Status != protocol.StatusAccepted || len(outcome.Paths) != 1 || !bytes.HasPrefix(outcome.Paths[0], []byte(sessionTestPath("/work/"))) {
 			t.Fatalf("record=%q outcome=%+v err=%v", record, outcome, err)
 		}
 	}
@@ -44,7 +44,7 @@ func TestValidateCPRestoresVisibleOrderAndDuplicateMultiplicity(t *testing.T) {
 	two := eventRecord(protocol.KindDirectory, "two", "/work/two")
 	s := eventSnapshot(protocol.PickerCP, protocol.ModeNormal, pathutil.Filesystem([]byte("/elsewhere")), one, two, one)
 	accepted := [][]byte{[]byte(two.FullKey()), []byte(one.FullKey()), []byte(one.FullKey())}
-	outcome, err := ValidateCP(s, accepted, []byte("/work"))
+	outcome, err := ValidateCP(s, accepted, []byte(sessionTestPath("/work")))
 	if err != nil || outcome.Status != protocol.StatusAccepted {
 		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
@@ -78,7 +78,7 @@ func TestValidateCPRejectsMalformedUnknownResidualAndVirtual(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := ValidateCP(s, test.accepted, []byte("/work"))
+			_, err := ValidateCP(s, test.accepted, []byte(sessionTestPath("/work")))
 			if !errors.Is(err, test.want) {
 				t.Fatalf("error=%v want=%v", err, test.want)
 			}
@@ -90,7 +90,7 @@ func TestValidateCPRejectsRecordWithoutAuthoritativeFilesystemTarget(t *testing.
 	record := eventRecord(protocol.KindFile, "one", "/work/one")
 	record.Target = pathutil.Drives()
 	s := eventSnapshot(protocol.PickerCP, protocol.ModeNormal, pathutil.Filesystem([]byte("/work")), record)
-	if _, err := ValidateCP(s, [][]byte{[]byte(record.FullKey())}, []byte("/work")); !errors.Is(err, ErrInvalidSelection) {
+	if _, err := ValidateCP(s, [][]byte{[]byte(record.FullKey())}, []byte(sessionTestPath("/work"))); !errors.Is(err, ErrInvalidSelection) {
 		t.Fatalf("error=%v", err)
 	}
 }

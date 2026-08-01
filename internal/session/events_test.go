@@ -15,6 +15,7 @@ import (
 )
 
 func eventRecord(kind protocol.Kind, display, path string) candidate.Record {
+	path = sessionTestPath(path)
 	target := pathutil.Filesystem([]byte(path))
 	payload := protocol.EncodePath([]byte(path))
 	if kind == protocol.KindVirtual {
@@ -25,6 +26,7 @@ func eventRecord(kind protocol.Kind, display, path string) candidate.Record {
 }
 
 func eventSnapshot(picker protocol.Picker, mode protocol.Mode, location pathutil.Location, records ...candidate.Record) Snapshot {
+	location = sessionTestLocation(location)
 	prefix := "[I] "
 	if mode == protocol.ModeNormal {
 		prefix = "[N] "
@@ -33,7 +35,7 @@ func eventSnapshot(picker protocol.Picker, mode protocol.Mode, location pathutil
 	}
 	state := State{
 		Picker: picker, Mode: mode, Location: location,
-		Home: pathutil.Filesystem([]byte("/home/test")), Prompt: prefix,
+		Home: pathutil.Filesystem([]byte(sessionTestPath("/home/test"))), Prompt: prefix,
 	}
 	return Snapshot{generation: 7, state: state, records: records, byFullRecord: buildIndex(records)}
 }
@@ -104,11 +106,13 @@ func TestModePromptContainsOnlyMode(t *testing.T) {
 }
 
 func TestNavigationEffectSeparatesPromptAndHeader(t *testing.T) {
-	s := eventSnapshot(protocol.PickerCD, protocol.ModeNormal, pathutil.Filesystem([]byte("/work")))
+	location := pathutil.Filesystem([]byte(sessionTestPath("/work")))
+	s := eventSnapshot(protocol.PickerCD, protocol.ModeNormal, location)
 	reduction, err := Reduce(s, protocol.Event{Opcode: protocol.OpParent})
 	proposal := reduction.proposalForTest()
-	if err != nil || proposal.Effect.Prompt != "[N] " || proposal.Effect.Header != "/" {
-		t.Fatalf("effect=%+v err=%v", proposal.Effect, err)
+	wantHeader := pathutil.PromptDisplayHome(pathutil.Parent(location), s.state.Home)
+	if err != nil || proposal.Effect.Prompt != "[N] " || proposal.Effect.Header != wantHeader {
+		t.Fatalf("effect=%+v err=%v want header=%q", proposal.Effect, err, wantHeader)
 	}
 }
 
@@ -193,7 +197,7 @@ func TestNavigationTargetsKindsAndEffects(t *testing.T) {
 					t.Fatalf("Reduce() error = %v", err)
 				}
 				proposal := reduction.proposalForTest()
-				wantKind, wantPath := pathutil.KindFilesystem, "/next"
+				wantKind, wantPath := pathutil.KindFilesystem, sessionTestPath("/next")
 				if kind == protocol.KindVirtual {
 					wantKind, wantPath = pathutil.KindDrives, ""
 				}
@@ -227,7 +231,8 @@ func TestNavigationTargetsKindsAndEffects(t *testing.T) {
 }
 
 func TestRootParentHomeNavigation(t *testing.T) {
-	home := pathutil.Filesystem([]byte("/home/test"))
+	home := pathutil.Filesystem([]byte(sessionTestPath("/home/test")))
+	child := pathutil.Filesystem([]byte(sessionTestPath("/work/child")))
 	tests := []struct {
 		name  string
 		mode  protocol.Mode
@@ -236,13 +241,13 @@ func TestRootParentHomeNavigation(t *testing.T) {
 	}{
 		{"insert slash empty", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpSlash}, pathutil.Root()},
 		{"normal slash empty", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpSlash}, pathutil.Root()},
-		{"insert exact dotdot", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("..")}, pathutil.Parent(pathutil.Filesystem([]byte("/work/child")))},
-		{"parent", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpParent}, pathutil.Parent(pathutil.Filesystem([]byte("/work/child")))},
+		{"insert exact dotdot", protocol.ModeInsert, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("..")}, pathutil.Parent(child)},
+		{"parent", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpParent}, pathutil.Parent(child)},
 		{"home", protocol.ModeNormal, protocol.Event{Opcode: protocol.OpHome}, home},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			s := eventSnapshot(protocol.PickerCD, test.mode, pathutil.Filesystem([]byte("/work/child")))
+			s := eventSnapshot(protocol.PickerCD, test.mode, child)
 			reduction, err := Reduce(s, test.event)
 			proposal := reduction.proposalForTest()
 			if err != nil || proposal.State.Location.Kind != test.want.Kind || !bytes.Equal(proposal.State.Location.Path, test.want.Path) || proposal.Build == nil {
@@ -367,7 +372,7 @@ func TestHandleInvalidAddRetainsGenerationRecordsAndQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpEnter, Query: []byte("child")})
-	wantEffect := protocol.Effect{Prompt: "[A!] ", ErrorPrompt: true}
+	wantEffect := protocol.Effect{Prompt: "[A!] ", Header: sessionTestDrivesHeader(), ErrorPrompt: true}
 	if err != nil || result.Snapshot.Generation() != 1 || len(result.Snapshot.Records()) != 1 ||
 		result.Snapshot.State().Mode != protocol.ModeAdd || !result.Snapshot.State().AddError || result.Effect != wantEffect {
 		t.Fatalf("result=%+v err=%v", result, err)

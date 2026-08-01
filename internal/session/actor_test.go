@@ -217,7 +217,7 @@ func TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically(t *testing.T)
 		result.Effect.ReloadGeneration != 2 || !result.Effect.ClearQuery || !result.Effect.ClearMulti {
 		t.Fatalf("result = %+v", result)
 	}
-	if result.Metrics.Sources.ZoxideOutcome != "cached" || result.Metrics.TransformDuration <= 0 {
+	if result.Metrics.Sources.ZoxideOutcome != "cached" || !sessionTestTransformDurationValid(result.Metrics.TransformDuration) {
 		t.Fatalf("metrics = %+v", result.Metrics)
 	}
 }
