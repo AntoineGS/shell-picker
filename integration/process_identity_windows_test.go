@@ -24,13 +24,13 @@ var task20OwnedHandleRegistry = struct {
 	handles map[windows.Handle]string
 }{handles: make(map[windows.Handle]string)}
 
-func registerTask20OwnedHandle(handle windows.Handle, kind string) error {
+func registerTask20OwnedHandle(handle windows.Handle, metadata string) error {
 	task20OwnedHandleRegistry.Lock()
 	defer task20OwnedHandleRegistry.Unlock()
 	if previous, exists := task20OwnedHandleRegistry.handles[handle]; exists {
 		return fmt.Errorf("Task20 handle %#x already registered as %s", uintptr(handle), previous)
 	}
-	task20OwnedHandleRegistry.handles[handle] = kind
+	task20OwnedHandleRegistry.handles[handle] = metadata
 	return nil
 }
 
@@ -54,12 +54,34 @@ func snapshotTask20OwnedHandles() map[windows.Handle]string {
 	return snapshot
 }
 
+func task20ClassifiedResourceForHandle(handle windows.Handle) (task20ResourceIdentity, error) {
+	classified, err := task20CurrentProcessClassifiedHandles()
+	if err != nil {
+		return task20ResourceIdentity{}, err
+	}
+	for identity, resource := range classified {
+		if identity.Value == uintptr(handle) {
+			return resource, nil
+		}
+	}
+	return task20ResourceIdentity{}, fmt.Errorf("handle %#x was absent from the current-process classified snapshot", uintptr(handle))
+}
+
 func openOwnedProcessIdentity(pid int) (ownedProcessIdentity, error) {
 	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
 		return nil, err
 	}
-	if err := registerTask20OwnedHandle(handle, fmt.Sprintf("process:%d", pid)); err != nil {
+	resource, err := task20ClassifiedResourceForHandle(handle)
+	if err != nil {
+		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("classify process identity handle %#x: %w", uintptr(handle), err)
+	}
+	if resource.Kind != task20HandleProcess {
+		_ = windows.CloseHandle(handle)
+		return nil, fmt.Errorf("process identity handle %#x classified as type %s", uintptr(handle), resource.Type)
+	}
+	if err := registerTask20OwnedHandle(handle, task20HandleRegistryMetadata("process/job", resource)); err != nil {
 		_ = windows.CloseHandle(handle)
 		return nil, err
 	}

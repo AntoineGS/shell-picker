@@ -41,6 +41,25 @@ func TestWindowsUnknownApplicationHandleKindFailsFiltering(t *testing.T) {
 	}
 }
 
+func TestWindowsTask20ScopePolicyIsTypeExact(t *testing.T) {
+	cases := []struct {
+		phase string
+		kind  task20HandleKind
+		want  bool
+	}{
+		{"server", task20HandleSocket, true},
+		{"server", task20HandleEvent, false},
+		{"process/job", task20HandleProcess, true},
+		{"process/job", task20HandleJob, true},
+		{"process/job", task20HandlePipe, false},
+	}
+	for _, test := range cases {
+		if got := task20ScopeTracks(test.phase, test.kind); got != test.want {
+			t.Errorf("phase=%s kind=%v got=%v want=%v", test.phase, test.kind, got, test.want)
+		}
+	}
+}
+
 func TestWindowsRawHandleCountDoesNotChangeApplicationDifference(t *testing.T) {
 	resource := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x40, Object: 0x4000}, Type: "Process", Kind: task20HandleProcess}
 	application := map[task20HandleIdentity]task20ResourceIdentity{resource.Identity: resource}
@@ -110,6 +129,14 @@ func task20CurrentProcessClassifiedHandles() (map[task20HandleIdentity]task20Res
 	return classified, nil
 }
 
+func task20CurrentProcessApplicationHandles() (map[task20HandleIdentity]task20ResourceIdentity, error) {
+	classified, err := task20CurrentProcessClassifiedHandles()
+	if err != nil {
+		return nil, err
+	}
+	return task20ApplicationHandles(classified)
+}
+
 func task20CurrentProcessHandleIdentities() (map[task20HandleIdentity]struct{}, error) {
 	entries, err := task20CurrentProcessHandleEntries()
 	if err != nil {
@@ -161,38 +188,63 @@ func task20CurrentProcessHandleEntries() ([]task20SystemHandleTableEntry, error)
 }
 
 type task20HandleScope struct {
-	kind     string
-	baseline map[task20HandleIdentity]struct{}
-	owned    []task20HandleIdentity
+	phase    string
+	baseline map[task20HandleIdentity]task20ResourceIdentity
+	owned    []task20ResourceIdentity
 }
 
-func beginTask20HandleScope(t *testing.T, kind string) task20HandleScope {
-	t.Helper()
-	baseline, err := task20CurrentProcessHandleIdentities()
-	if err != nil {
-		t.Fatalf("snapshot handles before %s: %v", kind, err)
+func task20ScopeTracks(phase string, kind task20HandleKind) bool {
+	switch phase {
+	case "server":
+		return kind == task20HandleSocket
+	case "process/job":
+		return kind == task20HandleProcess || kind == task20HandleJob
+	default:
+		return false
 	}
-	return task20HandleScope{kind: kind, baseline: baseline}
+}
+
+func task20HandleRegistryMetadata(phase string, resource task20ResourceIdentity) string {
+	return fmt.Sprintf("phase=%s type=%s handle=%#x object=%#x", phase, resource.Type,
+		resource.Identity.Value, resource.Identity.Object)
+}
+
+func beginTask20HandleScope(t *testing.T, phase string) task20HandleScope {
+	t.Helper()
+	baseline, err := task20CurrentProcessClassifiedHandles()
+	if err != nil {
+		t.Fatalf("snapshot handles before %s: %v", phase, err)
+	}
+	return task20HandleScope{phase: phase, baseline: baseline}
 }
 
 func (scope *task20HandleScope) Capture(t *testing.T) {
 	t.Helper()
-	current, err := task20CurrentProcessHandleIdentities()
+	classified, err := task20CurrentProcessClassifiedHandles()
 	if err != nil {
-		t.Fatalf("snapshot handles during %s: %v", scope.kind, err)
+		t.Fatalf("snapshot handles during %s: %v", scope.phase, err)
 	}
-	for identity := range current {
-		if _, existed := scope.baseline[identity]; existed {
+	current, err := task20ApplicationHandles(classified)
+	if err != nil {
+		t.Fatalf("filter handles during %s: %v", scope.phase, err)
+	}
+	for identity, resource := range current {
+		resource.Identity = identity
+		previous, existed := scope.baseline[identity]
+		if existed && previous == resource {
 			continue
 		}
-		handle := windows.Handle(identity.Value)
-		if err := registerTask20OwnedHandle(handle, scope.kind); err != nil {
+		if !task20ScopeTracks(scope.phase, resource.Kind) {
+			continue
+		}
+		handle := windows.Handle(resource.Identity.Value)
+		if err := registerTask20OwnedHandle(handle, task20HandleRegistryMetadata(scope.phase, resource)); err != nil {
 			t.Fatal(err)
 		}
-		scope.owned = append(scope.owned, identity)
+		scope.owned = append(scope.owned, resource)
 	}
 	if len(scope.owned) == 0 {
-		t.Fatalf("%s opened no test-accounted Windows handles", scope.kind)
+		t.Fatalf("%s opened no test-accounted Windows handles", scope.phase)
 	}
 }
 
@@ -200,35 +252,35 @@ func (scope *task20HandleScope) RequireClosed(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	remaining, err := scope.requireClosed(ctx, task20CurrentProcessHandleIdentities)
+	remaining, err := scope.requireClosed(ctx, task20CurrentProcessApplicationHandles)
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("snapshot handles after %s: %v", scope.kind, err)
+		t.Fatalf("snapshot handles after %s: %v", scope.phase, err)
 	}
-	for _, identity := range remaining {
-		t.Errorf("%s handle %#x object %#x remains open", scope.kind, identity.Value, identity.Object)
+	for _, resource := range remaining {
+		t.Errorf("%s resource %s remains open", scope.phase, task20HandleRegistryMetadata(scope.phase, resource))
 	}
 }
 
 func (scope *task20HandleScope) requireClosed(ctx context.Context,
-	query func() (map[task20HandleIdentity]struct{}, error)) ([]task20HandleIdentity, error) {
-	remaining, err := task20WaitForHandleIdentities(ctx, scope.owned, query)
+	query func() (map[task20HandleIdentity]task20ResourceIdentity, error)) ([]task20ResourceIdentity, error) {
+	remaining, err := task20WaitForClassifiedResources(ctx, scope.owned, query)
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return remaining, err
 	}
-	remainingSet := make(map[task20HandleIdentity]struct{}, len(remaining))
-	for _, identity := range remaining {
-		remainingSet[identity] = struct{}{}
+	remainingSet := make(map[task20ResourceIdentity]struct{}, len(remaining))
+	for _, resource := range remaining {
+		remainingSet[resource] = struct{}{}
 	}
-	for _, identity := range scope.owned {
-		if _, remains := remainingSet[identity]; !remains {
-			deleteTask20OwnedHandle(identity.Value)
+	for _, resource := range scope.owned {
+		if _, remains := remainingSet[resource]; !remains {
+			deleteTask20OwnedHandle(resource.Identity.Value)
 		}
 	}
 	return remaining, err
 }
 
-func task20WaitForHandleIdentities(ctx context.Context, owned []task20HandleIdentity,
-	query func() (map[task20HandleIdentity]struct{}, error)) ([]task20HandleIdentity, error) {
+func task20WaitForClassifiedResources(ctx context.Context, owned []task20ResourceIdentity,
+	query func() (map[task20HandleIdentity]task20ResourceIdentity, error)) ([]task20ResourceIdentity, error) {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -236,10 +288,11 @@ func task20WaitForHandleIdentities(ctx context.Context, owned []task20HandleIden
 		if err != nil {
 			return nil, err
 		}
-		remaining := make([]task20HandleIdentity, 0, len(owned))
-		for _, identity := range owned {
-			if _, remains := current[identity]; remains {
-				remaining = append(remaining, identity)
+		remaining := make([]task20ResourceIdentity, 0, len(owned))
+		for _, resource := range owned {
+			latest, remains := current[resource.Identity]
+			if remains && latest == resource {
+				remaining = append(remaining, resource)
 			}
 		}
 		if len(remaining) == 0 {
@@ -261,78 +314,99 @@ func deleteTask20OwnedHandle(value uintptr) {
 }
 
 func TestWindowsTask20HandleScopeWaitsForTransientClosure(t *testing.T) {
-	owned := []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}
-	seedTask20OwnedHandle(t, owned[0])
-	scope := task20HandleScope{owned: owned}
+	owned := []task20ResourceIdentity{task20TestResource(0x40, 0x1000, "Process", task20HandleProcess)}
+	seedTask20OwnedHandle(t, "process/job", owned[0])
+	scope := task20HandleScope{phase: "process/job", owned: owned}
 	calls := 0
-	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]struct{}, error) {
+	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]task20ResourceIdentity, error) {
 		calls++
 		if calls == 1 {
-			return map[task20HandleIdentity]struct{}{owned[0]: {}}, nil
+			return map[task20HandleIdentity]task20ResourceIdentity{owned[0].Identity: owned[0]}, nil
 		}
-		return map[task20HandleIdentity]struct{}{}, nil
+		return map[task20HandleIdentity]task20ResourceIdentity{}, nil
 	})
 	if err != nil || len(remaining) != 0 || calls < 2 {
 		t.Fatalf("remaining=%v err=%v calls=%d", remaining, err, calls)
 	}
-	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; exists {
-		t.Fatal("transient identity remained registered")
-	}
+	assertTask20OwnedHandleEvidence(t, "process/job", owned[0], false)
 }
 
 func TestWindowsTask20HandleScopeReportsPersistentIdentity(t *testing.T) {
-	owned := []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}
-	seedTask20OwnedHandle(t, owned[0])
-	scope := task20HandleScope{owned: owned}
+	owned := []task20ResourceIdentity{task20TestResource(0x40, 0x1000, "Process", task20HandleProcess)}
+	seedTask20OwnedHandle(t, "process/job", owned[0])
+	scope := task20HandleScope{phase: "process/job", owned: owned}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	remaining, err := scope.requireClosed(ctx, func() (map[task20HandleIdentity]struct{}, error) {
-		return map[task20HandleIdentity]struct{}{owned[0]: {}}, nil
+	remaining, err := scope.requireClosed(ctx, func() (map[task20HandleIdentity]task20ResourceIdentity, error) {
+		return map[task20HandleIdentity]task20ResourceIdentity{owned[0].Identity: owned[0]}, nil
 	})
 	if !errors.Is(err, context.DeadlineExceeded) || len(remaining) != 1 || remaining[0] != owned[0] {
 		t.Fatalf("remaining=%v err=%v", remaining, err)
 	}
-	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; !exists {
-		t.Fatal("persistent identity was unregistered")
-	}
+	assertTask20OwnedHandleEvidence(t, "process/job", owned[0], true)
 }
 
 func TestWindowsTask20HandleScopeRetainsEvidenceOnQueryError(t *testing.T) {
-	owned := []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}
-	seedTask20OwnedHandle(t, owned[0])
-	scope := task20HandleScope{owned: owned}
+	owned := []task20ResourceIdentity{task20TestResource(0x40, 0x1000, "Process", task20HandleProcess)}
+	seedTask20OwnedHandle(t, "process/job", owned[0])
+	scope := task20HandleScope{phase: "process/job", owned: owned}
 	queryErr := errors.New("snapshot unavailable")
-	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]struct{}, error) {
+	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]task20ResourceIdentity, error) {
 		return nil, queryErr
 	})
 	if !errors.Is(err, queryErr) || remaining != nil {
 		t.Fatalf("remaining=%v err=%v", remaining, err)
 	}
-	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; !exists {
-		t.Fatal("query error unregistered indeterminate identity")
-	}
+	assertTask20OwnedHandleEvidence(t, "process/job", owned[0], true)
 }
 
 func TestWindowsTask20HandleScopeTreatsReusedSlotAsClosed(t *testing.T) {
-	owned := []task20HandleIdentity{{Value: 0x40, Object: 0x1000}}
-	seedTask20OwnedHandle(t, owned[0])
-	scope := task20HandleScope{owned: owned}
-	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]struct{}, error) {
-		return map[task20HandleIdentity]struct{}{{Value: owned[0].Value, Object: 0x2000}: {}}, nil
+	owned := []task20ResourceIdentity{task20TestResource(0x40, 0x1000, "Process", task20HandleProcess)}
+	seedTask20OwnedHandle(t, "process/job", owned[0])
+	scope := task20HandleScope{phase: "process/job", owned: owned}
+	reused := task20TestResource(owned[0].Identity.Value, 0x2000, "Process", task20HandleProcess)
+	remaining, err := scope.requireClosed(context.Background(), func() (map[task20HandleIdentity]task20ResourceIdentity, error) {
+		return map[task20HandleIdentity]task20ResourceIdentity{reused.Identity: reused}, nil
 	})
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("remaining=%v err=%v", remaining, err)
 	}
-	if _, exists := snapshotTask20OwnedHandles()[windows.Handle(owned[0].Value)]; exists {
-		t.Fatal("reused numeric handle remained registered")
-	}
+	assertTask20OwnedHandleEvidence(t, "process/job", owned[0], false)
 }
 
-func seedTask20OwnedHandle(t *testing.T, identity task20HandleIdentity) {
+func task20TestResource(value, object uintptr, objectType string, kind task20HandleKind) task20ResourceIdentity {
+	identity := task20HandleIdentity{Value: value, Object: object}
+	return task20ResourceIdentity{Identity: identity, Type: objectType, Kind: kind}
+}
+
+func seedTask20OwnedHandle(t *testing.T, phase string, resource task20ResourceIdentity) {
 	t.Helper()
-	handle := windows.Handle(identity.Value)
-	if err := registerTask20OwnedHandle(handle, "scope-test"); err != nil {
+	handle := windows.Handle(resource.Identity.Value)
+	metadata := fmt.Sprintf("phase=%s type=%s handle=%#x object=%#x", phase, resource.Type,
+		resource.Identity.Value, resource.Identity.Object)
+	if err := registerTask20OwnedHandle(handle, metadata); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { deleteTask20OwnedHandle(identity.Value) })
+	t.Cleanup(func() { deleteTask20OwnedHandle(resource.Identity.Value) })
+}
+
+func assertTask20OwnedHandleEvidence(t *testing.T, phase string, resource task20ResourceIdentity, wantRegistered bool) {
+	t.Helper()
+	metadata, registered := snapshotTask20OwnedHandles()[windows.Handle(resource.Identity.Value)]
+	if registered != wantRegistered {
+		t.Fatalf("handle %#x registered=%v want=%v", resource.Identity.Value, registered, wantRegistered)
+	}
+	if !wantRegistered {
+		return
+	}
+	for _, fragment := range []string{
+		"phase=" + phase,
+		"type=" + resource.Type,
+		fmt.Sprintf("handle=%#x", resource.Identity.Value),
+		fmt.Sprintf("object=%#x", resource.Identity.Object),
+	} {
+		if !strings.Contains(metadata, fragment) {
+			t.Fatalf("handle %#x metadata=%q missing %q", resource.Identity.Value, metadata, fragment)
+		}
+	}
 }
