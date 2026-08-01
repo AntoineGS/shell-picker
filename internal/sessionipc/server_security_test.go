@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -178,7 +180,11 @@ func TestServerRejectsBackendReturnedVirtualPreview(t *testing.T) {
 
 func TestFinishedTelemetryExactChildBounds(t *testing.T) {
 	var recorded atomic.Int32
-	backend := benignBackend()
+	previewPath := filepath.Join(t.TempDir(), "preview.bin")
+	if err := os.WriteFile(previewPath, []byte("preview"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := benignBackendForPath([]byte(previewPath))
 	backend.recordPreview = func(context.Context, PreviewRequest) error {
 		recorded.Add(1)
 		return nil

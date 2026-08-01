@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +59,25 @@ func benignBackend() backendStub {
 		},
 		recordPreview: func(context.Context, PreviewRequest) error { return nil },
 		currentHeader: func(context.Context) (string, error) { return "/", nil },
+	}
+}
+
+func benignBackendForPath(path []byte) backendStub {
+	backend := benignBackend()
+	backend.resolvePreview = func(_ context.Context, _ []byte) (protocol.ResolvedCandidate, error) {
+		return protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: append([]byte(nil), path...), Size: 7, Mode: 0o644}, nil
+	}
+	return backend
+}
+
+func awaitPreviewRecord(t *testing.T, recorded <-chan PreviewRequest) PreviewRequest {
+	t.Helper()
+	select {
+	case request := <-recorded:
+		return request
+	case <-time.After(2 * time.Second):
+		t.Fatal("preview telemetry was not recorded within 2s")
+		return PreviewRequest{}
 	}
 }
 
@@ -218,7 +239,11 @@ func TestServerAppliesHardBodyLimit(t *testing.T) {
 }
 
 func TestRoutesMapResponsesAndErrors(t *testing.T) {
-	backend := benignBackend()
+	previewPath := filepath.Join(t.TempDir(), "preview.bin")
+	if err := os.WriteFile(previewPath, []byte("preview"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := benignBackendForPath([]byte(previewPath))
 	backend.loadGeneration = func(_ context.Context, generation uint64) ([]byte, error) {
 		if generation == 9 {
 			return nil, session.ErrStaleGeneration
@@ -229,7 +254,7 @@ func TestRoutesMapResponsesAndErrors(t *testing.T) {
 		if bytes.Equal(current, []byte("missing")) {
 			return protocol.ResolvedCandidate{}, session.ErrUnknownRecord
 		}
-		return protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte{'/', 0xff, 'p'}, Size: 8, ModTimeUnixNano: 9, Mode: 0o600}, nil
+		return protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte(previewPath), Size: 8, ModTimeUnixNano: 9, Mode: 0o600}, nil
 	}
 	_, client := startServer(t, backend)
 
@@ -241,8 +266,9 @@ func TestRoutesMapResponsesAndErrors(t *testing.T) {
 		t.Fatalf("stale load err=%v", err)
 	}
 	preview, err := client.ResolvePreview(context.Background(), PreviewRequest{Phase: "resolve", CurrentItemBase64: base64.StdEncoding.EncodeToString([]byte("record"))})
-	if err != nil || preview.PathBase64 != "L/9w" || preview.Kind != protocol.KindFile {
-		t.Fatalf("preview=%+v err=%v", preview, err)
+	wantPathBase64 := base64.StdEncoding.EncodeToString([]byte(previewPath))
+	if err != nil || preview.PathBase64 != wantPathBase64 || preview.Kind != protocol.KindFile {
+		t.Fatalf("preview=%+v err=%v want_path_base64=%q", preview, err, wantPathBase64)
 	}
 	_, err = client.ResolvePreview(context.Background(), PreviewRequest{Phase: "resolve", CurrentItemBase64: base64.StdEncoding.EncodeToString([]byte("missing"))})
 	if !errors.Is(err, ErrNotFound) {
@@ -251,13 +277,17 @@ func TestRoutesMapResponsesAndErrors(t *testing.T) {
 }
 
 func TestPreviewValidationAndTelemetry(t *testing.T) {
+	previewPath := filepath.Join(t.TempDir(), "preview.bin")
+	if err := os.WriteFile(previewPath, []byte("preview"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	recorded := make(chan PreviewRequest, 2)
-	backend := benignBackend()
+	backend := benignBackendForPath([]byte(previewPath))
 	backend.resolvePreview = func(_ context.Context, current []byte) (protocol.ResolvedCandidate, error) {
 		if bytes.Equal(current, []byte("virtual")) {
 			return protocol.ResolvedCandidate{}, session.ErrUnknownRecord
 		}
-		return protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte("/tmp/x")}, nil
+		return protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte(previewPath)}, nil
 	}
 	backend.recordPreview = func(_ context.Context, request PreviewRequest) error {
 		recorded <- request
@@ -273,7 +303,7 @@ func TestPreviewValidationAndTelemetry(t *testing.T) {
 		if err := client.RecordPreview(context.Background(), request); err != nil {
 			t.Fatalf("RecordPreview(%s): %v", request.Phase, err)
 		}
-		if got := <-recorded; got.Phase != request.Phase {
+		if got := awaitPreviewRecord(t, recorded); got.Phase != request.Phase {
 			t.Fatalf("recorded phase=%q", got.Phase)
 		}
 	}
@@ -298,6 +328,23 @@ func TestPreviewValidationAndTelemetry(t *testing.T) {
 			t.Errorf("request=%+v status=%d", request, response.StatusCode)
 		}
 	}
+
+	t.Run("backend rejects telemetry", func(t *testing.T) {
+		backend := benignBackendForPath([]byte(previewPath))
+		backend.recordPreview = func(context.Context, PreviewRequest) error {
+			return errors.New("telemetry rejected")
+		}
+		server, _ := startServer(t, backend)
+		body, err := json.Marshal(valid[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := rawRequest(t, server.Address()+"/v1/preview", fixedToken(7), http.MethodPost, "application/json", body)
+		response.Body.Close()
+		if response.StatusCode != http.StatusInternalServerError {
+			t.Fatalf("status=%d want=%d", response.StatusCode, http.StatusInternalServerError)
+		}
+	})
 }
 
 func TestDisplayContextCancellationFlowsToBackend(t *testing.T) {
@@ -377,7 +424,11 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 
 func TestPreviewTelemetryUsesIndependentSoftTimeout(t *testing.T) {
 	requestObserved := make(chan struct{})
-	backend := benignBackend()
+	previewPath := filepath.Join(t.TempDir(), "preview.bin")
+	if err := os.WriteFile(previewPath, []byte("preview"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backend := benignBackendForPath([]byte(previewPath))
 	backend.recordPreview = func(ctx context.Context, _ PreviewRequest) error {
 		close(requestObserved)
 		<-ctx.Done()
