@@ -329,11 +329,30 @@ func stagedArtifactPath(t *testing.T, root string) string {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), cacheTempPrefix) {
 			continue
 		}
-		children, err := os.ReadDir(filepath.Join(root, entry.Name()))
-		if err == nil && len(children) == 1 {
-			return filepath.Join(root, entry.Name(), children[0].Name())
+		children, err := readStageDirectory(filepath.Join(root, entry.Name()))
+		if err != nil {
+			continue
+		}
+		artifact, marker := false, false
+		for _, child := range children {
+			switch child.Name() {
+			case "artifact.jpg":
+				artifact = true
+			case ".shell-picker-owner-v1":
+				if runtime.GOOS != "windows" {
+					t.Fatalf("unexpected stage marker %q", child.Name())
+				}
+				marker = true
+			default:
+				t.Fatalf("unexpected staged entry %q", child.Name())
+			}
+		}
+		if artifact && (runtime.GOOS != "windows" || marker && len(children) == 2) {
+			return filepath.Join(root, entry.Name(), "artifact.jpg")
 		}
 	}
 	t.Fatal("staged artifact not found")
 	return ""
 }
+
+var readStageDirectory = os.ReadDir

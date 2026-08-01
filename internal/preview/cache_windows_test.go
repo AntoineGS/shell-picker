@@ -13,6 +13,24 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func init() { readStageDirectory = readStageDirectoryWindows }
+
+func readStageDirectoryWindows(path string) ([]os.DirEntry, error) {
+	pointer, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := windows.CreateFile(pointer, windows.FILE_LIST_DIRECTORY|windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(handle), path)
+	entries, readErr := file.ReadDir(-1)
+	return entries, errors.Join(readErr, file.Close())
+}
+
 func TestWindowsCachePutRootSwapIsRejectedOrExplicitlyDenied(t *testing.T) {
 	parent := t.TempDir()
 	root := filepath.Join(parent, "cache")
