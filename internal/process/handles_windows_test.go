@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -31,6 +32,59 @@ func TestPreparedStreamsPumpCount(t *testing.T) {
 	}
 }
 
+func TestOwnedFileCloseUsesInjectedCloseSeam(t *testing.T) {
+	t.Run("success and once", func(t *testing.T) {
+		file, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldCloseFile := winCloseFile
+		t.Cleanup(func() { winCloseFile = oldCloseFile })
+		var calls int
+		winCloseFile = func(file *os.File) error {
+			calls++
+			return oldCloseFile(file)
+		}
+		owned := &ownedFile{file: file}
+		if err := owned.close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := owned.close(); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 {
+			t.Fatalf("close seam calls=%d want=1", calls)
+		}
+	})
+	t.Run("error propagation", func(t *testing.T) {
+		file, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		oldCloseFile := winCloseFile
+		closeErr := errors.New("close failed")
+		t.Cleanup(func() {
+			winCloseFile = oldCloseFile
+			_ = oldCloseFile(file)
+		})
+		var calls int
+		winCloseFile = func(*os.File) error {
+			calls++
+			return closeErr
+		}
+		owned := &ownedFile{file: file}
+		if err := owned.close(); !errors.Is(err, closeErr) {
+			t.Fatalf("close error=%v, want %v", err, closeErr)
+		}
+		if err := owned.close(); !errors.Is(err, closeErr) {
+			t.Fatalf("second close error=%v, want %v", err, closeErr)
+		}
+		if calls != 1 {
+			t.Fatalf("close seam calls=%d want=1", calls)
+		}
+	})
+}
+
 func TestWindowsStartFailureStagesCloseEverything(t *testing.T) {
 	for _, stage := range allWinStages() {
 		t.Run(stage.String(), func(t *testing.T) {
@@ -47,16 +101,20 @@ func TestWindowsStartFailureStagesCloseEverything(t *testing.T) {
 func TestHandleOwnershipRejectsInvalidTransitions(t *testing.T) {
 	ownership := &testHandleOwnership{}
 	ownership.register(windows.Handle(0x40), "first")
-	ownership.close(windows.Handle(0x40), nil)
+	ownership.closeHandle(windows.Handle(0x40), nil)
 	ownership.register(windows.Handle(0x40), "second")
-	ownership.close(windows.Handle(0x40), nil)
-	ownership.close(windows.Handle(0x40), nil)
-	ownership.close(windows.Handle(0x44), nil)
+	ownership.closeHandle(windows.Handle(0x40), nil)
+	ownership.closeHandle(windows.Handle(0x40), nil)
+	ownership.closeHandle(windows.Handle(0x44), nil)
 	ownership.register(windows.Handle(0x48), "parent")
 	ownership.transfer(windows.Handle(0x48), "os.File")
 	ownership.transfer(windows.Handle(0x48), "os.File")
-	ownership.close(windows.Handle(0x48), nil)
-	if got, want := len(ownership.violations), 4; got != want {
+	ownership.closeHandle(windows.Handle(0x48), nil)
+	ownership.register(windows.Handle(0x4c), "parent")
+	ownership.transfer(windows.Handle(0x4c), "os.File")
+	ownership.closeFile(windows.Handle(0x4c), nil)
+	ownership.closeFile(windows.Handle(0x4c), nil)
+	if got, want := len(ownership.violations), 5; got != want {
 		t.Fatalf("invalid transitions=%d want=%d: %v", got, want, ownership.violations)
 	}
 }
@@ -95,7 +153,7 @@ func (ownership *testHandleOwnership) register(handle windows.Handle, phase stri
 	ownership.lifetimes = append(ownership.lifetimes, testHandleLifetime{handle: handle, phase: phase})
 }
 
-func (ownership *testHandleOwnership) close(handle windows.Handle, closeErr error) {
+func (ownership *testHandleOwnership) closeHandle(handle windows.Handle, closeErr error) {
 	lifetime := ownership.latest(handle)
 	if lifetime == nil {
 		ownership.violations = append(ownership.violations, fmt.Errorf("unknown close of handle %#x", handle))
@@ -111,6 +169,28 @@ func (ownership *testHandleOwnership) close(handle windows.Handle, closeErr erro
 		if closeErr != nil {
 			ownership.violations = append(ownership.violations,
 				fmt.Errorf("close of %s handle %#x failed: %w", lifetime.phase, handle, closeErr))
+			return
+		}
+		lifetime.state = testHandleClosed
+	}
+}
+
+func (ownership *testHandleOwnership) closeFile(handle windows.Handle, closeErr error) {
+	lifetime := ownership.latest(handle)
+	if lifetime == nil {
+		ownership.violations = append(ownership.violations, fmt.Errorf("unknown file close of handle %#x", handle))
+		return
+	}
+	switch lifetime.state {
+	case testHandleClosed:
+		ownership.violations = append(ownership.violations, fmt.Errorf("duplicate file close of %s handle %#x", lifetime.phase, handle))
+	case testHandleOpen:
+		ownership.violations = append(ownership.violations,
+			fmt.Errorf("file close of untransferred %s handle %#x", lifetime.phase, handle))
+	case testHandleTransferred:
+		if closeErr != nil {
+			ownership.violations = append(ownership.violations,
+				fmt.Errorf("file close of %s handle %#x failed: %w", lifetime.phase, handle, closeErr))
 			return
 		}
 		lifetime.state = testHandleClosed
@@ -170,23 +250,9 @@ func (ownership *testHandleOwnership) assertClosed(t *testing.T) {
 		case testHandleOpen:
 			t.Errorf("%s handle %#x remains owned", lifetime.phase, lifetime.handle)
 		case testHandleTransferred:
-			if err := assertWindowsHandleClosed(lifetime.handle); err != nil {
-				t.Errorf("%s handle %#x transferred to %s was not closed: %v", lifetime.phase, lifetime.handle, lifetime.owner, err)
-				continue
-			}
-			lifetime.state = testHandleClosed
+			t.Errorf("%s handle %#x remains owned by %s", lifetime.phase, lifetime.handle, lifetime.owner)
 		}
 	}
-}
-
-// os.File.Close bypasses winCloseHandle, so transferred pipe ownership is probed after cleanup.
-func assertWindowsHandleClosed(handle windows.Handle) error {
-	if _, err := windows.GetFileType(handle); err == nil {
-		return errors.New("handle is still open")
-	} else if !errors.Is(err, windows.ERROR_INVALID_HANDLE) {
-		return fmt.Errorf("probe handle: %w", err)
-	}
-	return nil
 }
 
 type winStage uint8
@@ -218,6 +284,7 @@ func (s winStage) String() string {
 func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership, error) {
 	fail := error(syscall.Errno(windows.ERROR_INVALID_FUNCTION))
 	oldCreateFile, oldDuplicate, oldPipe, oldClose := winCreateFile, winDuplicateHandle, winCreatePipe, winCloseHandle
+	oldCloseFile := winCloseFile
 	oldSetHandle, oldCreateJob, oldSetJob := winSetHandleInformation, winCreateJobObject, winSetInformationJobObject
 	oldAttributes, oldUpdate := winNewAttributeList, winUpdateHandleList
 	oldCreateProcess, oldAssign, oldResume := winCreateProcess, winAssignProcessToJobObject, winResumeThread
@@ -225,13 +292,20 @@ func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership,
 	childPID := 0
 	defer func() {
 		winCreateFile, winDuplicateHandle, winCreatePipe, winCloseHandle = oldCreateFile, oldDuplicate, oldPipe, oldClose
+		winCloseFile = oldCloseFile
 		winSetHandleInformation, winCreateJobObject, winSetInformationJobObject = oldSetHandle, oldCreateJob, oldSetJob
 		winNewAttributeList, winUpdateHandleList = oldAttributes, oldUpdate
 		winCreateProcess, winAssignProcessToJobObject, winResumeThread = oldCreateProcess, oldAssign, oldResume
 	}()
 	winCloseHandle = func(handle windows.Handle) error {
 		err := oldClose(handle)
-		ownership.close(handle, err)
+		ownership.closeHandle(handle, err)
+		return err
+	}
+	winCloseFile = func(file *os.File) error {
+		handle := windows.Handle(file.Fd())
+		err := oldCloseFile(file)
+		ownership.closeFile(handle, err)
 		return err
 	}
 	winCreateFile = func(name *uint16, access, share uint32, sa *windows.SecurityAttributes, disposition, flags uint32,

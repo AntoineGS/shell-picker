@@ -20,6 +20,7 @@ var (
 	winCreatePipe           = windows.CreatePipe
 	winSetHandleInformation = windows.SetHandleInformation
 	winCloseHandle          = windows.CloseHandle
+	winCloseFile            = func(file *os.File) error { return file.Close() }
 )
 
 type ownedFile struct {
@@ -29,7 +30,7 @@ type ownedFile struct {
 }
 
 func (f *ownedFile) close() error {
-	f.once.Do(func() { f.err = f.file.Close() })
+	f.once.Do(func() { f.err = winCloseFile(f.file) })
 	return f.err
 }
 
