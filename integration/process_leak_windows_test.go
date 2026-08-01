@@ -61,12 +61,22 @@ func TestWindowsResourceSnapshotFingerprintsDirectoryReplacement(t *testing.T) {
 
 var task20GetProcessHandleCount = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessHandleCount")
 var task20NtQuerySystemInformation = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQuerySystemInformation")
+var task20NtQueryObject = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject")
 
 const (
 	task20SystemExtendedHandleInformation = 64
 	task20StatusInfoLengthMismatch        = 0xc0000004
 	task20MaxHandleSnapshotSize           = uint32(256 << 20)
+	task20ObjectTypeInformation           = 2
 )
+
+type task20UnicodeString struct {
+	Length        uint16
+	MaximumLength uint16
+	Buffer        *uint16
+}
+
+type task20ObjectTypeQuery func(windows.Handle, []byte, *uint32) uint32
 
 type task20SystemHandleTableEntry struct {
 	Object                uintptr
@@ -201,6 +211,78 @@ func task20NextHandleSnapshotSize(size, needed uint32) (uint32, error) {
 		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
 	}
 	return next, nil
+}
+
+func task20QueryObjectType(handle windows.Handle) (string, error) {
+	return task20QueryObjectTypeWith(handle, func(handle windows.Handle, buffer []byte, needed *uint32) uint32 {
+		status, _, _ := task20NtQueryObject.Call(uintptr(handle), task20ObjectTypeInformation,
+			uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), uintptr(unsafe.Pointer(needed)))
+		return uint32(status)
+	})
+}
+
+func task20QueryObjectTypeWith(handle windows.Handle, query task20ObjectTypeQuery) (string, error) {
+	size := uint32(256)
+	for {
+		buffer := make([]byte, size)
+		var needed uint32
+		status := query(handle, buffer, &needed)
+		if status == 0 {
+			return task20ParseObjectType(buffer)
+		}
+		if status != task20StatusInfoLengthMismatch {
+			return "", fmt.Errorf("NtQueryObject(ObjectTypeInformation): NTSTATUS %#x", status)
+		}
+		next, err := task20NextHandleSnapshotSize(size, needed)
+		if err != nil {
+			return "", fmt.Errorf("grow object type response: %w", err)
+		}
+		size = next
+	}
+}
+
+func task20ParseObjectType(buffer []byte) (string, error) {
+	headerSize := int(unsafe.Sizeof(task20UnicodeString{}))
+	if len(buffer) < headerSize {
+		return "", errors.New("short object type response")
+	}
+	base := unsafe.Pointer(&buffer[0])
+	if uintptr(base)%unsafe.Alignof(task20UnicodeString{}) != 0 {
+		return "", errors.New("misaligned object type response")
+	}
+	header := (*task20UnicodeString)(base)
+	if header.Length > header.MaximumLength {
+		return "", errors.New("object type response length exceeds maximum length")
+	}
+	if header.Length%2 != 0 || header.MaximumLength%2 != 0 {
+		return "", errors.New("object type response has odd UTF-16 byte length")
+	}
+	if header.Buffer == nil {
+		return "", errors.New("object type response has nil string buffer")
+	}
+	if uintptr(unsafe.Pointer(header.Buffer))%unsafe.Alignof(uint16(0)) != 0 {
+		return "", errors.New("misaligned object type string buffer")
+	}
+
+	bufferStart := uintptr(base)
+	bufferEnd := bufferStart + uintptr(len(buffer))
+	if bufferEnd < bufferStart {
+		return "", errors.New("object type response buffer address overflowed")
+	}
+	stringStart := uintptr(unsafe.Pointer(header.Buffer))
+	if stringStart < bufferStart || stringStart > bufferEnd {
+		return "", errors.New("object type string buffer escaped response")
+	}
+	stringEnd := stringStart + uintptr(header.Length)
+	if stringEnd < stringStart || stringEnd > bufferEnd {
+		return "", errors.New("object type string escaped response")
+	}
+	maximumEnd := stringStart + uintptr(header.MaximumLength)
+	if maximumEnd < stringStart || maximumEnd > bufferEnd {
+		return "", errors.New("object type string capacity escaped response")
+	}
+
+	return windows.UTF16ToString(unsafe.Slice(header.Buffer, int(header.Length/2))), nil
 }
 
 func task20HandleIdentitiesForProcess(entries []task20SystemHandleTableEntry, pid uintptr) map[task20HandleIdentity]struct{} {
