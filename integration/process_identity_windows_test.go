@@ -79,7 +79,7 @@ func openOwnedProcessIdentity(pid int) (ownedProcessIdentity, error) {
 	}
 	if resource.Kind != task20HandleProcess {
 		_ = windows.CloseHandle(handle)
-		return nil, fmt.Errorf("process identity handle %#x classified as type %s", uintptr(handle), resource.Type)
+		return nil, fmt.Errorf("process identity handle %#x classified as %s", uintptr(handle), task20ResourceDiagnostic(resource))
 	}
 	if err := registerTask20OwnedHandle(handle, task20HandleRegistryMetadata("process/job", resource)); err != nil {
 		_ = windows.CloseHandle(handle)

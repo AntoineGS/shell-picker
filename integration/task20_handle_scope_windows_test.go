@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -20,7 +19,8 @@ func task20ApplicationHandles(classified map[task20HandleIdentity]task20Resource
 	for identity, resource := range classified {
 		owned, err := resource.applicationOwned()
 		if err != nil {
-			return nil, fmt.Errorf("determine ownership for handle %#x object %#x: %w", identity.Value, identity.Object, err)
+			resource.Identity = identity
+			return nil, fmt.Errorf("determine ownership for %s: %w", task20ResourceDiagnostic(resource), err)
 		}
 		if !owned {
 			continue
@@ -32,7 +32,7 @@ func task20ApplicationHandles(classified map[task20HandleIdentity]task20Resource
 
 func TestWindowsResourceGateReportsPersistentApplicationIdentityAfterFiltering(t *testing.T) {
 	event := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x41, Object: 0x3000}, Type: "Event", Kind: task20HandleEvent}
-	socket := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x40, Object: 0x2000}, Type: "Socket", Kind: task20HandleSocket}
+	socket := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x40, Object: 0x2000}, Type: "File", Kind: task20HandleSocket}
 	classified := map[task20HandleIdentity]task20ResourceIdentity{
 		event.Identity:  event,
 		socket.Identity: socket,
@@ -42,7 +42,7 @@ func TestWindowsResourceGateReportsPersistentApplicationIdentityAfterFiltering(t
 		t.Fatal(err)
 	}
 	diff := resourceDifference(resourceSnapshot{}, resourceSnapshot{applicationHandles: application})
-	want := "platform=handles baseline=0 current=0; added=[type=Socket value=0x40 object=0x2000] removed=[]"
+	want := "platform=handles baseline=0 current=0; added=[kind=Socket object_type=File value=0x40 object=0x2000] removed=[]"
 	if diff != want {
 		t.Fatalf("difference=%q want=%q", diff, want)
 	}
@@ -60,21 +60,35 @@ func TestWindowsUnknownApplicationHandleKindFailsFiltering(t *testing.T) {
 }
 
 func TestWindowsTask20ScopePolicyIsTypeExact(t *testing.T) {
-	cases := []struct {
-		phase string
-		kind  task20HandleKind
-		want  bool
-	}{
-		{"server", task20HandleSocket, true},
-		{"server", task20HandleEvent, false},
-		{"process/job", task20HandleProcess, true},
-		{"process/job", task20HandleJob, true},
-		{"process/job", task20HandlePipe, false},
+	kinds := []task20HandleKind{
+		task20HandleUnknown,
+		task20HandleFile,
+		task20HandlePipe,
+		task20HandleSocket,
+		task20HandleProcess,
+		task20HandleJob,
+		task20HandleThread,
+		task20HandleEvent,
+		task20HandleTimer,
+		task20HandleIOCompletion,
+		task20HandleWaitCompletion,
 	}
-	for _, test := range cases {
-		if got := task20ScopeTracks(test.phase, test.kind); got != test.want {
-			t.Errorf("phase=%s kind=%v got=%v want=%v", test.phase, test.kind, got, test.want)
+	for _, phase := range []string{"server", "process/job", "unknown"} {
+		for _, kind := range kinds {
+			want := (phase == "server" && kind == task20HandleSocket) ||
+				(phase == "process/job" && (kind == task20HandleProcess || kind == task20HandleJob))
+			if got := task20ScopeTracks(phase, kind); got != want {
+				t.Errorf("phase=%s kind=%v got=%v want=%v", phase, kind, got, want)
+			}
 		}
+	}
+}
+
+func TestTask20HandleRegistryMetadataIncludesSemanticAndNativeType(t *testing.T) {
+	resource := task20TestResource(0x40, 0x2000, "File", task20HandleSocket)
+	want := "phase=server kind=Socket object_type=File value=0x40 object=0x2000"
+	if got := task20HandleRegistryMetadata("server", resource); got != want {
+		t.Fatalf("metadata=%q want=%q", got, want)
 	}
 }
 
@@ -112,8 +126,7 @@ func task20ClassifiedHandleDifference(baseline, current map[task20HandleIdentity
 	format := func(resources []task20ResourceIdentity) string {
 		parts := make([]string, len(resources))
 		for index, resource := range resources {
-			parts[index] = fmt.Sprintf("type=%s value=%#x object=%#x", resource.Type,
-				resource.Identity.Value, resource.Identity.Object)
+			parts[index] = task20ResourceDiagnostic(resource)
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
 	}
@@ -130,79 +143,12 @@ func task20ResourceIdentityLess(left, right task20ResourceIdentity) bool {
 	return true
 }
 
-func task20CurrentProcessClassifiedHandles() (map[task20HandleIdentity]task20ResourceIdentity, error) {
-	entries, err := task20CurrentProcessHandleEntries()
-	if err != nil {
-		return nil, err
-	}
-	classified := make(map[task20HandleIdentity]task20ResourceIdentity, len(entries))
-	for _, entry := range entries {
-		identity := task20HandleIdentity{Value: entry.HandleValue, Object: entry.Object}
-		resource, err := task20ClassifyHandle(windows.Handle(entry.HandleValue), identity)
-		if err != nil {
-			return nil, fmt.Errorf("classify handle %#x object %#x: %w", entry.HandleValue, entry.Object, err)
-		}
-		classified[identity] = resource
-	}
-	return classified, nil
-}
-
 func task20CurrentProcessApplicationHandles() (map[task20HandleIdentity]task20ResourceIdentity, error) {
 	classified, err := task20CurrentProcessClassifiedHandles()
 	if err != nil {
 		return nil, err
 	}
 	return task20ApplicationHandles(classified)
-}
-
-func task20CurrentProcessHandleIdentities() (map[task20HandleIdentity]struct{}, error) {
-	entries, err := task20CurrentProcessHandleEntries()
-	if err != nil {
-		return nil, err
-	}
-	return task20HandleIdentitiesForProcess(entries, uintptr(windows.GetCurrentProcessId())), nil
-}
-
-func task20CurrentProcessHandleEntries() ([]task20SystemHandleTableEntry, error) {
-	if err := task20NtQuerySystemInformation.Find(); err != nil {
-		return nil, err
-	}
-	size := uint32(1 << 20)
-	for {
-		buffer := make([]byte, size)
-		var needed uint32
-		status, _, _ := task20NtQuerySystemInformation.Call(task20SystemExtendedHandleInformation,
-			uintptr(unsafe.Pointer(&buffer[0])), uintptr(size), uintptr(unsafe.Pointer(&needed)))
-		if uint32(status) == task20StatusInfoLengthMismatch {
-			next, err := task20NextHandleSnapshotSize(size, needed)
-			if err != nil {
-				return nil, err
-			}
-			size = next
-			continue
-		}
-		if status != 0 {
-			return nil, fmt.Errorf("NTSTATUS %#x", uint32(status))
-		}
-		headerSize := 2 * unsafe.Sizeof(uintptr(0))
-		if len(buffer) < int(headerSize) {
-			return nil, errors.New("short extended handle response")
-		}
-		count := *(*uintptr)(unsafe.Pointer(&buffer[0]))
-		entrySize := unsafe.Sizeof(task20SystemHandleTableEntry{})
-		if count > uintptr((len(buffer)-int(headerSize))/int(entrySize)) {
-			return nil, errors.New("extended handle response count exceeds buffer")
-		}
-		pid := uintptr(windows.GetCurrentProcessId())
-		entries := make([]task20SystemHandleTableEntry, 0, count)
-		for index := uintptr(0); index < count; index++ {
-			entry := (*task20SystemHandleTableEntry)(unsafe.Pointer(&buffer[headerSize+index*entrySize]))
-			if entry.UniqueProcessID == pid {
-				entries = append(entries, *entry)
-			}
-		}
-		return entries, nil
-	}
 }
 
 type task20HandleScope struct {
@@ -223,8 +169,7 @@ func task20ScopeTracks(phase string, kind task20HandleKind) bool {
 }
 
 func task20HandleRegistryMetadata(phase string, resource task20ResourceIdentity) string {
-	return fmt.Sprintf("phase=%s type=%s handle=%#x object=%#x", phase, resource.Type,
-		resource.Identity.Value, resource.Identity.Object)
+	return fmt.Sprintf("phase=%s %s", phase, task20ResourceDiagnostic(resource))
 }
 
 func beginTask20HandleScope(t *testing.T, phase string) task20HandleScope {
@@ -400,8 +345,7 @@ func task20TestResource(value, object uintptr, objectType string, kind task20Han
 func seedTask20OwnedHandle(t *testing.T, phase string, resource task20ResourceIdentity) {
 	t.Helper()
 	handle := windows.Handle(resource.Identity.Value)
-	metadata := fmt.Sprintf("phase=%s type=%s handle=%#x object=%#x", phase, resource.Type,
-		resource.Identity.Value, resource.Identity.Object)
+	metadata := task20HandleRegistryMetadata(phase, resource)
 	if err := registerTask20OwnedHandle(handle, metadata); err != nil {
 		t.Fatal(err)
 	}
@@ -417,14 +361,8 @@ func assertTask20OwnedHandleEvidence(t *testing.T, phase string, resource task20
 	if !wantRegistered {
 		return
 	}
-	for _, fragment := range []string{
-		"phase=" + phase,
-		"type=" + resource.Type,
-		fmt.Sprintf("handle=%#x", resource.Identity.Value),
-		fmt.Sprintf("object=%#x", resource.Identity.Object),
-	} {
-		if !strings.Contains(metadata, fragment) {
-			t.Fatalf("handle %#x metadata=%q missing %q", resource.Identity.Value, metadata, fragment)
-		}
+	want := task20HandleRegistryMetadata(phase, resource)
+	if metadata != want {
+		t.Fatalf("handle %#x metadata=%q want=%q", resource.Identity.Value, metadata, want)
 	}
 }

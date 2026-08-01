@@ -3,7 +3,6 @@
 package integration
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,79 +64,13 @@ func TestWindowsApplicationHandleDifferenceIncludesType(t *testing.T) {
 	baseline := map[task20HandleIdentity]task20ResourceIdentity{baselineResource.Identity: baselineResource}
 	current := map[task20HandleIdentity]task20ResourceIdentity{currentResource.Identity: currentResource}
 	diff := task20ClassifiedHandleDifference(baseline, current)
-	want := "added=[type=File value=0x20 object=0x2000] removed=[type=Process value=0x20 object=0x1000]"
+	want := "added=[kind=File object_type=File value=0x20 object=0x2000] removed=[kind=Process object_type=Process value=0x20 object=0x1000]"
 	if diff != want {
 		t.Fatalf("difference=%q want=%q", diff, want)
 	}
 }
 
 var task20GetProcessHandleCount = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessHandleCount")
-var task20NtQuerySystemInformation = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQuerySystemInformation")
-var task20NtQueryObject = windows.NewLazySystemDLL("ntdll.dll").NewProc("NtQueryObject")
-
-const (
-	task20SystemExtendedHandleInformation = 64
-	task20StatusInfoLengthMismatch        = 0xc0000004
-	task20MaxHandleSnapshotSize           = uint32(256 << 20)
-	task20ObjectTypeInformation           = 2
-)
-
-type task20HandleKind uint8
-
-const (
-	task20HandleUnknown task20HandleKind = iota
-	task20HandleFile
-	task20HandlePipe
-	task20HandleSocket
-	task20HandleProcess
-	task20HandleJob
-	task20HandleThread
-	task20HandleEvent
-	task20HandleTimer
-	task20HandleIOCompletion
-	task20HandleWaitCompletion
-)
-
-type task20ResourceIdentity struct {
-	Identity task20HandleIdentity
-	Type     string
-	Kind     task20HandleKind
-}
-
-func (identity task20ResourceIdentity) applicationOwned() (bool, error) {
-	switch identity.Kind {
-	case task20HandleFile, task20HandlePipe, task20HandleSocket, task20HandleProcess, task20HandleJob:
-		return true, nil
-	case task20HandleThread, task20HandleEvent, task20HandleTimer, task20HandleIOCompletion, task20HandleWaitCompletion:
-		return false, nil
-	default:
-		return false, fmt.Errorf("unsupported Windows handle kind %d", identity.Kind)
-	}
-}
-
-type task20UnicodeString struct {
-	Length        uint16
-	MaximumLength uint16
-	Buffer        *uint16
-}
-
-type task20ObjectTypeQuery func(windows.Handle, []byte, *uint32) uint32
-
-type task20SystemHandleTableEntry struct {
-	Object                uintptr
-	UniqueProcessID       uintptr
-	HandleValue           uintptr
-	GrantedAccess         uint32
-	CreatorBackTraceIndex uint16
-	ObjectTypeIndex       uint16
-	HandleAttributes      uint32
-	Reserved              uint32
-}
-
-type task20HandleIdentity struct {
-	Value  uintptr
-	Object uintptr
-}
 
 type resourceSnapshot struct {
 	handles            uint32
@@ -197,111 +130,6 @@ func artifactIdentity(path string, _ os.FileInfo) (uint64, uint64, error) {
 	}
 	index := uint64(identity.FileIndexHigh)<<32 | uint64(identity.FileIndexLow)
 	return uint64(identity.VolumeSerialNumber), index, nil
-}
-
-func task20NextHandleSnapshotSize(size, needed uint32) (uint32, error) {
-	if size > task20MaxHandleSnapshotSize {
-		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
-	}
-	if needed > task20MaxHandleSnapshotSize {
-		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
-	}
-	if size > ^uint32(0)/2 {
-		return 0, errors.New("extended handle response size overflowed")
-	}
-	next := size * 2
-	if next > task20MaxHandleSnapshotSize {
-		next = task20MaxHandleSnapshotSize
-	}
-	if needed > next {
-		next = needed
-	}
-	if next <= size {
-		return 0, fmt.Errorf("extended handle response exceeded %d-byte limit", task20MaxHandleSnapshotSize)
-	}
-	return next, nil
-}
-
-func task20QueryObjectType(handle windows.Handle) (string, error) {
-	return task20QueryObjectTypeWith(handle, func(handle windows.Handle, buffer []byte, needed *uint32) uint32 {
-		status, _, _ := task20NtQueryObject.Call(uintptr(handle), task20ObjectTypeInformation,
-			uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)), uintptr(unsafe.Pointer(needed)))
-		return uint32(status)
-	})
-}
-
-func task20QueryObjectTypeWith(handle windows.Handle, query task20ObjectTypeQuery) (string, error) {
-	size := uint32(256)
-	for {
-		buffer := make([]byte, size)
-		var needed uint32
-		status := query(handle, buffer, &needed)
-		if status == 0 {
-			return task20ParseObjectType(buffer)
-		}
-		if status != task20StatusInfoLengthMismatch {
-			return "", fmt.Errorf("NtQueryObject(ObjectTypeInformation): NTSTATUS %#x", status)
-		}
-		next, err := task20NextHandleSnapshotSize(size, needed)
-		if err != nil {
-			return "", fmt.Errorf("grow object type response: %w", err)
-		}
-		size = next
-	}
-}
-
-func task20ParseObjectType(buffer []byte) (string, error) {
-	headerSize := int(unsafe.Sizeof(task20UnicodeString{}))
-	if len(buffer) < headerSize {
-		return "", errors.New("short object type response")
-	}
-	base := unsafe.Pointer(&buffer[0])
-	if uintptr(base)%unsafe.Alignof(task20UnicodeString{}) != 0 {
-		return "", errors.New("misaligned object type response")
-	}
-	header := (*task20UnicodeString)(base)
-	if header.Length > header.MaximumLength {
-		return "", errors.New("object type response length exceeds maximum length")
-	}
-	if header.Length%2 != 0 || header.MaximumLength%2 != 0 {
-		return "", errors.New("object type response has odd UTF-16 byte length")
-	}
-	if header.Buffer == nil {
-		return "", errors.New("object type response has nil string buffer")
-	}
-	if uintptr(unsafe.Pointer(header.Buffer))%unsafe.Alignof(uint16(0)) != 0 {
-		return "", errors.New("misaligned object type string buffer")
-	}
-
-	bufferStart := uintptr(base)
-	bufferEnd := bufferStart + uintptr(len(buffer))
-	if bufferEnd < bufferStart {
-		return "", errors.New("object type response buffer address overflowed")
-	}
-	stringStart := uintptr(unsafe.Pointer(header.Buffer))
-	if stringStart < bufferStart || stringStart > bufferEnd {
-		return "", errors.New("object type string buffer escaped response")
-	}
-	stringEnd := stringStart + uintptr(header.Length)
-	if stringEnd < stringStart || stringEnd > bufferEnd {
-		return "", errors.New("object type string escaped response")
-	}
-	maximumEnd := stringStart + uintptr(header.MaximumLength)
-	if maximumEnd < stringStart || maximumEnd > bufferEnd {
-		return "", errors.New("object type string capacity escaped response")
-	}
-
-	return windows.UTF16ToString(unsafe.Slice(header.Buffer, int(header.Length/2))), nil
-}
-
-func task20HandleIdentitiesForProcess(entries []task20SystemHandleTableEntry, pid uintptr) map[task20HandleIdentity]struct{} {
-	identities := make(map[task20HandleIdentity]struct{})
-	for _, entry := range entries {
-		if entry.UniqueProcessID == pid {
-			identities[task20HandleIdentity{Value: entry.HandleValue, Object: entry.Object}] = struct{}{}
-		}
-	}
-	return identities
 }
 
 func task20HandleIdentityDifference(baseline, current map[task20HandleIdentity]struct{}) (added, removed []task20HandleIdentity) {
@@ -436,9 +264,9 @@ func TestWindowsHandleIdentityDifferenceListsAddedAndRemoved(t *testing.T) {
 		{Value: 0x48, Object: 0x1800}: {Identity: task20HandleIdentity{Value: 0x48, Object: 0x1800}, Type: "Process", Kind: task20HandleProcess},
 	}
 	platformDiff := platformResourceDifference(resourceSnapshot{applicationHandles: classifiedBaseline}, resourceSnapshot{applicationHandles: classifiedCurrent})
-	if !strings.Contains(platformDiff, "type=Process") || !strings.Contains(platformDiff, "value=0x48") ||
-		!strings.Contains(platformDiff, "value=0x40") {
-		t.Fatalf("platform diff=%q", platformDiff)
+	wantPlatformDiff := "handles baseline=0 current=0; added=[kind=Process object_type=Process value=0x48 object=0x1800] removed=[kind=Process object_type=Process value=0x40 object=0x1000]"
+	if platformDiff != wantPlatformDiff {
+		t.Fatalf("platform diff=%q want=%q", platformDiff, wantPlatformDiff)
 	}
 }
 
