@@ -159,12 +159,7 @@ func TestPruneQuarantineDoesNotDeleteReplacement(t *testing.T) {
 	}
 	identity := source.identity
 	_ = source.Close()
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("attacker"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	replaceWithDistinctInode(t, path, []byte("attacker"))
 	if quarantinePrune(cache, pruneItem{name: key, size: 8, identity: identity}) {
 		t.Fatal("prune deleted replacement")
 	}
@@ -183,18 +178,36 @@ func TestStagedArtifactRejectsReplacementAfterExclusiveCreation(t *testing.T) {
 	}
 	defer stage.Cleanup()
 	path := stage.Path()
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("attacker"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	replaceWithDistinctInode(t, path, []byte("attacker"))
 	writer, err := stage.OpenWritable()
 	if writer != nil {
 		_ = writer.Close()
 	}
 	if !errors.Is(err, ErrUnsafeCache) {
 		t.Fatalf("replacement writer error=%v", err)
+	}
+}
+
+func replaceWithDistinctInode(t *testing.T, path string, data []byte) {
+	t.Helper()
+	replacement, err := os.CreateTemp(filepath.Dir(path), ".shell-picker-replacement-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementPath := replacement.Name()
+	defer os.Remove(replacementPath)
+	if _, err := replacement.Write(data); err != nil {
+		_ = replacement.Close()
+		t.Fatal(err)
+	}
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacementPath, path); err != nil {
+		t.Fatal(err)
 	}
 }
 func TestStagedArtifactTruncatesValidatedCreationIdentity(t *testing.T) {

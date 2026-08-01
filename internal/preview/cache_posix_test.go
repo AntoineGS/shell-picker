@@ -76,12 +76,7 @@ func TestPOSIXStageReplacementAcceptanceFailureCleansPrivateArtifact(t *testing.
 		t.Fatal(err)
 	}
 	path := stagedArtifactPath(t, cache.root)
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	replaceWithDistinctInode(t, path, []byte("replacement"))
 	reader, _, err := artifact.OpenAccepted()
 	if reader != nil {
 		_ = reader.Close()
