@@ -5,6 +5,8 @@ package integration
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -19,6 +21,7 @@ const (
 	task20SystemExtendedHandleInformation = 64
 	task20StatusInfoLengthMismatch        = 0xc0000004
 	task20MaxHandleSnapshotSize           = uint32(256 << 20)
+	task20MaxHandleSnapshotAttempts       = 3
 	task20ObjectTypeInformation           = 2
 )
 
@@ -268,139 +271,96 @@ func task20HandleIdentitiesForProcess(entries []task20SystemHandleTableEntry, pi
 	return identities
 }
 
-type task20HandlePinAPI struct {
-	duplicate func(windows.Handle) (windows.Handle, error)
-	snapshot  func() ([]task20SystemHandleTableEntry, error)
-	classify  func(windows.Handle, task20HandleIdentity) (task20ResourceIdentity, error)
-	close     func(windows.Handle) error
-}
-
-type task20PinnedHandle struct {
-	original task20HandleIdentity
-	handle   windows.Handle
+type task20HandleSnapshotAPI struct {
+	snapshot func() (map[task20HandleIdentity]struct{}, error)
+	classify func(windows.Handle, task20HandleIdentity) (task20ResourceIdentity, error)
 }
 
 func task20CurrentProcessClassifiedHandles() (map[task20HandleIdentity]task20ResourceIdentity, error) {
-	entries, err := task20CurrentProcessHandleEntries()
-	if err != nil {
-		return nil, err
-	}
-	return task20ClassifyCapturedHandleEntries(entries, task20HandlePinAPI{
-		duplicate: task20DuplicateCurrentProcessHandle,
-		snapshot:  task20CurrentProcessHandleEntries,
-		classify:  task20ClassifyHandle,
-		close:     windows.CloseHandle,
+	return task20ClassifyCoherentHandleSnapshotWith(task20MaxHandleSnapshotAttempts, task20HandleSnapshotAPI{
+		snapshot: task20CurrentProcessHandleIdentities,
+		classify: task20ClassifyHandle,
 	})
 }
 
-func task20DuplicateCurrentProcessHandle(handle windows.Handle) (windows.Handle, error) {
-	var duplicate windows.Handle
-	if err := windows.DuplicateHandle(windows.CurrentProcess(), handle, windows.CurrentProcess(), &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
-		return duplicate, err
+func task20ClassifyCoherentHandleSnapshotWith(attempts int, api task20HandleSnapshotAPI) (map[task20HandleIdentity]task20ResourceIdentity, error) {
+	if attempts <= 0 {
+		return nil, errors.New("coherent handle snapshot attempt limit must be positive")
 	}
-	if duplicate == 0 {
-		return 0, fmt.Errorf("DuplicateHandle returned a zero handle for %#x", uintptr(handle))
+	if api.snapshot == nil || api.classify == nil {
+		return nil, errors.New("incomplete coherent handle snapshot API")
 	}
-	return duplicate, nil
+
+	var lastBefore, lastAfter map[task20HandleIdentity]struct{}
+	for attempt := 1; attempt <= attempts; attempt++ {
+		before, err := api.snapshot()
+		if err != nil {
+			return nil, fmt.Errorf("capture current-process handle snapshot before classification (attempt %d): %w", attempt, err)
+		}
+		if err := task20ValidateHandleIdentitySet(before, "before"); err != nil {
+			return nil, err
+		}
+
+		classified := make(map[task20HandleIdentity]task20ResourceIdentity, len(before))
+		for identity := range before {
+			resource, err := api.classify(windows.Handle(identity.Value), identity)
+			if err != nil {
+				return nil, fmt.Errorf("classify handle %#x object %#x: %w", identity.Value, identity.Object, err)
+			}
+			if resource.Identity != identity {
+				return nil, fmt.Errorf("classifier changed original identity for handle %#x object %#x to value=%#x object=%#x", identity.Value, identity.Object, resource.Identity.Value, resource.Identity.Object)
+			}
+			classified[identity] = resource
+		}
+
+		after, err := api.snapshot()
+		if err != nil {
+			return nil, fmt.Errorf("capture current-process handle snapshot after classification (attempt %d): %w", attempt, err)
+		}
+		if err := task20ValidateHandleIdentitySet(after, "after"); err != nil {
+			return nil, err
+		}
+		if task20HandleIdentitySetsEqual(before, after) {
+			return classified, nil
+		}
+		lastBefore, lastAfter = before, after
+	}
+
+	added, removed := task20HandleIdentityDifference(lastBefore, lastAfter)
+	return nil, fmt.Errorf("coherent current-process handle snapshot exhausted after %d attempts: before=%s after=%s; difference=%s", attempts,
+		task20FormatHandleIdentitySet(lastBefore), task20FormatHandleIdentitySet(lastAfter), formatTask20HandleIdentityDifference(added, removed))
 }
 
-func task20ClassifyCapturedHandleEntries(entries []task20SystemHandleTableEntry, api task20HandlePinAPI) (map[task20HandleIdentity]task20ResourceIdentity, error) {
-	if api.duplicate == nil || api.snapshot == nil || api.classify == nil || api.close == nil {
-		return nil, errors.New("incomplete Windows handle pinning API")
-	}
-
-	pinned := make([]task20PinnedHandle, 0, len(entries))
-	for _, entry := range entries {
-		identity := task20HandleIdentity{Value: entry.HandleValue, Object: entry.Object}
+func task20ValidateHandleIdentitySet(set map[task20HandleIdentity]struct{}, phase string) error {
+	for identity := range set {
 		if identity.Value == 0 || identity.Object == 0 {
-			return task20FailClosedCapturedHandles(pinned,
-				fmt.Errorf("invalid captured handle identity value=%#x object=%#x", identity.Value, identity.Object), api.close)
-		}
-		duplicate, err := api.duplicate(windows.Handle(entry.HandleValue))
-		if duplicate != 0 {
-			pinned = append(pinned, task20PinnedHandle{original: identity, handle: duplicate})
-		}
-		if err != nil {
-			return task20FailClosedCapturedHandles(pinned, fmt.Errorf("duplicate captured handle %#x object %#x: %w", identity.Value, identity.Object, err), api.close)
-		}
-		if duplicate == 0 {
-			return task20FailClosedCapturedHandles(pinned, fmt.Errorf("duplicate captured handle %#x object %#x returned zero handle", identity.Value, identity.Object), api.close)
+			return fmt.Errorf("invalid captured handle identity %s classification: value=%#x object=%#x", phase, identity.Value, identity.Object)
 		}
 	}
-
-	current, err := api.snapshot()
-	if err != nil {
-		return task20FailClosedCapturedHandles(pinned, fmt.Errorf("query pinned handle identities: %w", err), api.close)
-	}
-	objects, err := task20PinnedHandleObjects(current, pinned)
-	if err != nil {
-		return task20FailClosedCapturedHandles(pinned, err, api.close)
-	}
-
-	classified := make(map[task20HandleIdentity]task20ResourceIdentity, len(pinned))
-	for _, pin := range pinned {
-		object := objects[pin.handle]
-		if object != pin.original.Object {
-			err := fmt.Errorf("handle %#x object mismatch: captured object %#x, pinned duplicate %#x object %#x", pin.original.Value, pin.original.Object, uintptr(pin.handle), object)
-			return task20FailClosedCapturedHandles(pinned, err, api.close)
-		}
-		resource, err := api.classify(pin.handle, pin.original)
-		if err != nil {
-			return task20FailClosedCapturedHandles(pinned, fmt.Errorf("classify pinned handle %#x for original %#x object %#x: %w", uintptr(pin.handle), pin.original.Value, pin.original.Object, err), api.close)
-		}
-		if resource.Identity != pin.original {
-			return task20FailClosedCapturedHandles(pinned, fmt.Errorf("classifier changed original identity for handle %#x object %#x to value=%#x object=%#x", pin.original.Value, pin.original.Object, resource.Identity.Value, resource.Identity.Object), api.close)
-		}
-		classified[pin.original] = resource
-	}
-
-	if err := task20ClosePinnedHandles(pinned, api.close); err != nil {
-		return nil, err
-	}
-	return classified, nil
+	return nil
 }
 
-func task20PinnedHandleObjects(entries []task20SystemHandleTableEntry, pinned []task20PinnedHandle) (map[windows.Handle]uintptr, error) {
-	wanted := make(map[windows.Handle]struct{}, len(pinned))
-	for _, pin := range pinned {
-		wanted[pin.handle] = struct{}{}
+func task20HandleIdentitySetsEqual(left, right map[task20HandleIdentity]struct{}) bool {
+	if len(left) != len(right) {
+		return false
 	}
-	objects := make(map[windows.Handle]uintptr, len(pinned))
-	for _, entry := range entries {
-		handle := windows.Handle(entry.HandleValue)
-		if _, ok := wanted[handle]; !ok {
-			continue
-		}
-		if _, exists := objects[handle]; exists {
-			return nil, fmt.Errorf("pinned handle %#x appeared more than once in object snapshot", uintptr(handle))
-		}
-		if entry.Object == 0 {
-			return nil, fmt.Errorf("pinned handle %#x has zero object identity", uintptr(handle))
-		}
-		objects[handle] = entry.Object
-	}
-	for _, pin := range pinned {
-		if _, ok := objects[pin.handle]; !ok {
-			return nil, fmt.Errorf("pinned handle %#x was absent from object snapshot", uintptr(pin.handle))
+	for identity := range left {
+		if _, exists := right[identity]; !exists {
+			return false
 		}
 	}
-	return objects, nil
+	return true
 }
 
-func task20FailClosedCapturedHandles(pinned []task20PinnedHandle, cause error, close func(windows.Handle) error) (map[task20HandleIdentity]task20ResourceIdentity, error) {
-	if closeErr := task20ClosePinnedHandles(pinned, close); closeErr != nil {
-		return nil, errors.Join(cause, closeErr)
+func task20FormatHandleIdentitySet(set map[task20HandleIdentity]struct{}) string {
+	identities := make([]task20HandleIdentity, 0, len(set))
+	for identity := range set {
+		identities = append(identities, identity)
 	}
-	return nil, cause
-}
-
-func task20ClosePinnedHandles(pinned []task20PinnedHandle, close func(windows.Handle) error) error {
-	var closeErr error
-	for index := len(pinned) - 1; index >= 0; index-- {
-		pin := pinned[index]
-		if err := close(pin.handle); err != nil {
-			closeErr = errors.Join(closeErr, fmt.Errorf("close pinned handle %#x for original %#x object %#x: %w", uintptr(pin.handle), pin.original.Value, pin.original.Object, err))
-		}
+	sort.Slice(identities, func(i, j int) bool { return task20HandleIdentityLess(identities[i], identities[j]) })
+	parts := make([]string, len(identities))
+	for index, identity := range identities {
+		parts[index] = fmt.Sprintf("value=%#x object=%#x", identity.Value, identity.Object)
 	}
-	return closeErr
+	return "[" + strings.Join(parts, ", ") + "]"
 }

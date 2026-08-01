@@ -4,195 +4,275 @@ package integration
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
 
-func TestTask20CapturedHandleClassificationRejectsReusedSlotObjectMismatch(t *testing.T) {
-	captured := task20SystemHandleTableEntry{HandleValue: 0x40, Object: 0x1000}
-	duplicate := windows.Handle(0x80)
-	var closed []windows.Handle
-	classified := false
+func TestTask20CoherentHandleSnapshotStableSuccess(t *testing.T) {
+	process := task20HandleIdentity{Value: 0x40, Object: 0x1000}
+	socket := task20HandleIdentity{Value: 0x44, Object: 0x1400}
+	set := task20TestHandleIdentitySet(process, socket)
+	snapshotCalls := 0
+	classifyCalls := 0
 
-	got, err := task20ClassifyCapturedHandleEntries([]task20SystemHandleTableEntry{captured}, task20HandlePinAPI{
-		duplicate: func(handle windows.Handle) (windows.Handle, error) {
-			if handle != windows.Handle(captured.HandleValue) {
-				t.Fatalf("source handle=%#x want=%#x", uintptr(handle), captured.HandleValue)
-			}
-			return duplicate, nil
-		},
-		snapshot: func() ([]task20SystemHandleTableEntry, error) {
-			return []task20SystemHandleTableEntry{{HandleValue: uintptr(duplicate), Object: 0x2000}}, nil
-		},
-		classify: func(windows.Handle, task20HandleIdentity) (task20ResourceIdentity, error) {
-			classified = true
-			return task20ResourceIdentity{}, nil
-		},
-		close: func(handle windows.Handle) error {
-			closed = append(closed, handle)
-			return nil
-		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "object mismatch") {
-		t.Fatalf("result=%v err=%v; want an object-mismatch error", got, err)
-	}
-	if got != nil {
-		t.Fatalf("classified=%v; want nil on mismatch", got)
-	}
-	if classified {
-		t.Fatal("mismatched pinned object was classified")
-	}
-	if len(closed) != 1 || closed[0] != duplicate {
-		t.Fatalf("closed=%v; want [%#x]", closed, uintptr(duplicate))
-	}
-}
-
-func TestTask20CapturedHandleClassificationPreservesOriginalIdentity(t *testing.T) {
-	captured := task20SystemHandleTableEntry{HandleValue: 0x40, Object: 0x1000}
-	duplicate := windows.Handle(0x80)
-	var classifiedHandle windows.Handle
-	var classifiedIdentity task20HandleIdentity
-	var closed []windows.Handle
-
-	got, err := task20ClassifyCapturedHandleEntries([]task20SystemHandleTableEntry{captured}, task20HandlePinAPI{
-		duplicate: func(windows.Handle) (windows.Handle, error) { return duplicate, nil },
-		snapshot: func() ([]task20SystemHandleTableEntry, error) {
-			return []task20SystemHandleTableEntry{{HandleValue: uintptr(duplicate), Object: captured.Object}}, nil
+	got, err := task20ClassifyCoherentHandleSnapshotWith(3, task20HandleSnapshotAPI{
+		snapshot: func() (map[task20HandleIdentity]struct{}, error) {
+			snapshotCalls++
+			return task20CloneHandleIdentitySet(set), nil
 		},
 		classify: func(handle windows.Handle, identity task20HandleIdentity) (task20ResourceIdentity, error) {
-			classifiedHandle = handle
-			classifiedIdentity = identity
-			return task20TestResource(identity.Value, identity.Object, "File", task20HandleSocket), nil
-		},
-		close: func(handle windows.Handle) error {
-			closed = append(closed, handle)
-			return nil
+			classifyCalls++
+			if uintptr(handle) != identity.Value {
+				t.Fatalf("classifier handle=%#x identity=%+v", uintptr(handle), identity)
+			}
+			if identity == socket {
+				return task20TestResource(identity.Value, identity.Object, "File", task20HandleSocket), nil
+			}
+			return task20TestResource(identity.Value, identity.Object, "Process", task20HandleProcess), nil
 		},
 	})
 	if err != nil {
 		t.Fatalf("classification failed: %v", err)
 	}
-	wantIdentity := task20HandleIdentity{Value: captured.HandleValue, Object: captured.Object}
-	want := task20TestResource(wantIdentity.Value, wantIdentity.Object, "File", task20HandleSocket)
-	if classifiedHandle != duplicate || classifiedIdentity != wantIdentity {
-		t.Fatalf("classified handle=%#x identity=%+v; want handle=%#x identity=%+v", uintptr(classifiedHandle), classifiedIdentity, uintptr(duplicate), wantIdentity)
+	want := map[task20HandleIdentity]task20ResourceIdentity{
+		process: task20TestResource(process.Value, process.Object, "Process", task20HandleProcess),
+		socket:  task20TestResource(socket.Value, socket.Object, "File", task20HandleSocket),
 	}
-	if len(got) != 1 || got[wantIdentity] != want || got[task20HandleIdentity{Value: uintptr(duplicate), Object: captured.Object}] != (task20ResourceIdentity{}) {
-		t.Fatalf("classified=%v; want only original identity=%+v", got, want)
-	}
-	if len(closed) != 1 || closed[0] != duplicate {
-		t.Fatalf("closed=%v; want [%#x]", closed, uintptr(duplicate))
+	if !reflect.DeepEqual(got, want) || snapshotCalls != 2 || classifyCalls != 2 {
+		t.Fatalf("classified=%v snapshots=%d classifications=%d; want=%v snapshots=2 classifications=2", got, snapshotCalls, classifyCalls, want)
 	}
 }
 
-func TestTask20CapturedHandleClassificationFailsClosedOnDuplicateError(t *testing.T) {
-	first := task20SystemHandleTableEntry{HandleValue: 0x40, Object: 0x1000}
-	second := task20SystemHandleTableEntry{HandleValue: 0x44, Object: 0x1400}
-	duplicate := windows.Handle(0x80)
-	duplicateErr := errors.New("duplicate failed")
-	var closed []windows.Handle
+func TestTask20CoherentHandleSnapshotRetriesSameSlotObjectReuse(t *testing.T) {
+	first := task20HandleIdentity{Value: 0x40, Object: 0x1000}
+	second := task20HandleIdentity{Value: first.Value, Object: 0x2000}
+	classifyCalls := []task20HandleIdentity{}
+	snapshot := task20SnapshotSequence(t,
+		task20TestHandleIdentitySet(first),
+		task20TestHandleIdentitySet(second),
+		task20TestHandleIdentitySet(second),
+		task20TestHandleIdentitySet(second),
+	)
 
-	got, err := task20ClassifyCapturedHandleEntries([]task20SystemHandleTableEntry{first, second}, task20HandlePinAPI{
-		duplicate: func(handle windows.Handle) (windows.Handle, error) {
-			if handle == windows.Handle(second.HandleValue) {
-				return 0, duplicateErr
-			}
-			return duplicate, nil
-		},
-		snapshot: func() ([]task20SystemHandleTableEntry, error) {
-			t.Fatal("object snapshot ran after duplicate failure")
-			return nil, nil
-		},
-		classify: func(windows.Handle, task20HandleIdentity) (task20ResourceIdentity, error) {
-			t.Fatal("classification ran after duplicate failure")
-			return task20ResourceIdentity{}, nil
-		},
-		close: func(handle windows.Handle) error {
-			closed = append(closed, handle)
-			return nil
-		},
-	})
-	if !errors.Is(err, duplicateErr) || got != nil {
-		t.Fatalf("result=%v err=%v; want duplicate failure and nil result", got, err)
-	}
-	if len(closed) != 1 || closed[0] != duplicate {
-		t.Fatalf("closed=%v; want [%#x]", closed, uintptr(duplicate))
-	}
-}
-
-func TestTask20CapturedHandleClassificationClosesPinsOnInvalidEntry(t *testing.T) {
-	valid := task20SystemHandleTableEntry{HandleValue: 0x40, Object: 0x1000}
-	invalid := task20SystemHandleTableEntry{HandleValue: 0x44, Object: 0}
-	duplicate := windows.Handle(0x80)
-	var closed []windows.Handle
-
-	got, err := task20ClassifyCapturedHandleEntries([]task20SystemHandleTableEntry{valid, invalid}, task20HandlePinAPI{
-		duplicate: func(windows.Handle) (windows.Handle, error) { return duplicate, nil },
-		snapshot: func() ([]task20SystemHandleTableEntry, error) {
-			t.Fatal("object snapshot ran after invalid captured entry")
-			return nil, nil
-		},
-		classify: func(windows.Handle, task20HandleIdentity) (task20ResourceIdentity, error) {
-			t.Fatal("classification ran after invalid captured entry")
-			return task20ResourceIdentity{}, nil
-		},
-		close: func(handle windows.Handle) error {
-			closed = append(closed, handle)
-			return nil
-		},
-	})
-	if err == nil || got != nil {
-		t.Fatalf("result=%v err=%v; want invalid identity error and nil result", got, err)
-	}
-	if len(closed) != 1 || closed[0] != duplicate {
-		t.Fatalf("closed=%v; want [%#x]", closed, uintptr(duplicate))
-	}
-}
-
-func TestTask20CapturedHandleClassificationFailsClosedOnObjectQueryError(t *testing.T) {
-	captured := task20SystemHandleTableEntry{HandleValue: 0x40, Object: 0x1000}
-	duplicate := windows.Handle(0x80)
-	queryErr := errors.New("object snapshot failed")
-	closed := false
-
-	got, err := task20ClassifyCapturedHandleEntries([]task20SystemHandleTableEntry{captured}, task20HandlePinAPI{
-		duplicate: func(windows.Handle) (windows.Handle, error) { return duplicate, nil },
-		snapshot:  func() ([]task20SystemHandleTableEntry, error) { return nil, queryErr },
-		classify: func(windows.Handle, task20HandleIdentity) (task20ResourceIdentity, error) {
-			t.Fatal("classification ran after object query failure")
-			return task20ResourceIdentity{}, nil
-		},
-		close: func(handle windows.Handle) error {
-			closed = handle == duplicate
-			return nil
-		},
-	})
-	if !errors.Is(err, queryErr) || got != nil {
-		t.Fatalf("result=%v err=%v; want object query failure and nil result", got, err)
-	}
-	if !closed {
-		t.Fatal("pinned duplicate was not closed after object query failure")
-	}
-}
-
-func TestTask20CapturedHandleClassificationFailsClosedOnCloseError(t *testing.T) {
-	captured := task20SystemHandleTableEntry{HandleValue: 0x40, Object: 0x1000}
-	duplicate := windows.Handle(0x80)
-	closeErr := errors.New("close failed")
-
-	got, err := task20ClassifyCapturedHandleEntries([]task20SystemHandleTableEntry{captured}, task20HandlePinAPI{
-		duplicate: func(windows.Handle) (windows.Handle, error) { return duplicate, nil },
-		snapshot: func() ([]task20SystemHandleTableEntry, error) {
-			return []task20SystemHandleTableEntry{{HandleValue: uintptr(duplicate), Object: captured.Object}}, nil
-		},
+	got, err := task20ClassifyCoherentHandleSnapshotWith(3, task20HandleSnapshotAPI{
+		snapshot: snapshot,
 		classify: func(handle windows.Handle, identity task20HandleIdentity) (task20ResourceIdentity, error) {
+			if uintptr(handle) != identity.Value {
+				t.Fatalf("classifier handle=%#x identity=%+v", uintptr(handle), identity)
+			}
+			classifyCalls = append(classifyCalls, identity)
 			return task20TestResource(identity.Value, identity.Object, "Process", task20HandleProcess), nil
 		},
-		close: func(windows.Handle) error { return closeErr },
 	})
-	if !errors.Is(err, closeErr) || got != nil {
-		t.Fatalf("result=%v err=%v; want close failure and nil result", got, err)
+	if err != nil {
+		t.Fatalf("classification failed: %v", err)
+	}
+	want := map[task20HandleIdentity]task20ResourceIdentity{second: task20TestResource(second.Value, second.Object, "Process", task20HandleProcess)}
+	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(classifyCalls, []task20HandleIdentity{first, second}) {
+		t.Fatalf("classified=%v calls=%v; want=%v calls=[%+v %+v]", got, classifyCalls, want, first, second)
+	}
+}
+
+func TestTask20CoherentHandleSnapshotRetriesAddedAndRemovedEntries(t *testing.T) {
+	first := task20HandleIdentity{Value: 0x40, Object: 0x1000}
+	added := task20HandleIdentity{Value: 0x44, Object: 0x1400}
+	removed := task20HandleIdentity{Value: 0x48, Object: 0x1800}
+	for _, test := range []struct {
+		name      string
+		snapshots []map[task20HandleIdentity]struct{}
+		want      map[task20HandleIdentity]task20ResourceIdentity
+	}{
+		{
+			name: "added entry",
+			snapshots: []map[task20HandleIdentity]struct{}{
+				task20TestHandleIdentitySet(first),
+				task20TestHandleIdentitySet(first, added),
+				task20TestHandleIdentitySet(first, added),
+				task20TestHandleIdentitySet(first, added),
+			},
+			want: map[task20HandleIdentity]task20ResourceIdentity{
+				first: task20TestResource(first.Value, first.Object, "Process", task20HandleProcess),
+				added: task20TestResource(added.Value, added.Object, "Process", task20HandleProcess),
+			},
+		},
+		{
+			name: "removed entry",
+			snapshots: []map[task20HandleIdentity]struct{}{
+				task20TestHandleIdentitySet(first, removed),
+				task20TestHandleIdentitySet(first),
+				task20TestHandleIdentitySet(first),
+				task20TestHandleIdentitySet(first),
+			},
+			want: map[task20HandleIdentity]task20ResourceIdentity{
+				first: task20TestResource(first.Value, first.Object, "Process", task20HandleProcess),
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := task20ClassifyCoherentHandleSnapshotWith(3, task20HandleSnapshotAPI{
+				snapshot: task20SnapshotSequence(t, test.snapshots...),
+				classify: func(handle windows.Handle, identity task20HandleIdentity) (task20ResourceIdentity, error) {
+					if uintptr(handle) != identity.Value {
+						t.Fatalf("classifier handle=%#x identity=%+v", uintptr(handle), identity)
+					}
+					return task20TestResource(identity.Value, identity.Object, "Process", task20HandleProcess), nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("classification failed: %v", err)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("classified=%v; want=%v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTask20CoherentHandleSnapshotRetryExhaustionReportsExactSets(t *testing.T) {
+	first := task20HandleIdentity{Value: 0x40, Object: 0x1000}
+	second := task20HandleIdentity{Value: first.Value, Object: 0x2000}
+	third := task20HandleIdentity{Value: 0x44, Object: 0x3000}
+	got, err := task20ClassifyCoherentHandleSnapshotWith(2, task20HandleSnapshotAPI{
+		snapshot: task20SnapshotSequence(t,
+			task20TestHandleIdentitySet(first),
+			task20TestHandleIdentitySet(second),
+			task20TestHandleIdentitySet(second),
+			task20TestHandleIdentitySet(third),
+		),
+		classify: func(_ windows.Handle, identity task20HandleIdentity) (task20ResourceIdentity, error) {
+			return task20TestResource(identity.Value, identity.Object, "Process", task20HandleProcess), nil
+		},
+	})
+	if got != nil {
+		t.Fatalf("classified=%v; want nil after retry exhaustion", got)
+	}
+	want := "coherent current-process handle snapshot exhausted after 2 attempts: before=[value=0x40 object=0x2000] after=[value=0x44 object=0x3000]; difference=added=[value=0x44 object=0x3000] removed=[value=0x40 object=0x2000]"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err=%q want=%q", err, want)
+	}
+}
+
+func TestTask20CoherentHandleSnapshotClassifierErrorFailsClosed(t *testing.T) {
+	wantErr := errors.New("classifier failed")
+	identities := task20TestHandleIdentitySet(
+		task20HandleIdentity{Value: 0x40, Object: 0x1000},
+		task20HandleIdentity{Value: 0x44, Object: 0x1400},
+	)
+	snapshotCalls := 0
+	classifyCalls := 0
+	got, err := task20ClassifyCoherentHandleSnapshotWith(3, task20HandleSnapshotAPI{
+		snapshot: func() (map[task20HandleIdentity]struct{}, error) {
+			snapshotCalls++
+			return task20CloneHandleIdentitySet(identities), nil
+		},
+		classify: func(_ windows.Handle, identity task20HandleIdentity) (task20ResourceIdentity, error) {
+			classifyCalls++
+			if classifyCalls == 1 {
+				return task20TestResource(identity.Value, identity.Object, "Process", task20HandleProcess), nil
+			}
+			return task20ResourceIdentity{}, wantErr
+		},
+	})
+	if got != nil || !errors.Is(err, wantErr) || snapshotCalls != 1 || classifyCalls != 2 {
+		t.Fatalf("classified=%v err=%v snapshots=%d classifications=%d; want nil, classifier error, one snapshot, two classifications", got, err, snapshotCalls, classifyCalls)
+	}
+}
+
+func TestTask20CoherentHandleSnapshotClassifierIdentityMutationFailsClosed(t *testing.T) {
+	identity := task20HandleIdentity{Value: 0x40, Object: 0x1000}
+	afterCalls := 0
+	got, err := task20ClassifyCoherentHandleSnapshotWith(3, task20HandleSnapshotAPI{
+		snapshot: func() (map[task20HandleIdentity]struct{}, error) {
+			afterCalls++
+			return task20TestHandleIdentitySet(identity), nil
+		},
+		classify: func(windows.Handle, task20HandleIdentity) (task20ResourceIdentity, error) {
+			return task20TestResource(identity.Value, 0x2000, "Process", task20HandleProcess), nil
+		},
+	})
+	if got != nil {
+		t.Fatalf("classified=%v; want nil on classifier identity mutation", got)
+	}
+	if err == nil || !strings.Contains(err.Error(), "changed original identity") || afterCalls != 1 {
+		t.Fatalf("err=%v afterSnapshots=%d; want identity-mutation error and no post snapshot", err, afterCalls)
+	}
+}
+
+func TestTask20CoherentHandleSnapshotQueryErrorFailsClosed(t *testing.T) {
+	wantErr := errors.New("snapshot failed")
+	snapshotCalls := 0
+	got, err := task20ClassifyCoherentHandleSnapshotWith(3, task20HandleSnapshotAPI{
+		snapshot: func() (map[task20HandleIdentity]struct{}, error) {
+			snapshotCalls++
+			if snapshotCalls == 2 {
+				return nil, wantErr
+			}
+			return task20TestHandleIdentitySet(task20HandleIdentity{Value: 0x40, Object: 0x1000}), nil
+		},
+		classify: func(_ windows.Handle, identity task20HandleIdentity) (task20ResourceIdentity, error) {
+			return task20TestResource(identity.Value, identity.Object, "Process", task20HandleProcess), nil
+		},
+	})
+	if got != nil || !errors.Is(err, wantErr) || snapshotCalls != 2 {
+		t.Fatalf("classified=%v err=%v snapshots=%d; want nil, snapshot error, and two snapshots", got, err, snapshotCalls)
+	}
+}
+
+func TestTask20CoherentHandleSnapshotRejectsInvalidCapturedIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		identity task20HandleIdentity
+	}{
+		{name: "zero value", identity: task20HandleIdentity{}},
+		{name: "zero handle", identity: task20HandleIdentity{Object: 0x1000}},
+		{name: "zero object", identity: task20HandleIdentity{Value: 0x40}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			classified := false
+			got, err := task20ClassifyCoherentHandleSnapshotWith(3, task20HandleSnapshotAPI{
+				snapshot: func() (map[task20HandleIdentity]struct{}, error) {
+					return task20TestHandleIdentitySet(test.identity), nil
+				},
+				classify: func(windows.Handle, task20HandleIdentity) (task20ResourceIdentity, error) {
+					classified = true
+					return task20ResourceIdentity{}, nil
+				},
+			})
+			if got != nil || err == nil || classified {
+				t.Fatalf("result=%v err=%v classified=%v; want nil, invalid-identity error, and no classification", got, err, classified)
+			}
+		})
+	}
+}
+
+func task20TestHandleIdentitySet(identities ...task20HandleIdentity) map[task20HandleIdentity]struct{} {
+	set := make(map[task20HandleIdentity]struct{}, len(identities))
+	for _, identity := range identities {
+		set[identity] = struct{}{}
+	}
+	return set
+}
+
+func task20CloneHandleIdentitySet(input map[task20HandleIdentity]struct{}) map[task20HandleIdentity]struct{} {
+	clone := make(map[task20HandleIdentity]struct{}, len(input))
+	for identity := range input {
+		clone[identity] = struct{}{}
+	}
+	return clone
+}
+
+func task20SnapshotSequence(t *testing.T, snapshots ...map[task20HandleIdentity]struct{}) func() (map[task20HandleIdentity]struct{}, error) {
+	t.Helper()
+	index := 0
+	return func() (map[task20HandleIdentity]struct{}, error) {
+		if index == len(snapshots) {
+			t.Fatalf("snapshot sequence exhausted at call %d", index+1)
+		}
+		current := task20CloneHandleIdentitySet(snapshots[index])
+		index++
+		return current, nil
 	}
 }
