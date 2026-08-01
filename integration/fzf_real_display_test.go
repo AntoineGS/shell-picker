@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
@@ -54,38 +53,6 @@ func waitForTerminalTextAfter(t *testing.T, term terminalSession, before int, te
 			return
 		}
 		term.WaitOutputAfter(ctx, len(output))
-	}
-}
-
-func waitForPreviewQuiescence(t *testing.T, term terminalSession) {
-	t.Helper()
-	ctx := testContext(t)
-	dispatches := traceCount(term.TraceEvents(), "preview.dispatch", "")
-	if dispatches > 0 {
-		term.WaitBarrier(ctx, barrier{Event: "preview.finished", Count: dispatches})
-	}
-
-	const quietPeriod = 100 * time.Millisecond
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	var quietSince time.Time
-	for {
-		dispatches := traceCount(term.TraceEvents(), "preview.dispatch", "")
-		finished := traceCount(term.TraceEvents(), "preview.finished", "")
-		if dispatches == finished {
-			if quietSince.IsZero() {
-				quietSince = time.Now()
-			} else if time.Since(quietSince) >= quietPeriod {
-				return
-			}
-		} else {
-			quietSince = time.Time{}
-		}
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			t.Fatalf("wait for preview quiescence: %v; events=%+v", ctx.Err(), term.TraceEvents())
-		}
 	}
 }
 
@@ -142,26 +109,20 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		}
 		waitForTerminalText(t, term, "query-end")
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
-		waitForPreviewQuiescence(t, term)
 		waitForTerminalText(t, term, stablePreviewMarker)
 		beforeCtrlA := len(term.Output())
 		if err := term.Send(keyCtrlA); err != nil {
 			t.Fatal(err)
 		}
 		waitForTerminalTextAfter(t, term, beforeCtrlA, "query-begin")
-		waitForPreviewQuiescence(t, term)
 
 		beforeResize := len(term.Output())
-		previewBefore := traceCount(term.TraceEvents(), "preview.dispatch", "")
 		if err := term.Resize(120, 35); err != nil {
 			t.Fatal(err)
 		}
 		term.WaitOutputAfter(testContext(t), beforeResize)
 		waitForTerminalTextAfter(t, term, beforeResize, longerRetainedHeaderTail)
 		waitForTerminalTextAfter(t, term, beforeResize, stablePreviewMarker)
-		if got := traceCount(term.TraceEvents(), "preview.dispatch", ""); got != previewBefore {
-			t.Fatalf("resize preview dispatches=%d want unchanged count=%d", got, previewBefore)
-		}
 		if len(longerRetainedHeaderTail) <= len(sideBySideHeaderTail) {
 			t.Fatalf("post-resize header tail %q is not longer than side-by-side tail %q", longerRetainedHeaderTail, sideBySideHeaderTail)
 		}

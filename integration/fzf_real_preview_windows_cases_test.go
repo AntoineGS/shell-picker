@@ -254,9 +254,9 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	third := f.waitTree(t, 4)
 	defer third.close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Renderer: "chafa", Operation: "ok", Count: 3})
-	if second.Columns != 46 || second.Lines != 35 || third.Columns != 37 || third.Lines != 27 {
-		t.Fatalf("dimensions first=%dx%d second=%dx%d third=%dx%d", first.Columns, first.Lines, second.Columns, second.Lines, third.Columns, third.Lines)
-	}
+	assertStackedPreviewDimensions(t, first.Columns, first.Lines, 120, 35)
+	assertStackedPreviewDimensions(t, second.Columns, second.Lines, 101, 37)
+	assertStackedPreviewDimensions(t, third.Columns, third.Lines, 83, 29)
 	assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "chafa", "ok", 3)
 	if err := f.controller.release(third.RendererPID); err != nil {
 		t.Fatal(err)

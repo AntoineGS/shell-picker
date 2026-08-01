@@ -8,6 +8,15 @@ import (
 	"testing"
 )
 
+func assertStackedPreviewDimensions(t *testing.T, actualColumns, actualLines, columns, lines int) {
+	t.Helper()
+	wantColumns, wantLines := columns-4, (lines-4)/2
+	if actualColumns != wantColumns || actualLines != wantLines {
+		t.Fatalf("stacked preview dimensions=%dx%d for terminal %dx%d, want %dx%d",
+			actualColumns, actualLines, columns, lines, wantColumns, wantLines)
+	}
+}
+
 func TestValidateFinishedTraceRejectsDelayedErrorsAndExtraFinishes(t *testing.T) {
 	for _, test := range []struct {
 		name   string

@@ -66,6 +66,7 @@ func TestVisibleHeaderWidthAndTruncation(t *testing.T) {
 		{name: "empty preview", header: "abcdefgh", columns: "10", preview: "", want: "··gh"},
 		{name: "zero preview", header: "abcdefgh", columns: "10", preview: "0", want: "··gh"},
 		{name: "right half preview", header: strings.Repeat("a", 37), columns: "80", preview: "36", want: "··" + strings.Repeat("a", 32)},
+		{name: "right preview at exact half", header: strings.Repeat("a", 33), columns: "80", preview: "40", want: "··" + strings.Repeat("a", 28)},
 		{name: "stacked preview keeps full width", header: strings.Repeat("a", 70), columns: "80", preview: "76", want: strings.Repeat("a", 70)},
 		{name: "stacked unicode tail", header: strings.Repeat("a", 80) + "界/end", columns: "80", preview: "76", want: "··" + strings.Repeat("a", 66) + "界/end"},
 		{name: "unix root", header: "/", columns: "5", want: "/"},
@@ -104,6 +105,8 @@ func TestVisibleHeaderRejectsInvalidInputAndDimensions(t *testing.T) {
 		{name: "negative preview", header: "/work/", columns: "80", preview: "-1"},
 		{name: "leading zero preview", header: "/work/", columns: "80", preview: "01"},
 		{name: "large preview", header: "/work/", columns: "80", preview: "1001"},
+		{name: "preview exceeds stacked content width", header: "/work/", columns: "80", preview: "77"},
+		{name: "preview greatly exceeds stacked content width", header: "/work/", columns: "80", preview: "81"},
 		{name: "nonpositive width without preview", header: "/work/", columns: "4"},
 		{name: "nonpositive width with preview", header: "/work/", columns: "9", preview: "1"},
 	}
