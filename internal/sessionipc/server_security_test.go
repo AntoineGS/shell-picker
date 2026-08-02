@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -226,23 +225,19 @@ func TestFinishedTelemetryExactChildBounds(t *testing.T) {
 func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 	called := make(chan struct{})
 	cancellationReached := make(chan struct{})
-	release := make(chan struct{})
 	backendReturned := make(chan struct{})
+	shutdown := newSessionIPCShutdownArbiter()
 	backend := benignBackend()
 	backend.handleEvent = func(ctx context.Context, _ protocol.Event) (protocol.Effect, error) {
 		close(called)
 		<-ctx.Done()
 		close(cancellationReached)
-		<-release
+		<-shutdown.releaseChannel()
 		close(backendReturned)
 		return protocol.Effect{}, context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
-	var releaseOnce sync.Once
-	releaseBackend := func() {
-		releaseOnce.Do(func() { close(release) })
-	}
-	t.Cleanup(releaseBackend)
+	t.Cleanup(func() { _ = shutdown.releaseBackend() })
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	defer cancelRequest()
 	requestDone := make(chan error, 1)
@@ -256,13 +251,16 @@ func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 	defer cancelClose()
 	closed := make(chan error, 1)
 	go func() {
-		closed <- server.Close(closeCtx)
+		err := server.Close(closeCtx)
+		shutdown.recordCloseReturn()
+		closed <- err
 	}()
 	awaitSessionIPC(t, cancellationReached, "close-triggered backend cancellation")
-	// An expired shutdown context skips graceful waiting and targets the forced
-	// close path, where handlers.Wait must keep Close blocked at this barrier.
-	assertSessionIPCNotClosed(t, closed, "Server.Close while handler is held")
-	releaseBackend()
+	// The canceled context bypasses graceful Shutdown and targets the explicit
+	// httpServer.Close plus handlers.Wait path.
+	if err := shutdown.releaseBackend(); err != nil {
+		t.Fatalf("shutdown ordering: %v", err)
+	}
 	awaitSessionIPC(t, backendReturned, "backend completion after release")
 	awaitSessionIPC(t, requestDone, "event request completion after handler release")
 	if err := awaitSessionIPC(t, closed, "Server.Close after handler completion"); err != nil {

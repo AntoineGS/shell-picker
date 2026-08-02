@@ -5,15 +5,15 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 )
 
 const (
-	sessionIPCWaitTimeout     = 5 * time.Second
-	sessionIPCCloseTimeout    = 2 * time.Second
-	sessionIPCProbeTimeout    = 2 * time.Second
-	sessionIPCNegativeTimeout = 250 * time.Millisecond
+	sessionIPCWaitTimeout  = 5 * time.Second
+	sessionIPCCloseTimeout = 2 * time.Second
+	sessionIPCProbeTimeout = 2 * time.Second
 )
 
 func awaitPreviewRecord(t *testing.T, recorded <-chan PreviewRequest) PreviewRequest {
@@ -35,18 +35,44 @@ func awaitSessionIPC[T any](t *testing.T, values <-chan T, operation string) T {
 	}
 }
 
-func assertSessionIPCNotClosed(t *testing.T, closed <-chan error, operation string) {
-	t.Helper()
-	observeCtx, cancel := context.WithTimeout(context.Background(), sessionIPCNegativeTimeout)
-	defer cancel()
-	select {
-	case err := <-closed:
-		t.Fatalf("%s returned while handler was held: %v", operation, err)
-	case <-observeCtx.Done():
-		if !errors.Is(observeCtx.Err(), context.DeadlineExceeded) {
-			t.Fatalf("%s negative observation ended: %v", operation, observeCtx.Err())
-		}
+type sessionIPCShutdownArbiter struct {
+	mu            sync.Mutex
+	releaseOnce   sync.Once
+	releaseCh     chan struct{}
+	released      bool
+	closeReturned bool
+	violation     error
+}
+
+func newSessionIPCShutdownArbiter() *sessionIPCShutdownArbiter {
+	return &sessionIPCShutdownArbiter{releaseCh: make(chan struct{})}
+}
+
+func (arbiter *sessionIPCShutdownArbiter) releaseChannel() <-chan struct{} {
+	return arbiter.releaseCh
+}
+
+func (arbiter *sessionIPCShutdownArbiter) recordCloseReturn() {
+	arbiter.mu.Lock()
+	defer arbiter.mu.Unlock()
+	arbiter.closeReturned = true
+	if !arbiter.released && arbiter.violation == nil {
+		arbiter.violation = errors.New("Server.Close returned before backend release")
 	}
+}
+
+func (arbiter *sessionIPCShutdownArbiter) releaseBackend() error {
+	arbiter.mu.Lock()
+	if !arbiter.released {
+		if arbiter.closeReturned && arbiter.violation == nil {
+			arbiter.violation = errors.New("Server.Close returned before backend release")
+		}
+		arbiter.released = true
+	}
+	violation := arbiter.violation
+	arbiter.mu.Unlock()
+	arbiter.releaseOnce.Do(func() { close(arbiter.releaseCh) })
+	return violation
 }
 
 func assertDisplayError(t *testing.T, client *Client, want error, operation string) {
