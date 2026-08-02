@@ -19,11 +19,12 @@ func TestFilteredGoEnvironmentRemovesControlledKeysCaseInsensitively(t *testing.
 }
 
 type fakeGoCommand struct {
-	listOutput string
-	listErr    error
-	testErr    error
-	calls      [][]string
-	envs       [][]string
+	listOutput      string
+	listErrorOutput string
+	listErr         error
+	testErr         error
+	calls           [][]string
+	envs            [][]string
 }
 
 func (f *fakeGoCommand) run(args []string, environment []string, stdout, stderr io.Writer) error {
@@ -34,6 +35,9 @@ func (f *fakeGoCommand) run(args []string, environment []string, stdout, stderr 
 	}
 	if args[2] == "-list" {
 		if _, err := io.WriteString(stdout, f.listOutput); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(stderr, f.listErrorOutput); err != nil {
 			return err
 		}
 		return f.listErr
@@ -133,6 +137,43 @@ func TestRunManifestRejectsListCommandFailureAndSkipsExecution(t *testing.T) {
 	err := runManifest([]windowsnative.Package{pkg}, nil, io.Discard, io.Discard, fake.run)
 	if err == nil || !strings.Contains(err.Error(), "list command failed") {
 		t.Fatalf("error=%v want list command failure", err)
+	}
+	if len(fake.calls) != 1 || fake.calls[0][2] != "-list" {
+		t.Fatalf("commands=%q want only list command", fake.calls)
+	}
+}
+
+func TestRunManifestBoundsAndLabelsListFailureDiagnostics(t *testing.T) {
+	pkg := windowsnative.Package{
+		Path:    "./internal/session",
+		Pattern: `^(TestAlpha)$`,
+	}
+	fake := &fakeGoCommand{
+		listOutput:      "stdout-head\n" + strings.Repeat("s", 8192) + "\nstdout-tail",
+		listErrorOutput: "stderr-head\n" + strings.Repeat("e", 8192) + "\nstderr-tail",
+		listErr:         errors.New("exit status 1"),
+	}
+
+	err := runManifest([]windowsnative.Package{pkg}, nil, io.Discard, io.Discard, fake.run)
+	if err == nil {
+		t.Fatal("runManifest returned nil for failed list command")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"list stdout:",
+		"list stderr:",
+		"stdout-head",
+		"stdout-tail",
+		"stderr-head",
+		"stderr-tail",
+		"[...truncated...]",
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error=%q missing %q", message, want)
+		}
+	}
+	if len(message) > 2*4096+512 {
+		t.Fatalf("diagnostic error length=%d is not bounded", len(message))
 	}
 	if len(fake.calls) != 1 || fake.calls[0][2] != "-list" {
 		t.Fatalf("commands=%q want only list command", fake.calls)

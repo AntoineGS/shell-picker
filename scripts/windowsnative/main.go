@@ -15,6 +15,11 @@ import (
 
 type goCommandRunner func(args []string, environment []string, stdout, stderr io.Writer) error
 
+const (
+	maxListDiagnosticBytes = 4096
+	listDiagnosticMarker   = "[...truncated...]"
+)
+
 func filteredGoEnvironment(environment []string) []string {
 	filtered := make([]string, 0, len(environment))
 	for _, entry := range environment {
@@ -52,15 +57,23 @@ func validatePackageList(pkg windowsnative.Package, environment []string, runCom
 	args := []string{"test", pkg.Path, "-list", pkg.Pattern, "-count=1", "-timeout=5m"}
 	var listOutput, listError bytes.Buffer
 	if err := runCommand(args, environment, &listOutput, &listError); err != nil {
-		if detail := strings.TrimSpace(listError.String()); detail != "" {
-			return fmt.Errorf("list command failed: %w: %s", err, detail)
-		}
-		return fmt.Errorf("list command failed: %w", err)
+		return fmt.Errorf("list command failed: %w; list stdout: %q; list stderr: %q", err,
+			boundedListDiagnostic(listOutput.String()), boundedListDiagnostic(listError.String()))
 	}
 	if detail := strings.TrimSpace(listError.String()); detail != "" {
-		return fmt.Errorf("list command wrote unexpected stderr: %q", detail)
+		return fmt.Errorf("list command wrote unexpected stderr: %q", boundedListDiagnostic(detail))
 	}
 	return validateListOutput(pkg.Pattern, listOutput.String())
+}
+
+func boundedListDiagnostic(value string) string {
+	if len(value) <= maxListDiagnosticBytes {
+		return value
+	}
+	keep := maxListDiagnosticBytes - len(listDiagnosticMarker)
+	head := keep / 2
+	tail := keep - head
+	return value[:head] + listDiagnosticMarker + value[len(value)-tail:]
 }
 
 var goTestDuration = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?s$`)
