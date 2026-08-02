@@ -27,6 +27,8 @@ func task20KindForObjectType(objectType string) (task20HandleKind, bool) {
 		return task20HandleEvent, true
 	case "Timer":
 		return task20HandleTimer, true
+	case "IRTimer":
+		return task20HandleTimer, true
 	case "IoCompletion":
 		return task20HandleIOCompletion, true
 	case "WaitCompletionPacket":
@@ -90,6 +92,7 @@ func TestTask20KnownObjectTypePolicy(t *testing.T) {
 		"Thread":               task20HandleThread,
 		"Event":                task20HandleEvent,
 		"Timer":                task20HandleTimer,
+		"IRTimer":              task20HandleTimer,
 		"IoCompletion":         task20HandleIOCompletion,
 		"WaitCompletionPacket": task20HandleWaitCompletion,
 	}

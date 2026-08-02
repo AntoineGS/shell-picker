@@ -11,6 +11,32 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func TestTask20ClassifyHandleRecognizesIRTimer(t *testing.T) {
+	identity := task20HandleIdentity{Value: 0x1234, Object: 0x5678}
+	got, err := task20ClassifyHandleWith(windows.Handle(identity.Value), identity, task20HandleClassificationAPI{
+		queryObjectType: func(windows.Handle) (string, error) { return "IRTimer", nil },
+		getsockname: func(windows.Handle) (windows.Sockaddr, error) {
+			t.Fatal("socket probe ran for IRTimer")
+			return nil, nil
+		},
+		getFileType: func(windows.Handle) (uint32, error) {
+			t.Fatal("file type probe ran for IRTimer")
+			return 0, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("classify IRTimer: %v", err)
+	}
+	want := task20ResourceIdentity{Identity: identity, Type: "IRTimer", Kind: task20HandleTimer}
+	if got != want {
+		t.Fatalf("classification=%+v; want=%+v", got, want)
+	}
+	owned, err := got.applicationOwned()
+	if err != nil || owned {
+		t.Fatalf("IRTimer ownership=%v err=%v; want infrastructure resource", owned, err)
+	}
+}
+
 func TestTask20CoherentHandleSnapshotStableSuccess(t *testing.T) {
 	process := task20HandleIdentity{Value: 0x40, Object: 0x1000}
 	socket := task20HandleIdentity{Value: 0x44, Object: 0x1400}
