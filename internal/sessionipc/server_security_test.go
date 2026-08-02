@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -237,6 +238,11 @@ func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 		return protocol.Effect{}, context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
+	var releaseOnce sync.Once
+	releaseBackend := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	t.Cleanup(releaseBackend)
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	defer cancelRequest()
 	requestDone := make(chan error, 1)
@@ -245,15 +251,18 @@ func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 		requestDone <- err
 	}()
 	awaitSessionIPC(t, called, "event backend entry before server close")
-	closeCtx, cancelClose := context.WithTimeout(context.Background(), sessionIPCCloseTimeout)
+	closeCtx, cancelClose := context.WithCancel(context.Background())
+	cancelClose()
 	defer cancelClose()
 	closed := make(chan error, 1)
 	go func() {
 		closed <- server.Close(closeCtx)
 	}()
 	awaitSessionIPC(t, cancellationReached, "close-triggered backend cancellation")
+	// An expired shutdown context skips graceful waiting and targets the forced
+	// close path, where handlers.Wait must keep Close blocked at this barrier.
 	assertSessionIPCNotClosed(t, closed, "Server.Close while handler is held")
-	close(release)
+	releaseBackend()
 	awaitSessionIPC(t, backendReturned, "backend completion after release")
 	awaitSessionIPC(t, requestDone, "event request completion after handler release")
 	if err := awaitSessionIPC(t, closed, "Server.Close after handler completion"); err != nil {
