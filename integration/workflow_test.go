@@ -37,6 +37,18 @@ func rejectAll(t *testing.T, text string, rejected ...string) {
 	}
 }
 
+func workflowJob(t *testing.T, text, name, next string) string {
+	t.Helper()
+	startMarker := "\n  " + name + ":\n"
+	endMarker := "\n  " + next + ":\n"
+	start := strings.Index(text, startMarker)
+	end := strings.Index(text, endMarker)
+	if start < 0 || end < 0 || end <= start {
+		t.Fatalf("workflow job boundaries missing or out of order for %q before %q", name, next)
+	}
+	return text[start+1 : end]
+}
+
 func TestCIWorkflowContract(t *testing.T) {
 	text := readWorkflow(t, "ci.yml")
 	requireAll(t, text,
@@ -68,6 +80,18 @@ func TestCIWorkflowContract(t *testing.T) {
 	if strings.Contains(text, "performance-dedicated") || strings.Contains(text, "-bench") {
 		t.Fatal("stable CI invokes a dedicated wall-time benchmark")
 	}
+}
+
+func TestCIWindowsNativeTopology(t *testing.T) {
+	text := readWorkflow(t, "ci.yml")
+	unit := workflowJob(t, text, "unit", "windows-native")
+	if !strings.Contains(unit, "runs-on: ubuntu-24.04") || strings.Contains(unit, "windows-2025") {
+		t.Fatalf("unit is not Linux-only:\n%s", unit)
+	}
+	windows := workflowJob(t, text, "windows-native", "race-linux")
+	requireAll(t, windows, "runs-on: windows-2025", "go run ./scripts/windowsnative")
+	rejectAll(t, windows, "go test ./...", "continue-on-error", "if: false", "zsh ", "security-gate.sh")
+	requireAll(t, text, "needs.windows-native.result")
 }
 
 func TestRealFZFWorkflowContract(t *testing.T) {

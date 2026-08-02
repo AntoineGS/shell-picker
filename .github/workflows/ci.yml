@@ -15,35 +15,36 @@ env:
 
 jobs:
   unit:
-    strategy:
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with: {go-version: '1.26.5'}
-      - if: matrix.os == 'windows-2025'
-        run: cargo install nu --locked --version 0.113.1
       - run: go test ./... -count=1
       - run: go vet ./...
       - run: go list -m all
       - run: go test ./integration -run TestModuleGraphExact -count=1
       - name: Verify make build
-        if: matrix.os == 'ubuntu-24.04'
         run: |
           make build
           test -x ./bin/shell-picker
           ./bin/shell-picker version
 
       - name: Verify make install
-        if: matrix.os == 'ubuntu-24.04'
         run: |
           install_dir="$RUNNER_TEMP/shell-picker-install"
           mkdir -p "$install_dir"
           GOBIN="$install_dir" make install
           test -x "$install_dir/shell-picker"
           "$install_dir/shell-picker" version
+
+  windows-native:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with: {go-version: '1.26.5'}
+      - run: go run ./scripts/windowsnative
 
   race-linux:
     runs-on: ubuntu-24.04
@@ -126,12 +127,13 @@ jobs:
 
   required:
     if: ${{ always() }}
-    needs: [unit, race-linux, adapters-linux, adapters-windows, fzf-version, stable-performance, cross-build]
+    needs: [unit, windows-native, race-linux, adapters-linux, adapters-windows, fzf-version, stable-performance, cross-build]
     runs-on: ubuntu-24.04
     steps:
       - name: Reject failed required jobs
         run: |
           test "${{ needs.unit.result }}" = success
+          test "${{ needs.windows-native.result }}" = success
           test "${{ needs.race-linux.result }}" = success
           test "${{ needs.adapters-linux.result }}" = success
           test "${{ needs.adapters-windows.result }}" = success
