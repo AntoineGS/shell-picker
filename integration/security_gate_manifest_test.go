@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const task20FocusedPattern = `^Test(Actor|Handle|Reduce|NormalEscape|Validate|Server|Client|FinishedTelemetry|CachedPolicy|Fresh|IndependentFresh|CPNever|CallerCancellation|BuilderZoxide|Zoxide|EnumerateReadDir|Kqueue|RejectsNonIdentifiable|WaitDelay|WaitIs|CancellationCloses|ExitErrorPrecedesBlocking|OrdinaryCompletion|Foreground|RestoreForeground|RetainedInherited|CancelKills|InheritedTree|Preview|Archive|Zip|Cache|Converter|Renderer|ExternalRenderer|Terminal|SessionSpec|Run|ParseOutput|ActionArgument|TokenCanary|PickerBackend|CreateDirectory|SecurityGate|Forged|CancelledNavigation|ResourceSnapshot|ParityPreview|RealFZF|Windows|CreateProcess|RunnerBeforeStart|RunnerNilBeforeStart)`
+const task20FocusedPattern = `^Test(Actor|Handle|Reduce|NormalEscape|Validate|Server|Client|FinishedTelemetry|CachedPolicy|Fresh|IndependentFresh|CPNever|CallerCancellation|BuilderZoxide|Zoxide|EnumerateReadDir|Kqueue|RejectsNonIdentifiable|WaitDelay|WaitIs|CancellationCloses|ExitErrorPrecedesBlocking|OrdinaryCompletion|Foreground|RestoreForeground|RetainedInherited|CancelKills|InheritedTree|Preview|Archive|Zip|Cache|Converter|Renderer|ExternalRenderer|Terminal|SessionSpec|Run|ParseOutput|ActionArgument|TokenCanary|PickerBackend|CreateDirectory|SecurityGate|Forged|CancelledNavigation|ResourceSnapshot|ParityPreview|IntegrationRealFZFNoLeaks|IntegrationAdaptiveRealFZF|RealFZF|Windows|CreateProcess|RunnerBeforeStart|RunnerNilBeforeStart)`
 
 const task20ManifestPackages = `./internal/session ./internal/sessionipc ./internal/candidate ./internal/process ./internal/callback ./internal/preview ./internal/fzf ./internal/app ./internal/pathutil ./integration`
 
@@ -147,6 +147,8 @@ var task20GateManifest = []task20GatePackage{
 		"TestResourceSnapshotDetectsSameSignatureGoroutineReplacement",
 		"TestPreviewCategoryMatrix",
 		"TestParityPreviewResourceProcess",
+		"TestIntegrationRealFZFNoLeaks",
+		"TestIntegrationAdaptiveRealFZF",
 		"TestRealFZFPreviewReplacementKillsWholeTree",
 		"TestRealFZFPreviewTerminalFailuresKillWholeTree",
 		"TestRealFZFAdversarialPromptCannotInjectAction",
