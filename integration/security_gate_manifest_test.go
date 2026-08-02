@@ -137,7 +137,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestCreateDirectoryTreeRejectsJunctionInBaseAncestry",
 		"TestCreateDirectoryTreeRejectsJunctionInQueryComponent",
 	}},
-	{path: "./integration", selectedUnix: 28, selectedWindows: 28, tests: []string{
+	{path: "./integration", selectedUnix: 29, selectedWindows: 30, tests: []string{
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
 		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",
