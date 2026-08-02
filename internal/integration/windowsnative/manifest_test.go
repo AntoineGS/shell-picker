@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestManifestHasUniquePackagesAndAnchoredPatterns(t *testing.T) {
+func TestWindowsNativeManifestHasUniquePackagesAndAnchoredPatterns(t *testing.T) {
 	seen := make(map[string]struct{})
 	for _, pkg := range Packages {
 		if _, exists := seen[pkg.Path]; exists {
@@ -28,7 +28,7 @@ func TestManifestHasUniquePackagesAndAnchoredPatterns(t *testing.T) {
 	}
 }
 
-func TestManifestRejectsUnixAuthorities(t *testing.T) {
+func TestWindowsNativeManifestRejectsUnixAuthorities(t *testing.T) {
 	for _, rejected := range []string{"ForegroundTreeOwnsTTY", "Kqueue", "SymlinkInBaseAncestry", "ParityPreviewResourceProcess"} {
 		for _, pkg := range Packages {
 			if strings.Contains(pkg.Pattern, rejected) {
@@ -38,7 +38,7 @@ func TestManifestRejectsUnixAuthorities(t *testing.T) {
 	}
 }
 
-func TestManifestContainsExactCurrentAuthorities(t *testing.T) {
+func TestWindowsNativeManifestContainsExactCurrentAuthorities(t *testing.T) {
 	want := []struct {
 		path  string
 		names []string
@@ -179,7 +179,7 @@ func TestManifestContainsExactCurrentAuthorities(t *testing.T) {
 	}
 }
 
-func TestManifestAlternativesAreDeclaredTests(t *testing.T) {
+func TestWindowsNativeManifestAlternativesAreDeclaredTests(t *testing.T) {
 	root := moduleRoot(t)
 	for _, pkg := range Packages {
 		packageDir := filepath.Join(root, filepath.FromSlash(pkg.Path))
@@ -192,7 +192,7 @@ func TestManifestAlternativesAreDeclaredTests(t *testing.T) {
 	}
 }
 
-func TestApprovedManifestAuthorityIsIndependent(t *testing.T) {
+func TestWindowsNativeApprovedManifestAuthorityIsIndependent(t *testing.T) {
 	approved := approvedManifest()
 	if len(approved) == 0 {
 		t.Fatal("approved manifest is empty")
@@ -212,7 +212,7 @@ func TestApprovedManifestAuthorityIsIndependent(t *testing.T) {
 	}
 }
 
-func TestWindowsDeclarationSetExcludesUnixOnlyAndInvalidSignatures(t *testing.T) {
+func TestWindowsNativeDeclarationSetExcludesUnixOnlyAndInvalidSignatures(t *testing.T) {
 	packageDir := t.TempDir()
 	writeFixtureFile(t, packageDir, "fixture_windows_test.go", `package fixture
 
@@ -260,13 +260,13 @@ func (fixture) TestReceiver(t *testing.T) {}
 	}
 }
 
-func TestManifestValidates(t *testing.T) {
+func TestWindowsNativeManifestValidates(t *testing.T) {
 	if err := Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
 }
 
-func TestValidateRejectsInvalidManifests(t *testing.T) {
+func TestWindowsNativeValidateRejectsInvalidManifests(t *testing.T) {
 	original := Packages
 	t.Cleanup(func() { Packages = original })
 
