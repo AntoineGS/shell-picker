@@ -172,7 +172,7 @@ func sendAndWait(t *testing.T, term terminalSession, input []byte, wanted barrie
 	return term.WaitBarrier(testContext(t), wanted)
 }
 
-func TestIntegrationAdaptiveRealFZF(t *testing.T) {
+func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
 	fixture := newRealFZFFixture(t, requireRealFZF(t), "directory with spaces")
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()
@@ -217,7 +217,7 @@ func TestIntegrationAdaptiveRealFZF(t *testing.T) {
 	}
 }
 
-func TestIntegrationRealFZFNoLeaks(t *testing.T) {
+func TestRealFZFInteractiveAbort(t *testing.T) {
 	fixture := newRealFZFFixture(t, requireRealFZF(t), "callback path with spaces")
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()

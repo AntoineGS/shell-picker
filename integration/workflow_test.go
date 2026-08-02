@@ -60,6 +60,7 @@ type parsedWorkflow struct {
 
 type parsedWorkflowJob struct {
 	matrixOS []string
+	runsOn   string
 	needs    []string
 	steps    []parsedWorkflowStep
 }
@@ -145,6 +146,8 @@ func parseWorkflowJob(t *testing.T, lines []workflowLine, start, end int) parsed
 		switch key {
 		case "needs":
 			job.needs = workflowList(value)
+		case "runs-on":
+			job.runsOn = value
 		case "strategy":
 			job.matrixOS = parseWorkflowMatrix(lines, index, end)
 		case "steps":
@@ -290,6 +293,17 @@ func parsedWorkflowStepByName(t *testing.T, job parsedWorkflowJob, name string) 
 	return parsedWorkflowStep{}
 }
 
+func parsedWorkflowStepContainingRun(t *testing.T, job parsedWorkflowJob, value string) parsedWorkflowStep {
+	t.Helper()
+	for _, step := range job.steps {
+		if strings.Contains(step.run, value) {
+			return step
+		}
+	}
+	t.Fatalf("workflow job has no step containing run %q", value)
+	return parsedWorkflowStep{}
+}
+
 func requireWorkflowValue(t *testing.T, got, want, description string) {
 	t.Helper()
 	if got != want {
@@ -355,26 +369,26 @@ func TestCIWindowsNativeTopology(t *testing.T) {
 func TestCIWindowsFZFSmokeContract(t *testing.T) {
 	workflow := parseWorkflow(t, readWorkflow(t, "ci.yml"))
 	fzfJob := requiredWorkflowJob(t, workflow, "fzf-version")
+	requireWorkflowValue(t, fzfJob.runsOn, "${{ matrix.os }}", "fzf-version runner")
 	requireWorkflowListValue(t, fzfJob.matrixOS, "windows-2025", "fzf-version matrix")
 	requireWorkflowListValue(t, fzfJob.matrixOS, "ubuntu-24.04", "fzf-version matrix")
 
-	install := parsedWorkflowStepByName(t, fzfJob, "Install fzf on Windows")
-	requireWorkflowValue(t, install.ifCondition, "runner.os == 'Windows'", "Windows fzf install condition")
+	prerequisites := parsedWorkflowStepByName(t, fzfJob, "Verify Windows pseudo console prerequisites")
+	requireWorkflowValue(t, prerequisites.ifCondition, "runner.os == 'Windows'", "Windows prerequisite condition")
 
 	selection := parsedWorkflowStepByName(t, fzfJob, "Validate Windows real-fzf test selection")
 	requireWorkflowValue(t, selection.ifCondition, "runner.os == 'Windows'", "Windows test-list condition")
 	requireWorkflowValue(t, selection.shell, "bash", "Windows test-list shell")
 	requireAll(t, selection.run,
-		"go test ./integration -list '^TestIntegration(RealFZFNoLeaks|AdaptiveRealFZF)$' -count=1",
-		"grep -Fxq 'TestIntegrationRealFZFNoLeaks'",
-		"grep -Fxq 'TestIntegrationAdaptiveRealFZF'",
+		"go test ./integration -list '^TestRealFZFInteractiveAbort$' -count=1",
+		"grep -Fxq 'TestRealFZFInteractiveAbort'",
 	)
 
-	smoke := parsedWorkflowStepByName(t, fzfJob, "Smoke real fzf on Windows")
+	smoke := parsedWorkflowStepByName(t, fzfJob, "Smoke real fzf abort on Windows")
 	requireWorkflowValue(t, smoke.ifCondition, "runner.os == 'Windows'", "Windows smoke condition")
 	requireWorkflowValue(t, smoke.shell, "bash", "Windows smoke shell")
 	requireWorkflowValue(t, smoke.run,
-		`SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf.exe" go test ./integration -run '^TestIntegration(RealFZFNoLeaks|AdaptiveRealFZF)$' -count=1 -v`,
+		`SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf.exe" go test ./integration -run '^TestRealFZFInteractiveAbort$' -count=1 -v`,
 		"Windows smoke command")
 
 	for _, step := range fzfJob.steps {
@@ -392,7 +406,17 @@ func TestCIWindowsFZFSmokeContract(t *testing.T) {
 func TestRealFZFWorkflowContract(t *testing.T) {
 	text := readWorkflow(t, "real-fzf.yml")
 	requireAll(t, text, "workflow_dispatch", "17 3 * * 0", "fzf_version", "0.74.1", "ubuntu-24.04", "windows-2025",
-		"SHELL_PICKER_REAL_FZF", "TestRealFZF", "TestPlatformPrerequisites", "version_at_least")
+		"TestPlatformPrerequisites", "version_at_least")
+	workflow := parseWorkflow(t, text)
+	realFZFJob := requiredWorkflowJob(t, workflow, "real-fzf")
+	smoke := parsedWorkflowStepContainingRun(t, realFZFJob, "go test ./integration -run TestRealFZF")
+	requireWorkflowValue(t, smoke.shell, "bash", "scheduled real-fzf shell")
+	requireAll(t, smoke.run, "SHELL_PICKER_REAL_FZF=", "go test ./integration -run TestRealFZF -count=1 -v")
+	requireAll(t, readRepositoryFiles(t, "fzf_real_test.go", "fzf_real_navigation_test.go"),
+		"func TestRealFZFInteractiveAbort(",
+		"func TestRealFZFInteractiveModesReloadAddAccept(",
+		"func TestRealFZFPickerNavigationAndNormalMode(",
+	)
 	prerequisites := readRepositoryFiles(t, "platform_prerequisites_linux_test.go", "platform_prerequisites_windows_test.go")
 	requireAll(t, prerequisites, "/dev/ptmx", "TIOCSPTLCK", "TIOCGPTN", "pidfd_open", "17763", "CreatePseudoConsole")
 	rejectAll(t, text, "continue-on-error: true")

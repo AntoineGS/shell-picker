@@ -92,14 +92,7 @@ jobs:
           curl -fsSL -o .ci/fzf/$archive https://github.com/junegunn/fzf/releases/download/v0.74.1/$archive
           curl -fsSL -o .ci/fzf/checksums.txt https://github.com/junegunn/fzf/releases/download/v0.74.1/fzf_0.74.1_checksums.txt
           (cd .ci/fzf && sha256sum -c checksums.txt --ignore-missing)
-      - name: Install fzf on Linux
-        if: runner.os == 'Linux'
-        shell: bash
-        run: tar -xzf .ci/fzf/fzf-0.74.1-linux_amd64.tar.gz -C .ci/fzf
-      - name: Install fzf on Windows
-        if: runner.os == 'Windows'
-        shell: bash
-        run: unzip -o .ci/fzf/fzf-0.74.1-windows_amd64.zip -d .ci/fzf
+          if [ "$RUNNER_OS" = Linux ]; then tar -xzf .ci/fzf/$archive -C .ci/fzf; else unzip -o .ci/fzf/$archive -d .ci/fzf; fi
       - shell: bash
         run: SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf${{ runner.os == 'Windows' && '.exe' || '' }}" go test ./internal/fzf -run TestInstalledFZFCheckVersion -count=1
       - name: Verify Windows pseudo console prerequisites
@@ -110,14 +103,13 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          tests="$(go test ./integration -list '^TestIntegration(RealFZFNoLeaks|AdaptiveRealFZF)$' -count=1)"
+          tests="$(go test ./integration -list '^TestRealFZFInteractiveAbort$' -count=1)"
           printf '%s\n' "$tests"
-          grep -Fxq 'TestIntegrationRealFZFNoLeaks' <<<"$tests"
-          grep -Fxq 'TestIntegrationAdaptiveRealFZF' <<<"$tests"
-      - name: Smoke real fzf on Windows
+          grep -Fxq 'TestRealFZFInteractiveAbort' <<<"$tests"
+      - name: Smoke real fzf abort on Windows
         if: runner.os == 'Windows'
         shell: bash
-        run: SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf.exe" go test ./integration -run '^TestIntegration(RealFZFNoLeaks|AdaptiveRealFZF)$' -count=1 -v
+        run: SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf.exe" go test ./integration -run '^TestRealFZFInteractiveAbort$' -count=1 -v
 
   stable-performance:
     strategy:
