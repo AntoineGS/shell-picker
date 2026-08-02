@@ -20,8 +20,10 @@ var Packages = []Package{
 	{"./internal/preview", `^(TestWindowsCachePutRootSwapIsRejectedOrExplicitlyDenied|TestWindowsCacheRejectsSymlinkRootAndEntry|TestWindowsArtifactCleanupRetriesAfterSharingViolation|TestWindowsStaleCleanupLeavesUnvalidatedPrivateDirectory|TestWindowsStageCreationValidationFailureLeavesNoPrivateArtifact|TestWindowsStaleCleanupRejectsAttackerStageLookalikes|TestWindowsStaleCleanupRemovesGenuineAbandonedStage|TestWindowsStageMarkerValidationFailureLeavesNoPrivateStage|TestExternalRendererSpecRequestsWindowsNestedJob|TestStagedArtifactRejectsReplacementAfterExclusiveCreation|TestStagedArtifactTruncatesValidatedCreationIdentity|TestRendererReadsValidatedStageWhenPathIsReplaced)$`},
 	{"./internal/app", `^(TestClassifyWindowsTracePath|TestOpenWindowsTraceSinkUsesPipeAndFileDispositions|TestOpenWindowsTraceSinkValidatesBeforeTruncatingAndClosesOnFailure)$`},
 	{"./internal/pathutil", `^(TestWindowsParentModel|TestWindowsRelativeAndValidation|TestCompactHomeWindows|TestPromptDisplayHomeWindows|TestWindowsUNCNavigationPure|TestWindowsUNCMixedAndRepeatedSeparatorsPure|TestListDrivesAscending|TestAbsoluteAncestryWindowsDrive|TestAbsoluteAncestryWindowsUNC|TestCreateDirectoryTreeRejectsJunctionInBaseAncestry|TestCreateDirectoryTreeRejectsJunctionInQueryComponent|TestCreateDirectoryTreeWindowsRollbackAndExistingFile)$`},
-	{"./integration", `^(TestWindowsResourceSnapshotUsesExactHandleIdentities|TestWindowsOwnedProcessHandleRegistryReturnsToBaseline|TestWindowsResourceSnapshotFingerprintsDirectoryReplacement|TestWindowsHandleIdentityIncludesObjectForReusedSlot|TestWindowsHandleSnapshotBufferGrowth|TestWindowsHandleSnapshotCanGrowPastFormerRetryCount|TestWindowsHandleSnapshotGrowthRemainsGeometricWhenNeededKeepsGrowing|TestWindowsHandleIdentityDifferenceListsAddedAndRemoved|TestWindowsTask20HandleScopeLifecycleOrdering|TestWindowsTask20HandleScopeWaitsForTransientClosure|TestWindowsTask20HandleScopeReportsPersistentIdentity|TestWindowsTask20HandleScopeRetainsEvidenceOnQueryError|TestWindowsTask20HandleScopeTreatsReusedSlotAsClosed|TestTask20ObjectTypeQueryGrowsGeometrically|TestTask20ObjectTypeQueryRejectsOversizedResponse|TestTask20KnownObjectTypePolicy|TestTask20UnknownObjectTypeFailsClosed|TestWindowsApplicationHandleDifferenceIncludesType|TestWindowsRuntimeHandlesDoNotEnterApplicationSnapshot|TestWindowsResourceGateRejectsPersistentApplicationIdentity|TestParityWindowsSemanticSubstitutions|TestParityWindowsUnicodeSpaceControlDisplayReplacement|TestPlatformPrerequisites)$`},
+	{"./integration", `^(TestWindowsResourceSnapshotUsesExactHandleIdentities|TestWindowsOwnedProcessHandleRegistryReturnsToBaseline|TestWindowsResourceSnapshotFingerprintsDirectoryReplacement|TestWindowsHandleIdentityIncludesObjectForReusedSlot|TestWindowsHandleSnapshotBufferGrowth|TestWindowsHandleSnapshotCanGrowPastFormerRetryCount|TestWindowsHandleSnapshotGrowthRemainsGeometricWhenNeededKeepsGrowing|TestWindowsHandleIdentityDifferenceListsAddedAndRemoved|TestWindowsTask20HandleScopeLifecycleOrdering|TestWindowsTask20HandleScopeWaitsForTransientClosure|TestWindowsTask20HandleScopeReportsPersistentIdentity|TestWindowsTask20HandleScopeRetainsEvidenceOnQueryError|TestWindowsTask20HandleScopeTreatsReusedSlotAsClosed|TestTask20ObjectTypeQueryGrowsGeometrically|TestTask20ObjectTypeQueryRejectsOversizedResponse|TestTask20KnownObjectTypePolicy|TestTask20UnknownObjectTypeFailsClosed|TestWindowsApplicationHandleDifferenceIncludesType|TestWindowsRawHandleCountDoesNotChangeApplicationDifference|TestWindowsResourceGateReportsPersistentApplicationIdentityAfterFiltering|TestParityWindowsSemanticSubstitutions|TestParityWindowsUnicodeSpaceControlDisplayReplacement|TestPlatformPrerequisites)$`},
 }
+
+var approvedManifest = append([]Package(nil), Packages...)
 
 var unixAuthorities = []string{
 	"ForegroundTreeOwnsTTY",
@@ -36,6 +38,11 @@ func Validate() error {
 	}
 
 	seen := make(map[string]struct{}, len(Packages))
+	approvedByPath := make(map[string]Package, len(approvedManifest))
+	for _, approved := range approvedManifest {
+		approvedByPath[approved.Path] = approved
+	}
+
 	for _, pkg := range Packages {
 		if strings.TrimSpace(pkg.Path) == "" {
 			return fmt.Errorf("package path is empty")
@@ -45,11 +52,27 @@ func Validate() error {
 		}
 		seen[pkg.Path] = struct{}{}
 
-		if !strings.HasPrefix(pkg.Pattern, "^(") || !strings.HasSuffix(pkg.Pattern, ")$") {
-			return fmt.Errorf("package %s pattern is not exactly anchored: %q", pkg.Path, pkg.Pattern)
+		approved, ok := approvedByPath[pkg.Path]
+		if !ok {
+			return fmt.Errorf("package path %q is not approved", pkg.Path)
 		}
-		if _, err := regexp.Compile(pkg.Pattern); err != nil {
+
+		names, err := parsePattern(pkg.Pattern)
+		if err != nil {
 			return fmt.Errorf("package %s pattern: %w", pkg.Path, err)
+		}
+		approvedNames, err := parsePattern(approved.Pattern)
+		if err != nil {
+			return fmt.Errorf("approved package %s pattern: %w", approved.Path, err)
+		}
+		approvedNameSet := make(map[string]struct{}, len(approvedNames))
+		for _, name := range approvedNames {
+			approvedNameSet[name] = struct{}{}
+		}
+		for _, name := range names {
+			if _, ok := approvedNameSet[name]; !ok {
+				return fmt.Errorf("package %s pattern contains unapproved test %q", pkg.Path, name)
+			}
 		}
 		for _, authority := range unixAuthorities {
 			if strings.Contains(pkg.Pattern, authority) {
@@ -57,5 +80,50 @@ func Validate() error {
 			}
 		}
 	}
+
+	if len(Packages) != len(approvedManifest) {
+		return fmt.Errorf("manifest has %d packages, want %d", len(Packages), len(approvedManifest))
+	}
+	for i, pkg := range Packages {
+		approved := approvedManifest[i]
+		if pkg.Path != approved.Path {
+			return fmt.Errorf("package %d path %q is out of deterministic order", i, pkg.Path)
+		}
+		if pkg.Pattern != approved.Pattern {
+			return fmt.Errorf("package %s pattern does not match the approved manifest", pkg.Path)
+		}
+	}
 	return nil
+}
+
+var canonicalTestName = regexp.MustCompile(`^Test[A-Z][A-Za-z0-9_]*$`)
+
+func parsePattern(pattern string) ([]string, error) {
+	const (
+		prefix = "^("
+		suffix = ")$"
+	)
+	if !strings.HasPrefix(pattern, prefix) || !strings.HasSuffix(pattern, suffix) {
+		return nil, fmt.Errorf("must be exactly anchored as ^(names)$: %q", pattern)
+	}
+
+	body := strings.TrimSuffix(strings.TrimPrefix(pattern, prefix), suffix)
+	if body == "" {
+		return nil, fmt.Errorf("must contain at least one test name")
+	}
+	names := strings.Split(body, "|")
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if !canonicalTestName.MatchString(name) {
+			return nil, fmt.Errorf("contains non-literal test name %q", name)
+		}
+		if _, exists := seen[name]; exists {
+			return nil, fmt.Errorf("contains duplicate test name %q", name)
+		}
+		seen[name] = struct{}{}
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return nil, fmt.Errorf("is not a valid regular expression: %w", err)
+	}
+	return names, nil
 }
