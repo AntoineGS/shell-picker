@@ -94,6 +94,18 @@ func TestCIWindowsNativeTopology(t *testing.T) {
 	requireAll(t, text, "needs.windows-native.result")
 }
 
+func TestCIWindowsFZFSmokeContract(t *testing.T) {
+	text := readWorkflow(t, "ci.yml")
+	fzfJob := workflowJob(t, text, "fzf-version", "stable-performance")
+	requireAll(t, fzfJob,
+		"TestPlatformPrerequisites",
+		"TestRealFZFInteractiveAbort",
+		`SHELL_PICKER_REAL_FZF="$PWD/.ci/fzf/fzf.exe"`,
+		"if: runner.os == 'Windows'",
+	)
+	rejectAll(t, fzfJob, "TestRealFZFPickerNavigationAndNormalMode", "continue-on-error: true")
+}
+
 func TestRealFZFWorkflowContract(t *testing.T) {
 	text := readWorkflow(t, "real-fzf.yml")
 	requireAll(t, text, "workflow_dispatch", "17 3 * * 0", "fzf_version", "0.74.1", "ubuntu-24.04", "windows-2025",
