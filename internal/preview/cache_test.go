@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -99,11 +98,11 @@ func TestCachePutAnchorsRootAcrossSwap(t *testing.T) {
 	parent, outside := t.TempDir(), t.TempDir()
 	root := filepath.Join(parent, "cache")
 	cache := mustNewCache(t, root, 512<<20)
-	reader := newBarrierReader("safe")
+	reader := newBarrierReader(t, "safe")
 	done := make(chan error, 1)
 	key := strings.Repeat("c", 64)
 	go func() { _, err := cache.Put(key, reader); done <- err }()
-	<-reader.started
+	awaitPreview(t, reader.started, "cache Put reader start across root swap")
 	oldRoot := root + "-old"
 	swapped := os.Rename(root, oldRoot) == nil
 	if swapped {
@@ -111,8 +110,8 @@ func TestCachePutAnchorsRootAcrossSwap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	close(reader.proceed)
-	if err := <-done; err != nil {
+	reader.release()
+	if err := awaitPreview(t, done, "cache Put completion across root swap"); err != nil {
 		t.Fatal(err)
 	}
 	winnerRoot := root
@@ -168,32 +167,32 @@ func TestCachePutRejectsHardlinkedTempAndWinner(t *testing.T) {
 		t.Fatal(err)
 	}
 	key = strings.Repeat("e", 64)
-	reader := newBarrierReader("safe")
+	reader := newBarrierReader(t, "safe")
 	done := make(chan error, 1)
 	go func() { _, err := cache.Put(key, reader); done <- err }()
-	<-reader.started
+	awaitPreview(t, reader.started, "hardlinked temp Put reader start")
 	temp := soleCacheTemp(t, cache.root)
 	if err := os.Link(temp, filepath.Join(cache.root, "attacker-link")); err != nil {
 		t.Fatal(err)
 	}
-	close(reader.proceed)
-	if err := <-done; !errors.Is(err, ErrUnsafeCache) {
+	reader.release()
+	if err := awaitPreview(t, done, "hardlinked temp Put completion"); !errors.Is(err, ErrUnsafeCache) {
 		t.Fatalf("temp err=%v", err)
 	}
 }
 func TestCacheConcurrentProductionPutHasImmutableSingleLinkWinner(t *testing.T) {
 	cache := mustNewCache(t, t.TempDir(), 512<<20)
 	key := strings.Repeat("f", 64)
-	readers := []*barrierReader{newBarrierReader("first"), newBarrierReader("second")}
+	readers := []*barrierReader{newBarrierReader(t, "first"), newBarrierReader(t, "second")}
 	errs := make(chan error, 2)
 	for _, reader := range readers {
 		go func(r io.Reader) { _, err := cache.Put(key, r); errs <- err }(reader)
 	}
 	for _, reader := range readers {
-		<-reader.started
+		awaitPreview(t, reader.started, "concurrent cache Put reader start")
 	}
-	close(readers[0].proceed)
-	if err := <-errs; err != nil {
+	readers[0].release()
+	if err := awaitPreview(t, errs, "first concurrent cache Put completion"); err != nil {
 		t.Fatal(err)
 	}
 	winner, err := openCacheSource(cache, key)
@@ -206,8 +205,8 @@ func TestCacheConcurrentProductionPutHasImmutableSingleLinkWinner(t *testing.T) 
 	if readErr != nil || closeErr != nil || string(winnerData) != "first" {
 		t.Fatalf("initial winner=%q read=%v close=%v", winnerData, readErr, closeErr)
 	}
-	close(readers[1].proceed)
-	if err := <-errs; err != nil {
+	readers[1].release()
+	if err := awaitPreview(t, errs, "second concurrent cache Put completion"); err != nil {
 		t.Fatal(err)
 	}
 	after, err := openCacheSource(cache, key)
@@ -439,19 +438,6 @@ func (zeroReader) Read(data []byte) (int, error) {
 	return len(data), nil
 }
 
-type barrierReader struct {
-	reader           *strings.Reader
-	started, proceed chan struct{}
-	once             sync.Once
-}
-
-func newBarrierReader(value string) *barrierReader {
-	return &barrierReader{reader: strings.NewReader(value), started: make(chan struct{}), proceed: make(chan struct{})}
-}
-func (reader *barrierReader) Read(data []byte) (int, error) {
-	reader.once.Do(func() { close(reader.started); <-reader.proceed })
-	return reader.reader.Read(data)
-}
 func soleCacheTemp(t *testing.T, root string) string {
 	t.Helper()
 	entries, err := os.ReadDir(root)

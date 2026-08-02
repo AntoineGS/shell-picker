@@ -2,7 +2,6 @@ package preview
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -42,16 +40,17 @@ func TestOutputBudgetAggregatesConcurrentDestinations(t *testing.T) {
 	budget := newOutputBudget(10, func() { limitCalls.Add(1) })
 	writers := []*budgetWriter{budget.writer(&first), budget.writer(&second)}
 	errorsSeen := make(chan error, len(writers))
-	var group sync.WaitGroup
+	finished := make(chan struct{}, len(writers))
 	for _, writer := range writers {
-		group.Add(1)
-		go func() {
-			defer group.Done()
+		go func(writer *budgetWriter) {
 			_, err := writer.Write([]byte("12345678"))
 			errorsSeen <- err
-		}()
+			finished <- struct{}{}
+		}(writer)
 	}
-	group.Wait()
+	for range writers {
+		awaitPreview(t, finished, "output budget writer completion")
+	}
 	close(errorsSeen)
 	limited := false
 	for err := range errorsSeen {
@@ -116,12 +115,19 @@ func TestNewCacheRejectsComponentReplacementAfterCreationWalk(t *testing.T) {
 		components = append(components, fmt.Sprintf("d%03d", index))
 	}
 	root := filepath.Join(components...)
+	waitCtx := previewWaitContext(t)
 	swapped := make(chan error, 1)
 	go func() {
 		observed := filepath.Join(base, "anchor", "observed")
 		for {
 			if _, err := os.Stat(observed); err == nil {
 				break
+			}
+			select {
+			case <-waitCtx.Done():
+				swapped <- fmt.Errorf("cache component observation: %w", waitCtx.Err())
+				return
+			default:
 			}
 			runtime.Gosched()
 		}
@@ -133,7 +139,7 @@ func TestNewCacheRejectsComponentReplacementAfterCreationWalk(t *testing.T) {
 		swapped <- err
 	}()
 	cache, err := NewCache(root, 1)
-	if swapErr := <-swapped; swapErr != nil {
+	if swapErr := awaitPreviewContext(t, waitCtx, swapped, "cache component replacement completion"); swapErr != nil {
 		t.Fatal(swapErr)
 	}
 	if err == nil || cache != nil {
@@ -284,19 +290,10 @@ func main(){ os.WriteFile(os.Getenv("READY"),[]byte(os.Args[len(os.Args)-1]),060
 	var output bytes.Buffer
 	options := testOptions(&output)
 	options.Cache, options.Environment = cache, []string{"PATH=" + tools, "READY=" + ready, "GO=" + proceed}
+	renderCtx := previewWaitContext(t)
 	done := make(chan error, 1)
-	go func() { done <- Render(context.Background(), candidate, options) }()
-	var argument []byte
-	for deadline := time.Now().Add(5 * time.Second); ; {
-		argument, _ = os.ReadFile(ready)
-		if len(argument) != 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("renderer did not start")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	go func() { done <- Render(renderCtx, candidate, options) }()
+	argument := awaitPreviewFile(t, ready, "renderer startup handshake")
 	stagePath := stagedArtifactPath(t, cache.root)
 	attackErr := os.Remove(stagePath)
 	if attackErr == nil {
@@ -308,7 +305,7 @@ func main(){ os.WriteFile(os.Getenv("READY"),[]byte(os.Args[len(os.Args)-1]),060
 	if err := os.WriteFile(proceed, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; err != nil {
+	if err := awaitPreviewContext(t, renderCtx, done, "renderer completion after path replacement"); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "safe" {

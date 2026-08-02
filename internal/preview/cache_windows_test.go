@@ -35,11 +35,11 @@ func TestWindowsCachePutRootSwapIsRejectedOrExplicitlyDenied(t *testing.T) {
 	parent := t.TempDir()
 	root := filepath.Join(parent, "cache")
 	cache := mustNewCache(t, root, 512<<20)
-	reader := newBarrierReader("stable")
+	reader := newBarrierReader(t, "stable")
 	key := strings.Repeat("8", 64)
 	done := make(chan error, 1)
 	go func() { _, err := cache.Put(key, reader); done <- err }()
-	<-reader.started
+	awaitPreview(t, reader.started, "Windows cache Put reader start across root swap")
 	oldRoot := root + "-old"
 	swapErr := os.Rename(root, oldRoot)
 	if swapErr == nil {
@@ -47,8 +47,8 @@ func TestWindowsCachePutRootSwapIsRejectedOrExplicitlyDenied(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	close(reader.proceed)
-	if err := <-done; err != nil {
+	reader.release()
+	if err := awaitPreview(t, done, "Windows cache Put completion across root swap"); err != nil {
 		t.Fatal(err)
 	}
 	if swapErr == nil {
