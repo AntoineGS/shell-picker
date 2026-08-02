@@ -2,6 +2,7 @@ package windowsnative
 
 import (
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"os"
@@ -191,6 +192,74 @@ func TestManifestAlternativesAreDeclaredTests(t *testing.T) {
 	}
 }
 
+func TestApprovedManifestAuthorityIsIndependent(t *testing.T) {
+	approved := approvedManifest()
+	if len(approved) == 0 {
+		t.Fatal("approved manifest is empty")
+	}
+
+	original := append([]Package(nil), Packages...)
+	t.Cleanup(func() { Packages = original })
+	Packages[0] = Package{
+		Path:    "./...",
+		Pattern: `^(TestWindowsRootParentAndHomeTransitions)$`,
+	}
+	if err := Validate(); err == nil {
+		t.Fatal("Validate accepted a source-edited unsafe package")
+	}
+	if approved[0].Path != "./internal/session" {
+		t.Fatalf("approved authority changed with candidate: %q", approved[0].Path)
+	}
+}
+
+func TestWindowsDeclarationSetExcludesUnixOnlyAndInvalidSignatures(t *testing.T) {
+	packageDir := t.TempDir()
+	writeFixtureFile(t, packageDir, "fixture_windows_test.go", `package fixture
+
+import "testing"
+
+func TestWindowsOnly(t *testing.T) {}
+`)
+	writeFixtureFile(t, packageDir, "fixture_unix_test.go", `//go:build !windows
+
+package fixture
+
+import "testing"
+
+func TestUnixOnly(t *testing.T) {}
+`)
+	writeFixtureFile(t, packageDir, "fixture_windows_invalid_test.go", `//go:build windows
+
+package fixture
+
+import "testing"
+
+func TestNoParameter() {}
+func TestResult(t *testing.T) bool { return true }
+func TestGeneric[T any](t *testing.T) {}
+
+type fixture struct{}
+
+func (fixture) TestReceiver(t *testing.T) {}
+`)
+
+	declared := declaredTestNames(t, packageDir)
+	if !declared["TestWindowsOnly"] {
+		t.Fatal("Windows declaration set omitted valid test")
+	}
+	for _, rejected := range []string{
+		"TestUnixOnly",
+		"TestNoParameter",
+		"TestResult",
+		"TestGeneric",
+		"TestReceiver",
+	} {
+		if declared[rejected] {
+			t.Errorf("Windows declaration set included %s", rejected)
+		}
+	}
+}
+
 func TestManifestValidates(t *testing.T) {
 	if err := Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -289,6 +358,13 @@ func patternAlternatives(pattern string) []string {
 	return strings.Split(body, "|")
 }
 
+func writeFixtureFile(t *testing.T, directory, name, contents string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(directory, name), []byte(contents), 0o600); err != nil {
+		t.Fatalf("write fixture %s: %v", name, err)
+	}
+}
+
 func declaredTestNames(t *testing.T, packageDir string) map[string]bool {
 	t.Helper()
 	entries, err := os.ReadDir(packageDir)
@@ -296,9 +372,20 @@ func declaredTestNames(t *testing.T, packageDir string) map[string]bool {
 		t.Fatalf("read package %s: %v", packageDir, err)
 	}
 
+	buildContext := build.Default
+	buildContext.GOOS = "windows"
+	buildContext.GOARCH = "amd64"
+
 	declared := make(map[string]bool)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		matched, err := buildContext.MatchFile(packageDir, entry.Name())
+		if err != nil {
+			t.Fatalf("match %s: %v", filepath.Join(packageDir, entry.Name()), err)
+		}
+		if !matched {
 			continue
 		}
 		path := filepath.Join(packageDir, entry.Name())
@@ -308,12 +395,41 @@ func declaredTestNames(t *testing.T, packageDir string) map[string]bool {
 		}
 		for _, declaration := range file.Decls {
 			function, ok := declaration.(*ast.FuncDecl)
-			if ok && function.Recv == nil && strings.HasPrefix(function.Name.Name, "Test") {
+			if ok && isGoTestFunction(function) {
 				declared[function.Name.Name] = true
 			}
 		}
 	}
 	return declared
+}
+
+func isGoTestFunction(function *ast.FuncDecl) bool {
+	if function.Recv != nil || !strings.HasPrefix(function.Name.Name, "Test") {
+		return false
+	}
+	if function.Type.TypeParams != nil && len(function.Type.TypeParams.List) > 0 {
+		return false
+	}
+	if function.Type.Results != nil && len(function.Type.Results.List) > 0 {
+		return false
+	}
+	if function.Type.Params == nil || len(function.Type.Params.List) != 1 {
+		return false
+	}
+	parameter := function.Type.Params.List[0]
+	if len(parameter.Names) > 1 {
+		return false
+	}
+	star, ok := parameter.Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := star.X.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "T" {
+		return false
+	}
+	packageName, ok := selector.X.(*ast.Ident)
+	return ok && packageName.Name == "testing"
 }
 
 func moduleRoot(t *testing.T) string {

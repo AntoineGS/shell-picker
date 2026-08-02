@@ -23,7 +23,19 @@ var Packages = []Package{
 	{"./integration", `^(TestWindowsResourceSnapshotUsesExactHandleIdentities|TestWindowsOwnedProcessHandleRegistryReturnsToBaseline|TestWindowsResourceSnapshotFingerprintsDirectoryReplacement|TestWindowsHandleIdentityIncludesObjectForReusedSlot|TestWindowsHandleSnapshotBufferGrowth|TestWindowsHandleSnapshotCanGrowPastFormerRetryCount|TestWindowsHandleSnapshotGrowthRemainsGeometricWhenNeededKeepsGrowing|TestWindowsHandleIdentityDifferenceListsAddedAndRemoved|TestWindowsTask20HandleScopeLifecycleOrdering|TestWindowsTask20HandleScopeWaitsForTransientClosure|TestWindowsTask20HandleScopeReportsPersistentIdentity|TestWindowsTask20HandleScopeRetainsEvidenceOnQueryError|TestWindowsTask20HandleScopeTreatsReusedSlotAsClosed|TestTask20ObjectTypeQueryGrowsGeometrically|TestTask20ObjectTypeQueryRejectsOversizedResponse|TestTask20KnownObjectTypePolicy|TestTask20UnknownObjectTypeFailsClosed|TestWindowsApplicationHandleDifferenceIncludesType|TestWindowsRawHandleCountDoesNotChangeApplicationDifference|TestWindowsResourceGateReportsPersistentApplicationIdentityAfterFiltering|TestParityWindowsSemanticSubstitutions|TestParityWindowsUnicodeSpaceControlDisplayReplacement|TestPlatformPrerequisites)$`},
 }
 
-var approvedManifest = append([]Package(nil), Packages...)
+func approvedManifest() []Package {
+	return []Package{
+		{"./internal/session", `^(TestWindowsRootParentAndHomeTransitions|TestValidateCPWindowsCrossVolumeUsesAbsolutePath)$`},
+		{"./internal/sessionipc", `^(TestRoutesMapResponsesAndErrors|TestPreviewValidationAndTelemetry|TestFinishedTelemetryExactChildBounds|TestServerCloseCancelsCooperativeBackend|TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins)$`},
+		{"./internal/candidate", `^(TestWindowsDriveAndUNCRootsUseCanonicalVirtualDrivesParent|TestWindowsNonRootParentRemainsFilesystemRecord|TestEnumerateDrivesOrderKindAndIdentity|TestEnumerateDrivesErrorPublishesNothing)$`},
+		{"./internal/process", `^(TestPreparedStreamsPumpCount|TestWindowsStartFailureStagesCloseEverything|TestCleanupFailuresDoNotMaskStartFailure|TestWindowsCancelTerminatesJob|TestWindowsForegroundAndInheritedJobsTerminateDescendants|TestCreateProcessPassesStreamsAndArguments|TestWindowsRejectsExtraFilesBeforeProcessAttempt|TestWindowsForegroundUsesOwnedJobWithoutTTY|TestRetainedInheritedJobKillsDescendantAfterChildWait|TestWindowsExitErrorPreservesWaitDelayClassification|TestCreateProcessInheritsOnlyExplicitChildHandles|TestSharedStdoutStderrWriterIsSerialized|TestSanitizeEnvWindowsCaseInsensitiveAndLastWins|TestSanitizeEnvWindowsDeduplicatesControlledKeys)$`},
+		{"./internal/callback", `^(TestSetCursorWritesWindowsConsoleWithoutStdout)$`},
+		{"./internal/preview", `^(TestWindowsCachePutRootSwapIsRejectedOrExplicitlyDenied|TestWindowsCacheRejectsSymlinkRootAndEntry|TestWindowsArtifactCleanupRetriesAfterSharingViolation|TestWindowsStaleCleanupLeavesUnvalidatedPrivateDirectory|TestWindowsStageCreationValidationFailureLeavesNoPrivateArtifact|TestWindowsStaleCleanupRejectsAttackerStageLookalikes|TestWindowsStaleCleanupRemovesGenuineAbandonedStage|TestWindowsStageMarkerValidationFailureLeavesNoPrivateStage|TestExternalRendererSpecRequestsWindowsNestedJob|TestStagedArtifactRejectsReplacementAfterExclusiveCreation|TestStagedArtifactTruncatesValidatedCreationIdentity|TestRendererReadsValidatedStageWhenPathIsReplaced)$`},
+		{"./internal/app", `^(TestClassifyWindowsTracePath|TestOpenWindowsTraceSinkUsesPipeAndFileDispositions|TestOpenWindowsTraceSinkValidatesBeforeTruncatingAndClosesOnFailure)$`},
+		{"./internal/pathutil", `^(TestWindowsParentModel|TestWindowsRelativeAndValidation|TestCompactHomeWindows|TestPromptDisplayHomeWindows|TestWindowsUNCNavigationPure|TestWindowsUNCMixedAndRepeatedSeparatorsPure|TestListDrivesAscending|TestAbsoluteAncestryWindowsDrive|TestAbsoluteAncestryWindowsUNC|TestCreateDirectoryTreeRejectsJunctionInBaseAncestry|TestCreateDirectoryTreeRejectsJunctionInQueryComponent|TestCreateDirectoryTreeWindowsRollbackAndExistingFile)$`},
+		{"./integration", `^(TestWindowsResourceSnapshotUsesExactHandleIdentities|TestWindowsOwnedProcessHandleRegistryReturnsToBaseline|TestWindowsResourceSnapshotFingerprintsDirectoryReplacement|TestWindowsHandleIdentityIncludesObjectForReusedSlot|TestWindowsHandleSnapshotBufferGrowth|TestWindowsHandleSnapshotCanGrowPastFormerRetryCount|TestWindowsHandleSnapshotGrowthRemainsGeometricWhenNeededKeepsGrowing|TestWindowsHandleIdentityDifferenceListsAddedAndRemoved|TestWindowsTask20HandleScopeLifecycleOrdering|TestWindowsTask20HandleScopeWaitsForTransientClosure|TestWindowsTask20HandleScopeReportsPersistentIdentity|TestWindowsTask20HandleScopeRetainsEvidenceOnQueryError|TestWindowsTask20HandleScopeTreatsReusedSlotAsClosed|TestTask20ObjectTypeQueryGrowsGeometrically|TestTask20ObjectTypeQueryRejectsOversizedResponse|TestTask20KnownObjectTypePolicy|TestTask20UnknownObjectTypeFailsClosed|TestWindowsApplicationHandleDifferenceIncludesType|TestWindowsRawHandleCountDoesNotChangeApplicationDifference|TestWindowsResourceGateReportsPersistentApplicationIdentityAfterFiltering|TestParityWindowsSemanticSubstitutions|TestParityWindowsUnicodeSpaceControlDisplayReplacement|TestPlatformPrerequisites)$`},
+	}
+}
 
 var unixAuthorities = []string{
 	"ForegroundTreeOwnsTTY",
@@ -38,9 +50,10 @@ func Validate() error {
 	}
 
 	seen := make(map[string]struct{}, len(Packages))
-	approvedByPath := make(map[string]Package, len(approvedManifest))
-	for _, approved := range approvedManifest {
-		approvedByPath[approved.Path] = approved
+	authority := approvedManifest()
+	approvedByPath := make(map[string]Package, len(authority))
+	for _, expected := range authority {
+		approvedByPath[expected.Path] = expected
 	}
 
 	for _, pkg := range Packages {
@@ -52,7 +65,7 @@ func Validate() error {
 		}
 		seen[pkg.Path] = struct{}{}
 
-		approved, ok := approvedByPath[pkg.Path]
+		expected, ok := approvedByPath[pkg.Path]
 		if !ok {
 			return fmt.Errorf("package path %q is not approved", pkg.Path)
 		}
@@ -61,9 +74,9 @@ func Validate() error {
 		if err != nil {
 			return fmt.Errorf("package %s pattern: %w", pkg.Path, err)
 		}
-		approvedNames, err := parsePattern(approved.Pattern)
+		approvedNames, err := parsePattern(expected.Pattern)
 		if err != nil {
-			return fmt.Errorf("approved package %s pattern: %w", approved.Path, err)
+			return fmt.Errorf("approved package %s pattern: %w", expected.Path, err)
 		}
 		approvedNameSet := make(map[string]struct{}, len(approvedNames))
 		for _, name := range approvedNames {
@@ -81,15 +94,15 @@ func Validate() error {
 		}
 	}
 
-	if len(Packages) != len(approvedManifest) {
-		return fmt.Errorf("manifest has %d packages, want %d", len(Packages), len(approvedManifest))
+	if len(Packages) != len(authority) {
+		return fmt.Errorf("manifest has %d packages, want %d", len(Packages), len(authority))
 	}
 	for i, pkg := range Packages {
-		approved := approvedManifest[i]
-		if pkg.Path != approved.Path {
+		expected := authority[i]
+		if pkg.Path != expected.Path {
 			return fmt.Errorf("package %d path %q is out of deterministic order", i, pkg.Path)
 		}
-		if pkg.Pattern != approved.Pattern {
+		if pkg.Pattern != expected.Pattern {
 			return fmt.Errorf("package %s pattern does not match the approved manifest", pkg.Path)
 		}
 	}
