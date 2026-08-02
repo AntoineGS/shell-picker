@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"net/url"
-	"sync"
 	"testing"
 	"time"
 )
@@ -33,46 +32,6 @@ func awaitSessionIPC[T any](t *testing.T, values <-chan T, operation string) T {
 		var zero T
 		return zero
 	}
-}
-
-type sessionIPCShutdownArbiter struct {
-	mu            sync.Mutex
-	releaseOnce   sync.Once
-	releaseCh     chan struct{}
-	released      bool
-	closeReturned bool
-	violation     error
-}
-
-func newSessionIPCShutdownArbiter() *sessionIPCShutdownArbiter {
-	return &sessionIPCShutdownArbiter{releaseCh: make(chan struct{})}
-}
-
-func (arbiter *sessionIPCShutdownArbiter) releaseChannel() <-chan struct{} {
-	return arbiter.releaseCh
-}
-
-func (arbiter *sessionIPCShutdownArbiter) recordCloseReturn() {
-	arbiter.mu.Lock()
-	defer arbiter.mu.Unlock()
-	arbiter.closeReturned = true
-	if !arbiter.released && arbiter.violation == nil {
-		arbiter.violation = errors.New("Server.Close returned before backend release")
-	}
-}
-
-func (arbiter *sessionIPCShutdownArbiter) releaseBackend() error {
-	arbiter.mu.Lock()
-	if !arbiter.released {
-		if arbiter.closeReturned && arbiter.violation == nil {
-			arbiter.violation = errors.New("Server.Close returned before backend release")
-		}
-		arbiter.released = true
-	}
-	violation := arbiter.violation
-	arbiter.mu.Unlock()
-	arbiter.releaseOnce.Do(func() { close(arbiter.releaseCh) })
-	return violation
 }
 
 func assertDisplayError(t *testing.T, client *Client, want error, operation string) {

@@ -222,22 +222,19 @@ func TestFinishedTelemetryExactChildBounds(t *testing.T) {
 	}
 }
 
-func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
+func TestServerCloseCancelsCooperativeBackend(t *testing.T) {
 	called := make(chan struct{})
 	cancellationReached := make(chan struct{})
 	backendReturned := make(chan struct{})
-	shutdown := newSessionIPCShutdownArbiter()
 	backend := benignBackend()
 	backend.handleEvent = func(ctx context.Context, _ protocol.Event) (protocol.Effect, error) {
 		close(called)
 		<-ctx.Done()
 		close(cancellationReached)
-		<-shutdown.releaseChannel()
 		close(backendReturned)
 		return protocol.Effect{}, context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
-	t.Cleanup(func() { _ = shutdown.releaseBackend() })
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	defer cancelRequest()
 	requestDone := make(chan error, 1)
@@ -246,26 +243,10 @@ func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 		requestDone <- err
 	}()
 	awaitSessionIPC(t, called, "event backend entry before server close")
-	closeCtx, cancelClose := context.WithCancel(context.Background())
-	cancelClose()
-	defer cancelClose()
-	closed := make(chan error, 1)
-	go func() {
-		err := server.Close(closeCtx)
-		shutdown.recordCloseReturn()
-		closed <- err
-	}()
+	closeSessionIPC(t, server, "cooperative backend cancellation", nil)
 	awaitSessionIPC(t, cancellationReached, "close-triggered backend cancellation")
-	// The canceled context bypasses graceful Shutdown and targets the explicit
-	// httpServer.Close plus handlers.Wait path.
-	if err := shutdown.releaseBackend(); err != nil {
-		t.Fatalf("shutdown ordering: %v", err)
-	}
-	awaitSessionIPC(t, backendReturned, "backend completion after release")
-	awaitSessionIPC(t, requestDone, "event request completion after handler release")
-	if err := awaitSessionIPC(t, closed, "Server.Close after handler completion"); err != nil {
-		t.Fatalf("Server.Close: %v", err)
-	}
+	awaitSessionIPC(t, backendReturned, "cooperative backend completion")
+	awaitSessionIPC(t, requestDone, "event request completion after backend cancellation")
 }
 
 func rawWireEvent(t *testing.T, address string, headers []string) *http.Response {

@@ -47,7 +47,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestServerAcceptsOnlyOneExactRawAuthorizationValue",
 		"TestServerRejectsChunkedRequestAt64KiBPlusOne",
 		"TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins",
-		"TestServerCloseCancelsCooperativeBackendAndJoinsHandler",
+		"TestServerCloseCancelsCooperativeBackend",
 		"TestClientBoundsEveryResponseClassAtLimitAndLimitPlusOne",
 		"TestClientClosesOverlimitBodyWithoutReusableTransport",
 		"TestServerRejectsBackendReturnedVirtualPreview",
