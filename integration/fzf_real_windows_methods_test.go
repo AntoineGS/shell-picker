@@ -89,10 +89,21 @@ func (session *windowsTerminalSession) publishTraceError(err error) {
 	session.eventMu.Unlock()
 }
 
-func windowsEnvironment(environment []string) []uint16 {
+func windowsEnvironment(environment []string) ([]uint16, error) {
 	sorted := append([]string(nil), environment...)
 	sort.SliceStable(sorted, func(i, j int) bool { return strings.ToUpper(sorted[i]) < strings.ToUpper(sorted[j]) })
-	return windows.StringToUTF16(strings.Join(sorted, "\x00") + "\x00")
+	block := make([]uint16, 0)
+	for _, entry := range sorted {
+		encoded, err := windows.UTF16FromString(entry)
+		if err != nil {
+			return nil, fmt.Errorf("encode Windows environment entry: %w", err)
+		}
+		block = append(block, encoded...)
+	}
+	if len(block) == 0 {
+		return []uint16{0, 0}, nil
+	}
+	return append(block, 0), nil
 }
 
 func (session *windowsTerminalSession) drainOutput(handle windows.Handle) {

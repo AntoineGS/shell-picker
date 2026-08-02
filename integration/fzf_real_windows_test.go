@@ -129,6 +129,10 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 
 func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	t.Helper()
+	environment, err := windowsEnvironment(config.Environment)
+	if err != nil {
+		t.Fatalf("encode Windows environment: %v", err)
+	}
 	if build := windows.RtlGetVersion().BuildNumber; build < 17763 {
 		t.Fatalf("ConPTY requires Windows build 17763 or newer, got %d", build)
 	}
@@ -176,7 +180,6 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		session.Close()
 		t.Fatal(err)
 	}
-	environment := windowsEnvironment(config.Environment)
 	var directory *uint16
 	if config.Directory != "" {
 		directory, err = windows.UTF16PtrFromString(config.Directory)
