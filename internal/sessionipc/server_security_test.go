@@ -224,28 +224,33 @@ func TestFinishedTelemetryExactChildBounds(t *testing.T) {
 
 func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 	called := make(chan struct{})
-	returned := make(chan struct{})
+	shutdownOrder := make(chan string, 2)
 	backend := benignBackend()
 	backend.handleEvent = func(ctx context.Context, _ protocol.Event) (protocol.Effect, error) {
 		close(called)
 		<-ctx.Done()
-		close(returned)
+		shutdownOrder <- "backend returned"
 		return protocol.Effect{}, context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	defer cancelRequest()
-	observeCtx, cancelObserve := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
-	defer cancelObserve()
 	requestDone := make(chan error, 1)
 	go func() {
 		_, err := client.Event(requestCtx, eventRequest())
 		requestDone <- err
 	}()
-	awaitSessionIPC(t, observeCtx, called, "event backend entry before server close")
-	closeSessionIPC(t, server, "cooperative event handler cancellation")
-	awaitSessionIPC(t, observeCtx, returned, "event backend return after server close")
-	awaitSessionIPC(t, observeCtx, requestDone, "event request completion after server close")
+	awaitSessionIPC(t, called, "event backend entry before server close")
+	closeSessionIPC(t, server, "cooperative event handler cancellation", func() {
+		shutdownOrder <- "Server.Close returned"
+	})
+	if got := awaitSessionIPC(t, shutdownOrder, "handler/close completion ordering"); got != "backend returned" {
+		t.Fatalf("first shutdown event=%q want backend returned", got)
+	}
+	if got := awaitSessionIPC(t, shutdownOrder, "Server.Close completion ordering"); got != "Server.Close returned" {
+		t.Fatalf("second shutdown event=%q want Server.Close returned", got)
+	}
+	awaitSessionIPC(t, requestDone, "event request completion after server close")
 }
 
 func rawWireEvent(t *testing.T, address string, headers []string) *http.Response {

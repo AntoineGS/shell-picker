@@ -69,46 +69,6 @@ func benignBackendForPath(path []byte) backendStub {
 	return backend
 }
 
-func awaitPreviewRecord(t *testing.T, recorded <-chan PreviewRequest) PreviewRequest {
-	t.Helper()
-	observeCtx, cancel := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
-	defer cancel()
-	return awaitSessionIPC(t, observeCtx, recorded, "preview telemetry record")
-}
-
-const (
-	sessionIPCWaitTimeout  = 5 * time.Second
-	sessionIPCCloseTimeout = 2 * time.Second
-	sessionIPCProbeTimeout = 2 * time.Second
-)
-
-func awaitSessionIPC[T any](t *testing.T, observeCtx context.Context, values <-chan T, operation string) T {
-	t.Helper()
-	select {
-	case value := <-values:
-		return value
-	case <-observeCtx.Done():
-		t.Fatalf("timed out waiting for %s: %v", operation, observeCtx.Err())
-		var zero T
-		return zero
-	}
-}
-
-func closeSessionIPC(t *testing.T, server *Server, operation string) {
-	t.Helper()
-	closeCtx, cancelClose := context.WithTimeout(context.Background(), sessionIPCCloseTimeout)
-	defer cancelClose()
-	closed := make(chan error, 1)
-	go func() {
-		closed <- server.Close(closeCtx)
-	}()
-	observeCtx, cancelObserve := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
-	defer cancelObserve()
-	if err := awaitSessionIPC(t, observeCtx, closed, "Server.Close "+operation); err != nil {
-		t.Fatalf("Server.Close %s: %v", operation, err)
-	}
-}
-
 func fixedToken(value byte) Token {
 	var token Token
 	for i := range token {
@@ -126,7 +86,7 @@ func startServer(t *testing.T, backend Backend) (*Server, *Client) {
 	}
 	client := newClient(server.Address(), token)
 	t.Cleanup(func() {
-		closeSessionIPC(t, server, "test cleanup")
+		closeSessionIPC(t, server, "test cleanup", nil)
 	})
 	return server, client
 }
@@ -194,14 +154,12 @@ func TestServerAuthenticatesAndPreservesOpaqueBytes(t *testing.T) {
 		return protocol.Effect{Put: "ok"}, nil
 	}
 	_, client := startServer(t, backend)
-	observeCtx, cancelObserve := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
-	defer cancelObserve()
 
 	response, err := client.Event(context.Background(), eventRequest())
 	if err != nil || response.Effect.Put != "ok" {
 		t.Fatalf("Event response=%+v err=%v", response, err)
 	}
-	event := awaitSessionIPC(t, observeCtx, seen, "opaque event delivery")
+	event := awaitSessionIPC(t, seen, "opaque event delivery")
 	if !bytes.Equal(event.Query, []byte{0xff, 'q'}) || !bytes.Equal(event.CurrentItem, []byte("file\titem\tL3RtcC94")) {
 		t.Fatalf("event bytes query=%x current=%x", event.Query, event.CurrentItem)
 	}
@@ -385,19 +343,17 @@ func TestDisplayContextCancellationFlowsToBackend(t *testing.T) {
 	}
 	_, client := startServer(t, backend)
 	ctx, cancel := context.WithCancelCause(context.Background())
-	observeCtx, cancelObserve := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
-	defer cancelObserve()
 	done := make(chan error, 1)
 	go func() {
 		_, err := client.Display(ctx)
 		done <- err
 	}()
-	awaitSessionIPC(t, observeCtx, entered, "display backend entry before caller cancellation")
+	awaitSessionIPC(t, entered, "display backend entry before caller cancellation")
 	cancel(errors.New("caller stopped"))
-	if err := awaitSessionIPC(t, observeCtx, cancelled, "display backend cancellation"); err == nil {
+	if err := awaitSessionIPC(t, cancelled, "display backend cancellation"); err == nil {
 		t.Fatal("backend did not receive caller cancellation")
 	}
-	if err := awaitSessionIPC(t, observeCtx, done, "display request completion after caller cancellation"); !errors.Is(err, context.Canceled) {
+	if err := awaitSessionIPC(t, done, "display request completion after caller cancellation"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled display err=%v", err)
 	}
 }
@@ -409,8 +365,6 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 	finished := make(chan struct{}, 16)
 	requestCtx, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
-	observeCtx, cancelObserve := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
-	defer cancelObserve()
 	backend := benignBackend()
 	backend.currentHeader = func(ctx context.Context) (string, error) {
 		entered <- struct{}{}
@@ -429,27 +383,20 @@ func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
 		}()
 	}
 	for range 16 {
-		awaitSessionIPC(t, observeCtx, entered, "display backend entry under handler pressure")
+		awaitSessionIPC(t, entered, "display backend entry under handler pressure")
 	}
-	if _, err := client.Display(requestCtx); !errors.Is(err, ErrTooManyRequests) {
-		t.Fatalf("seventeenth request err=%v", err)
-	}
+	assertDisplayError(t, client, ErrTooManyRequests, "seventeenth display concurrency-limit request")
 
-	closeSessionIPC(t, server, "handler cancellation and join")
+	closeSessionIPC(t, server, "handler cancellation and join", nil)
+	assertSessionIPCListenerClosed(t, server.Address())
 	for range 16 {
-		awaitSessionIPC(t, observeCtx, exited, "display backend exit after server close")
+		awaitSessionIPC(t, exited, "display backend exit after server close")
 	}
 	for range 16 {
-		awaitSessionIPC(t, observeCtx, finished, "display request completion after server close")
-	}
-	postCloseCtx, cancelPostClose := context.WithTimeout(context.Background(), sessionIPCProbeTimeout)
-	_, err := client.Display(postCloseCtx)
-	cancelPostClose()
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("closed endpoint probe err=%v", err)
+		awaitSessionIPC(t, finished, "display request completion after server close")
 	}
 	close(release)
-	closeSessionIPC(t, server, "idempotent close")
+	closeSessionIPC(t, server, "idempotent close", nil)
 }
 
 func TestPreviewTelemetryUsesIndependentSoftTimeout(t *testing.T) {
@@ -465,8 +412,6 @@ func TestPreviewTelemetryUsesIndependentSoftTimeout(t *testing.T) {
 		return context.Cause(ctx)
 	}
 	_, client := startServer(t, backend)
-	observeCtx, cancelObserve := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
-	defer cancelObserve()
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := time.Now()
@@ -479,7 +424,7 @@ func TestPreviewTelemetryUsesIndependentSoftTimeout(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
 		t.Fatalf("telemetry blocked %v", elapsed)
 	}
-	awaitSessionIPC(t, observeCtx, requestObserved, "preview telemetry backend entry")
+	awaitSessionIPC(t, requestObserved, "preview telemetry backend entry")
 }
 
 func rawRequest(t *testing.T, url string, token Token, method, contentType string, body []byte) *http.Response {
