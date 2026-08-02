@@ -37,6 +37,44 @@ func TestTask20ClassifyHandleRecognizesIRTimer(t *testing.T) {
 	}
 }
 
+func TestTask20ClassifyHandleRecognizesNativeObjectTypes(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		objectType string
+		kind       task20HandleKind
+		owned      bool
+	}{
+		{name: "EtwRegistration", objectType: "EtwRegistration", kind: task20HandleEtwRegistration, owned: true},
+		{name: "SchedulerSharedData", objectType: "SchedulerSharedData", kind: task20HandleSchedulerSharedData, owned: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			identity := task20HandleIdentity{Value: 0x1234, Object: 0x5678}
+			got, err := task20ClassifyHandleWith(windows.Handle(identity.Value), identity, task20HandleClassificationAPI{
+				queryObjectType: func(windows.Handle) (string, error) { return test.objectType, nil },
+				getsockname: func(windows.Handle) (windows.Sockaddr, error) {
+					t.Fatal("socket probe ran for non-File object type")
+					return nil, nil
+				},
+				getFileType: func(windows.Handle) (uint32, error) {
+					t.Fatal("file type probe ran for non-File object type")
+					return 0, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("classify %s: %v", test.objectType, err)
+			}
+			want := task20ResourceIdentity{Identity: identity, Type: test.objectType, Kind: test.kind}
+			if got != want {
+				t.Fatalf("classification=%+v want=%+v", got, want)
+			}
+			owned, err := got.applicationOwned()
+			if err != nil || owned != test.owned {
+				t.Fatalf("ownership=%v err=%v want=%v", owned, err, test.owned)
+			}
+		})
+	}
+}
+
 func TestTask20CoherentHandleSnapshotStableSuccess(t *testing.T) {
 	process := task20HandleIdentity{Value: 0x40, Object: 0x1000}
 	socket := task20HandleIdentity{Value: 0x44, Object: 0x1400}

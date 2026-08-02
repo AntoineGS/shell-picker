@@ -39,6 +39,8 @@ const (
 	task20HandleTimer
 	task20HandleIOCompletion
 	task20HandleWaitCompletion
+	task20HandleEtwRegistration
+	task20HandleSchedulerSharedData
 )
 
 func task20HandleKindName(kind task20HandleKind) string {
@@ -65,6 +67,10 @@ func task20HandleKindName(kind task20HandleKind) string {
 		return "IoCompletion"
 	case task20HandleWaitCompletion:
 		return "WaitCompletionPacket"
+	case task20HandleEtwRegistration:
+		return "EtwRegistration"
+	case task20HandleSchedulerSharedData:
+		return "SchedulerSharedData"
 	default:
 		return fmt.Sprintf("Unknown(%d)", uint8(kind))
 	}
@@ -83,9 +89,9 @@ type task20ResourceIdentity struct {
 
 func (identity task20ResourceIdentity) applicationOwned() (bool, error) {
 	switch identity.Kind {
-	case task20HandleFile, task20HandlePipe, task20HandleSocket, task20HandleProcess, task20HandleJob:
+	case task20HandleFile, task20HandlePipe, task20HandleSocket, task20HandleProcess, task20HandleJob, task20HandleEtwRegistration:
 		return true, nil
-	case task20HandleThread, task20HandleEvent, task20HandleTimer, task20HandleIOCompletion, task20HandleWaitCompletion:
+	case task20HandleThread, task20HandleEvent, task20HandleTimer, task20HandleIOCompletion, task20HandleWaitCompletion, task20HandleSchedulerSharedData:
 		return false, nil
 	default:
 		return false, fmt.Errorf("unsupported Windows handle kind %d", identity.Kind)

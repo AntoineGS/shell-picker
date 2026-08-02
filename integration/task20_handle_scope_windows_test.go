@@ -48,6 +48,26 @@ func TestWindowsResourceGateReportsPersistentApplicationIdentityAfterFiltering(t
 	}
 }
 
+func TestWindowsResourceGateReportsPersistentETWIdentityAfterFiltering(t *testing.T) {
+	etw := task20TestResource(0x42, 0x4000, "EtwRegistration", task20HandleEtwRegistration)
+	scheduler := task20TestResource(0x43, 0x5000, "SchedulerSharedData", task20HandleSchedulerSharedData)
+	classified := map[task20HandleIdentity]task20ResourceIdentity{
+		etw.Identity:       etw,
+		scheduler.Identity: scheduler,
+	}
+	application, err := task20ApplicationHandles(classified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(application) != 1 || application[etw.Identity] != etw {
+		t.Fatalf("application handles=%v; want only ETW resource %v", application, etw)
+	}
+	want := "platform=handles baseline=0 current=0; added=[kind=EtwRegistration object_type=EtwRegistration value=0x42 object=0x4000] removed=[]"
+	if diff := resourceDifference(resourceSnapshot{}, resourceSnapshot{applicationHandles: application}); diff != want {
+		t.Fatalf("difference=%q want=%q", diff, want)
+	}
+}
+
 func TestWindowsUnknownApplicationHandleKindFailsFiltering(t *testing.T) {
 	unknown := task20ResourceIdentity{Identity: task20HandleIdentity{Value: 0x30, Object: 0x3000}, Type: "Future", Kind: task20HandleKind(255)}
 	got, err := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{unknown.Identity: unknown})
@@ -72,11 +92,13 @@ func TestWindowsTask20ScopePolicyIsTypeExact(t *testing.T) {
 		task20HandleTimer,
 		task20HandleIOCompletion,
 		task20HandleWaitCompletion,
+		task20HandleEtwRegistration,
+		task20HandleSchedulerSharedData,
 	}
 	for _, phase := range []string{"server", "process/job", "unknown"} {
 		for _, kind := range kinds {
-			want := (phase == "server" && kind == task20HandleSocket) ||
-				(phase == "process/job" && (kind == task20HandleProcess || kind == task20HandleJob))
+			want := (phase == "server" && (kind == task20HandleSocket || kind == task20HandleEtwRegistration)) ||
+				(phase == "process/job" && (kind == task20HandleProcess || kind == task20HandleJob || kind == task20HandleEtwRegistration))
 			if got := task20ScopeTracks(phase, kind); got != want {
 				t.Errorf("phase=%s kind=%v got=%v want=%v", phase, kind, got, want)
 			}
@@ -160,9 +182,9 @@ type task20HandleScope struct {
 func task20ScopeTracks(phase string, kind task20HandleKind) bool {
 	switch phase {
 	case "server":
-		return kind == task20HandleSocket
+		return kind == task20HandleSocket || kind == task20HandleEtwRegistration
 	case "process/job":
-		return kind == task20HandleProcess || kind == task20HandleJob
+		return kind == task20HandleProcess || kind == task20HandleJob || kind == task20HandleEtwRegistration
 	default:
 		return false
 	}

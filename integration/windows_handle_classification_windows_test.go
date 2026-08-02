@@ -33,6 +33,10 @@ func task20KindForObjectType(objectType string) (task20HandleKind, bool) {
 		return task20HandleIOCompletion, true
 	case "WaitCompletionPacket":
 		return task20HandleWaitCompletion, true
+	case "EtwRegistration":
+		return task20HandleEtwRegistration, true
+	case "SchedulerSharedData":
+		return task20HandleSchedulerSharedData, true
 	default:
 		return task20HandleUnknown, false
 	}
@@ -95,6 +99,8 @@ func TestTask20KnownObjectTypePolicy(t *testing.T) {
 		"IRTimer":              task20HandleTimer,
 		"IoCompletion":         task20HandleIOCompletion,
 		"WaitCompletionPacket": task20HandleWaitCompletion,
+		"EtwRegistration":      task20HandleEtwRegistration,
+		"SchedulerSharedData":  task20HandleSchedulerSharedData,
 	}
 	for name, want := range cases {
 		got, ok := task20KindForObjectType(name)
@@ -117,6 +123,7 @@ func TestTask20RuntimeObjectKindsAreNotApplicationOwned(t *testing.T) {
 		task20HandleTimer,
 		task20HandleIOCompletion,
 		task20HandleWaitCompletion,
+		task20HandleSchedulerSharedData,
 	} {
 		owned, err := (task20ResourceIdentity{Kind: kind}).applicationOwned()
 		if err != nil || owned {
