@@ -224,12 +224,16 @@ func TestFinishedTelemetryExactChildBounds(t *testing.T) {
 
 func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 	called := make(chan struct{})
-	shutdownOrder := make(chan string, 2)
+	cancellationReached := make(chan struct{})
+	release := make(chan struct{})
+	backendReturned := make(chan struct{})
 	backend := benignBackend()
 	backend.handleEvent = func(ctx context.Context, _ protocol.Event) (protocol.Effect, error) {
 		close(called)
 		<-ctx.Done()
-		shutdownOrder <- "backend returned"
+		close(cancellationReached)
+		<-release
+		close(backendReturned)
 		return protocol.Effect{}, context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
@@ -241,16 +245,20 @@ func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 		requestDone <- err
 	}()
 	awaitSessionIPC(t, called, "event backend entry before server close")
-	closeSessionIPC(t, server, "cooperative event handler cancellation", func() {
-		shutdownOrder <- "Server.Close returned"
-	})
-	if got := awaitSessionIPC(t, shutdownOrder, "handler/close completion ordering"); got != "backend returned" {
-		t.Fatalf("first shutdown event=%q want backend returned", got)
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), sessionIPCCloseTimeout)
+	defer cancelClose()
+	closed := make(chan error, 1)
+	go func() {
+		closed <- server.Close(closeCtx)
+	}()
+	awaitSessionIPC(t, cancellationReached, "close-triggered backend cancellation")
+	assertSessionIPCNotClosed(t, closed, "Server.Close while handler is held")
+	close(release)
+	awaitSessionIPC(t, backendReturned, "backend completion after release")
+	awaitSessionIPC(t, requestDone, "event request completion after handler release")
+	if err := awaitSessionIPC(t, closed, "Server.Close after handler completion"); err != nil {
+		t.Fatalf("Server.Close: %v", err)
 	}
-	if got := awaitSessionIPC(t, shutdownOrder, "Server.Close completion ordering"); got != "Server.Close returned" {
-		t.Fatalf("second shutdown event=%q want Server.Close returned", got)
-	}
-	awaitSessionIPC(t, requestDone, "event request completion after server close")
 }
 
 func rawWireEvent(t *testing.T, address string, headers []string) *http.Response {

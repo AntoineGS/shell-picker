@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	sessionIPCWaitTimeout  = 5 * time.Second
-	sessionIPCCloseTimeout = 2 * time.Second
-	sessionIPCProbeTimeout = 2 * time.Second
+	sessionIPCWaitTimeout     = 5 * time.Second
+	sessionIPCCloseTimeout    = 2 * time.Second
+	sessionIPCProbeTimeout    = 2 * time.Second
+	sessionIPCNegativeTimeout = 250 * time.Millisecond
 )
 
 func awaitPreviewRecord(t *testing.T, recorded <-chan PreviewRequest) PreviewRequest {
@@ -31,6 +32,20 @@ func awaitSessionIPC[T any](t *testing.T, values <-chan T, operation string) T {
 		t.Fatalf("timed out waiting for %s: %v", operation, observeCtx.Err())
 		var zero T
 		return zero
+	}
+}
+
+func assertSessionIPCNotClosed(t *testing.T, closed <-chan error, operation string) {
+	t.Helper()
+	observeCtx, cancel := context.WithTimeout(context.Background(), sessionIPCNegativeTimeout)
+	defer cancel()
+	select {
+	case err := <-closed:
+		t.Fatalf("%s returned while handler was held: %v", operation, err)
+	case <-observeCtx.Done():
+		if !errors.Is(observeCtx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("%s negative observation ended: %v", operation, observeCtx.Err())
+		}
 	}
 }
 
