@@ -233,29 +233,19 @@ func TestServerCloseCancelsCooperativeBackendAndJoinsHandler(t *testing.T) {
 		return protocol.Effect{}, context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
-	waitCtx, cancelWait := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
-	defer cancelWait()
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+	observeCtx, cancelObserve := context.WithTimeout(context.Background(), sessionIPCWaitTimeout)
+	defer cancelObserve()
 	requestDone := make(chan error, 1)
 	go func() {
-		_, err := client.Event(waitCtx, eventRequest())
+		_, err := client.Event(requestCtx, eventRequest())
 		requestDone <- err
 	}()
-	awaitSessionIPC(t, waitCtx, called, "event backend entry before server close")
-	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := server.Close(closeCtx); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-returned:
-	default:
-		t.Fatal("backend had not returned before Close")
-	}
-	select {
-	case <-requestDone:
-	case <-closeCtx.Done():
-		t.Fatal("request handler did not join within close bound")
-	}
+	awaitSessionIPC(t, observeCtx, called, "event backend entry before server close")
+	closeSessionIPC(t, server, "cooperative event handler cancellation")
+	awaitSessionIPC(t, observeCtx, returned, "event backend return after server close")
+	awaitSessionIPC(t, observeCtx, requestDone, "event request completion after server close")
 }
 
 func rawWireEvent(t *testing.T, address string, headers []string) *http.Response {
