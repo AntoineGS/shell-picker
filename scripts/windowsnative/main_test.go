@@ -162,6 +162,8 @@ func TestRunManifestBoundsAndLabelsListFailureDiagnostics(t *testing.T) {
 	for _, want := range []string{
 		"list stdout:",
 		"list stderr:",
+		"total=",
+		"overflow=true",
 		"stdout-head",
 		"stdout-tail",
 		"stderr-head",
@@ -177,5 +179,76 @@ func TestRunManifestBoundsAndLabelsListFailureDiagnostics(t *testing.T) {
 	}
 	if len(fake.calls) != 1 || fake.calls[0][2] != "-list" {
 		t.Fatalf("commands=%q want only list command", fake.calls)
+	}
+}
+
+func TestBoundedCaptureRetainsBoundedHeadTail(t *testing.T) {
+	const limit = 32
+	capture := newBoundedCapture(limit)
+	payload := "head-" + strings.Repeat("x", 256) + "-tail"
+
+	n, err := capture.Write([]byte(payload))
+	if err != nil || n != len(payload) {
+		t.Fatalf("Write()=(%d, %v), want (%d, nil)", n, err, len(payload))
+	}
+	if capture.retainedLen() > limit {
+		t.Fatalf("retained=%d, want <= %d", capture.retainedLen(), limit)
+	}
+	if capture.total != uint64(len(payload)) {
+		t.Fatalf("total=%d, want %d", capture.total, len(payload))
+	}
+	if !capture.overflow {
+		t.Fatal("overflow=false, want true")
+	}
+	diagnostic := capture.diagnostic()
+	if len(diagnostic) > limit {
+		t.Fatalf("diagnostic length=%d, want <= %d", len(diagnostic), limit)
+	}
+	for _, want := range []string{"head-", "-tail", "[...truncated...]"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Errorf("diagnostic=%q missing %q", diagnostic, want)
+		}
+	}
+}
+
+func TestRunManifestRejectsSuccessfulListOverflowAndSkipsExecution(t *testing.T) {
+	pkg := windowsnative.Package{
+		Path:    "./internal/session",
+		Pattern: `^(TestAlpha)$`,
+	}
+
+	tests := []struct {
+		name            string
+		listOutput      string
+		listErrorOutput string
+		wantError       string
+	}{
+		{
+			name:       "stdout overflow",
+			listOutput: "TestAlpha\n" + strings.Repeat("s", 8192) + "\nok   example.test 0.001s\n",
+			wantError:  "list stdout exceeded capture limit",
+		},
+		{
+			name:            "stderr overflow",
+			listOutput:      "TestAlpha\nok   example.test 0.001s\n",
+			listErrorOutput: strings.Repeat("e", 8192),
+			wantError:       "list stderr exceeded capture limit",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeGoCommand{
+				listOutput:      tt.listOutput,
+				listErrorOutput: tt.listErrorOutput,
+			}
+			err := runManifest([]windowsnative.Package{pkg}, nil, io.Discard, io.Discard, fake.run)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("error=%v want substring %q", err, tt.wantError)
+			}
+			if len(fake.calls) != 1 || fake.calls[0][2] != "-list" {
+				t.Fatalf("commands=%q want only list command", fake.calls)
+			}
+		})
 	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -19,6 +18,108 @@ const (
 	maxListDiagnosticBytes = 4096
 	listDiagnosticMarker   = "[...truncated...]"
 )
+
+type boundedCapture struct {
+	limit     int
+	head      []byte
+	tail      []byte
+	tailStart int
+	tailCount int
+	total     uint64
+	overflow  bool
+}
+
+func newBoundedCapture(limit int) *boundedCapture {
+	if limit < 0 {
+		limit = 0
+	}
+	headLimit := limit / 2
+	return &boundedCapture{
+		limit: limit,
+		head:  make([]byte, 0, headLimit),
+		tail:  make([]byte, limit-headLimit),
+	}
+}
+
+func (c *boundedCapture) Write(p []byte) (int, error) {
+	n := len(p)
+	c.total += uint64(n)
+	if len(c.head) < cap(c.head) {
+		headBytes := min(len(p), cap(c.head)-len(c.head))
+		c.head = append(c.head, p[:headBytes]...)
+		p = p[headBytes:]
+	}
+	if len(p) > 0 {
+		c.appendTail(p)
+	}
+	if c.total > uint64(c.limit) {
+		c.overflow = true
+	}
+	return n, nil
+}
+
+func (c *boundedCapture) appendTail(p []byte) {
+	if len(c.tail) == 0 {
+		return
+	}
+	if len(p) >= len(c.tail) {
+		copy(c.tail, p[len(p)-len(c.tail):])
+		c.tailStart = 0
+		c.tailCount = len(c.tail)
+		return
+	}
+	for _, b := range p {
+		if c.tailCount < len(c.tail) {
+			c.tail[(c.tailStart+c.tailCount)%len(c.tail)] = b
+			c.tailCount++
+			continue
+		}
+		c.tail[c.tailStart] = b
+		c.tailStart = (c.tailStart + 1) % len(c.tail)
+	}
+}
+
+func (c *boundedCapture) retainedLen() int {
+	return cap(c.head) + len(c.tail)
+}
+
+func (c *boundedCapture) tailBytes() []byte {
+	if c.tailCount == 0 {
+		return nil
+	}
+	if c.tailStart+c.tailCount <= len(c.tail) {
+		return c.tail[c.tailStart : c.tailStart+c.tailCount]
+	}
+	result := make([]byte, c.tailCount)
+	n := copy(result, c.tail[c.tailStart:])
+	copy(result[n:], c.tail[:c.tailCount-n])
+	return result
+}
+
+func (c *boundedCapture) diagnostic() string {
+	tail := c.tailBytes()
+	if !c.overflow {
+		return string(c.head) + string(tail)
+	}
+	if c.limit <= len(listDiagnosticMarker) {
+		return listDiagnosticMarker[:c.limit]
+	}
+	dataLimit := c.limit - len(listDiagnosticMarker)
+	headLimit := dataLimit / 2
+	tailLimit := dataLimit - headLimit
+	head := c.head
+	if len(head) > headLimit {
+		head = head[:headLimit]
+	}
+	if len(tail) > tailLimit {
+		tail = tail[len(tail)-tailLimit:]
+	}
+	return string(head) + listDiagnosticMarker + string(tail)
+}
+
+func formatListCapture(label string, capture *boundedCapture) string {
+	return fmt.Sprintf("%s: total=%d overflow=%t content=%s", label, capture.total, capture.overflow, capture.diagnostic())
+}
 
 func filteredGoEnvironment(environment []string) []string {
 	filtered := make([]string, 0, len(environment))
@@ -55,25 +156,22 @@ func runManifest(packages []windowsnative.Package, environment []string, stdout,
 
 func validatePackageList(pkg windowsnative.Package, environment []string, runCommand goCommandRunner) error {
 	args := []string{"test", pkg.Path, "-list", pkg.Pattern, "-count=1", "-timeout=5m"}
-	var listOutput, listError bytes.Buffer
-	if err := runCommand(args, environment, &listOutput, &listError); err != nil {
-		return fmt.Errorf("list command failed: %w; list stdout: %q; list stderr: %q", err,
-			boundedListDiagnostic(listOutput.String()), boundedListDiagnostic(listError.String()))
+	listOutput := newBoundedCapture(maxListDiagnosticBytes)
+	listError := newBoundedCapture(maxListDiagnosticBytes)
+	if err := runCommand(args, environment, listOutput, listError); err != nil {
+		return fmt.Errorf("list command failed: %w; %s; %s", err,
+			formatListCapture("list stdout", listOutput), formatListCapture("list stderr", listError))
 	}
-	if detail := strings.TrimSpace(listError.String()); detail != "" {
-		return fmt.Errorf("list command wrote unexpected stderr: %q", boundedListDiagnostic(detail))
+	if listOutput.overflow {
+		return fmt.Errorf("list stdout exceeded capture limit: %s", formatListCapture("list stdout", listOutput))
 	}
-	return validateListOutput(pkg.Pattern, listOutput.String())
-}
-
-func boundedListDiagnostic(value string) string {
-	if len(value) <= maxListDiagnosticBytes {
-		return value
+	if listError.overflow {
+		return fmt.Errorf("list stderr exceeded capture limit: %s", formatListCapture("list stderr", listError))
 	}
-	keep := maxListDiagnosticBytes - len(listDiagnosticMarker)
-	head := keep / 2
-	tail := keep - head
-	return value[:head] + listDiagnosticMarker + value[len(value)-tail:]
+	if detail := strings.TrimSpace(listError.diagnostic()); detail != "" {
+		return fmt.Errorf("list command wrote unexpected stderr: %s", formatListCapture("list stderr", listError))
+	}
+	return validateListOutput(pkg.Pattern, listOutput.diagnostic())
 }
 
 var goTestDuration = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?s$`)
