@@ -106,7 +106,7 @@ func TestWindowsStaleCleanupRejectsAttackerStageLookalikes(t *testing.T) {
 			name: "permissive directory",
 			setup: func(t *testing.T, directory, stageName string) {
 				writeStageFixture(t, directory, testStageMarkerName, testStageMarker(stageName))
-				makeStageFixturePermissive(t, directory)
+				makeStageDirectoryFixturePermissive(t, directory)
 			},
 		},
 	}
@@ -124,14 +124,26 @@ func TestWindowsStaleCleanupRejectsAttackerStageLookalikes(t *testing.T) {
 				test.setup(t, directory, stageName)
 			}
 			before := stageFixtureEntries(t, directory)
+			var beforeArtifact []byte
+			if test.name == "permissive directory" {
+				var err error
+				beforeArtifact, err = os.ReadFile(filepath.Join(directory, "artifact.jpg"))
+				if err != nil || string(beforeArtifact) != "attacker" {
+					t.Fatalf("permissive directory artifact unreadable before cleanup: data=%q err=%v", beforeArtifact, err)
+				}
+			}
 			if _, err := NewCache(root, 512<<20); err != nil {
 				t.Fatal(err)
 			}
 			if after := stageFixtureEntries(t, directory); !slices.Equal(after, before) {
 				t.Fatalf("attacker entries changed: before=%v after=%v", before, after)
 			}
-			if data, err := os.ReadFile(filepath.Join(directory, "artifact.jpg")); err != nil || string(data) != "attacker" {
+			data, err := os.ReadFile(filepath.Join(directory, "artifact.jpg"))
+			if err != nil || string(data) != "attacker" {
 				t.Fatalf("attacker artifact changed: data=%q err=%v", data, err)
+			}
+			if test.name == "permissive directory" && !bytes.Equal(data, beforeArtifact) {
+				t.Fatalf("permissive directory artifact changed: before=%q after=%q", beforeArtifact, data)
 			}
 		})
 	}
@@ -215,6 +227,16 @@ func testStageMarker(stageName string) []byte {
 
 func makeStageFixturePermissive(t *testing.T, path string) {
 	t.Helper()
+	makeStageFixturePermissiveWithDescriptor(t, path, "D:P(A;;GA;;;WD)")
+}
+
+func makeStageDirectoryFixturePermissive(t *testing.T, path string) {
+	t.Helper()
+	makeStageFixturePermissiveWithDescriptor(t, path, "D:P(A;OICI;GA;;;WD)")
+}
+
+func makeStageFixturePermissiveWithDescriptor(t *testing.T, path, descriptorString string) {
+	t.Helper()
 	pointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +246,7 @@ func makeStageFixturePermissive(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;WD)")
+	descriptor, err := windows.SecurityDescriptorFromString(descriptorString)
 	if err != nil {
 		_ = windows.CloseHandle(handle)
 		t.Fatal(err)

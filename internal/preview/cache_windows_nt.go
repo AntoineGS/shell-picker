@@ -174,6 +174,7 @@ func ntOpenAtWithSecurity(root windows.Handle, name string, disposition, options
 	var handle windows.Handle
 	var status windows.IO_STATUS_BLOCK
 	options |= windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT
+	access |= windows.SYNCHRONIZE
 	err = windows.NtCreateFile(&handle, access, &attributes, &status, nil, windows.FILE_ATTRIBUTE_NORMAL,
 		share, disposition, options, 0, 0)
 	return handle, err

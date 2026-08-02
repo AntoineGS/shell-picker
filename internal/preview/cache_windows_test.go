@@ -15,6 +15,26 @@ import (
 
 func init() { readStageDirectory = readStageDirectoryWindows }
 
+func TestWindowsSynchronousNTOpenAddsSynchronizeToDeleteOnlyAccess(t *testing.T) {
+	cache := mustNewCache(t, t.TempDir(), 512<<20)
+	key := strings.Repeat("b", 64)
+	mustPut(t, cache, key, "stable")
+	root, err := openCache(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(root)
+
+	handle, err := ntOpenAtWithSecurity(root, key, windows.FILE_OPEN, windows.FILE_NON_DIRECTORY_FILE,
+		windows.DELETE, windows.FILE_SHARE_READ|windows.FILE_SHARE_DELETE, nil)
+	if err != nil {
+		t.Fatalf("delete-only synchronous open: %v", err)
+	}
+	if err := windows.CloseHandle(handle); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func readStageDirectoryWindows(path string) ([]os.DirEntry, error) {
 	pointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {
