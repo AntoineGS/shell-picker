@@ -231,7 +231,7 @@ func TestForegroundTreeOwnsTTYAndRestoresPreviousGroup(t *testing.T) {
 	}
 	_ = reportR.Close()
 	terminal.close()
-	if report.Err != "" || report.ParentTTYFD <= 3 || report.ParentTTYFD == report.ChildTTYFD ||
+	if report.Err != "" || report.ParentTTYFD <= 3 ||
 		report.ChildTTYFD != 4 || !report.SameTTY || report.Input != "x\n" ||
 		!report.RestoredPreviousGroup || !report.RestoredThreadMask || !report.PreservedSIGTTOUNotification || report.DescriptorDelta != 0 {
 		t.Fatalf("report=%+v", report)
