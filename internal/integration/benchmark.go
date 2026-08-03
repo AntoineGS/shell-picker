@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
 const DefaultBenchmarkSamples = 50
+const BenchmarkReportSchema = 2
 
 var ErrBenchmarkCounters = errors.New("benchmark: process counters do not match")
+var ErrBenchmarkMeasurement = errors.New("benchmark: duration measurement is inconsistent")
 
 type BenchmarkCounters struct {
 	ZoxideAttempts  int `json:"zoxide_attempts"`
@@ -27,8 +30,35 @@ type BenchmarkCounters struct {
 }
 
 type BenchmarkSample struct {
+	// Duration is the legacy primary measurement. New callers should populate
+	// StartupDuration or SourceDuration so the report cannot confuse user
+	// startup with candidate/source cost.
 	Duration time.Duration
+	// StartupDuration is the user-visible interval from session.start to
+	// fzf.start in a dedicated picker session. Nil means absent; a pointer to
+	// zero means an immediate measurement.
+	StartupDuration *time.Duration
+	// EnrichmentDuration is from session.start to the terminal
+	// zoxide.enrichment event. A nil pointer means no terminal was observed;
+	// a non-nil pointer to zero means completion was immediate.
+	EnrichmentDuration *time.Duration
+	// LifecycleDuration is the full session lifecycle interval. It is kept
+	// separate from StartupDuration because it can include asynchronous source
+	// completion and shutdown/join work. Nil means absent; zero is valid.
+	LifecycleDuration *time.Duration
+	// SourceDuration is the candidate-only/source-cost measurement. It is not a
+	// user startup measurement. Nil means absent; zero is valid.
+	SourceDuration *time.Duration
+	// ActionDuration is the user action measurement. Nil means absent; zero is
+	// valid. Duration remains the legacy fallback for old callers.
+	ActionDuration *time.Duration
 	BenchmarkCounters
+}
+
+type BenchmarkPercentiles struct {
+	P50US int64 `json:"p50_us"`
+	P95US int64 `json:"p95_us"`
+	P99US int64 `json:"p99_us"`
 }
 
 type BenchmarkOptions struct {
@@ -42,17 +72,27 @@ type BenchmarkOptions struct {
 }
 
 type BenchmarkReport struct {
-	Schema      int                `json:"schema"`
-	Scenario    string             `json:"scenario"`
-	Policy      string             `json:"policy,omitempty"`
-	Timeout     string             `json:"timeout"`
-	Samples     int                `json:"samples"`
-	P50US       int64              `json:"p50_us"`
-	P95US       int64              `json:"p95_us"`
-	P99US       int64              `json:"p99_us"`
-	NearestRank string             `json:"nearest_rank"`
-	Counters    BenchmarkCounters  `json:"counters"`
-	Metadata    *BenchmarkMetadata `json:"metadata,omitempty"`
+	Schema   int    `json:"schema"`
+	Scenario string `json:"scenario"`
+	Policy   string `json:"policy,omitempty"`
+	Timeout  string `json:"timeout"`
+	Samples  int    `json:"samples"`
+	// DurationKind names the legacy p50_us/p95_us/p99_us aliases. The named
+	// duration object below is authoritative for new consumers.
+	DurationKind string `json:"duration_kind"`
+	P50US        int64  `json:"p50_us"`
+	P95US        int64  `json:"p95_us"`
+	P99US        int64  `json:"p99_us"`
+	NearestRank  string `json:"nearest_rank"`
+
+	StartupDuration    *BenchmarkPercentiles `json:"startup_duration,omitempty"`
+	EnrichmentDuration *BenchmarkPercentiles `json:"enrichment_duration,omitempty"`
+	LifecycleDuration  *BenchmarkPercentiles `json:"lifecycle_duration,omitempty"`
+	SourceDuration     *BenchmarkPercentiles `json:"source_duration,omitempty"`
+	ActionDuration     *BenchmarkPercentiles `json:"action_duration,omitempty"`
+
+	Counters BenchmarkCounters  `json:"counters"`
+	Metadata *BenchmarkMetadata `json:"metadata,omitempty"`
 }
 
 type BenchmarkMetadata struct {
@@ -99,7 +139,13 @@ func RunBenchmark(ctx context.Context, options BenchmarkOptions) (BenchmarkRepor
 	if samples == 0 {
 		samples = DefaultBenchmarkSamples
 	}
+	durationKind := benchmarkDurationKind(options.Scenario)
 	durations := make([]time.Duration, 0, samples)
+	enrichmentDurations := make([]time.Duration, 0, samples)
+	enrichmentPresent := false
+	lifecycleDurations := make([]time.Duration, 0, samples)
+	lifecyclePresent := false
+	primaryPresent := false
 	var counters BenchmarkCounters
 	for index := 0; index < samples; index++ {
 		if cause := context.Cause(ctx); cause != nil {
@@ -109,7 +155,10 @@ func RunBenchmark(ctx context.Context, options BenchmarkOptions) (BenchmarkRepor
 		if err != nil {
 			return BenchmarkReport{}, fmt.Errorf("benchmark %s sample %d: %w", options.Scenario, index+1, err)
 		}
-		if sample.Duration < 0 || !validBenchmarkCounters(sample.BenchmarkCounters) {
+		if !validBenchmarkSample(sample) {
+			return BenchmarkReport{}, ErrBenchmarkMeasurement
+		}
+		if !validBenchmarkCounters(sample.BenchmarkCounters) {
 			return BenchmarkReport{}, ErrBenchmarkCounters
 		}
 		if index == 0 {
@@ -120,13 +169,61 @@ func RunBenchmark(ctx context.Context, options BenchmarkOptions) (BenchmarkRepor
 		if options.Expected != nil && sample.BenchmarkCounters != *options.Expected {
 			return BenchmarkReport{}, ErrBenchmarkCounters
 		}
-		durations = append(durations, sample.Duration)
+		duration := primaryBenchmarkDuration(sample, durationKind)
+		if duration < 0 {
+			return BenchmarkReport{}, ErrBenchmarkMeasurement
+		}
+		hasPrimary := benchmarkNamedDuration(sample, durationKind) != nil
+		if index == 0 {
+			primaryPresent = hasPrimary
+		} else if hasPrimary != primaryPresent {
+			return BenchmarkReport{}, ErrBenchmarkMeasurement
+		}
+		durations = append(durations, duration)
+
+		hasEnrichment := sample.EnrichmentDuration != nil
+		if index == 0 {
+			enrichmentPresent = hasEnrichment
+		} else if hasEnrichment != enrichmentPresent {
+			return BenchmarkReport{}, ErrBenchmarkMeasurement
+		}
+		if hasEnrichment {
+			enrichmentDurations = append(enrichmentDurations, *sample.EnrichmentDuration)
+		}
+
+		hasLifecycle := sample.LifecycleDuration != nil
+		if index == 0 {
+			lifecyclePresent = hasLifecycle
+		} else if hasLifecycle != lifecyclePresent {
+			return BenchmarkReport{}, ErrBenchmarkMeasurement
+		}
+		if hasLifecycle {
+			lifecycleDurations = append(lifecycleDurations, *sample.LifecycleDuration)
+		}
 	}
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
-	report := BenchmarkReport{Schema: 1, Scenario: options.Scenario, Policy: options.Policy,
-		Timeout: options.Timeout.String(), Samples: samples, NearestRank: "ceil(p*n)", Counters: counters,
-		P50US: nearestRank(durations, 0.50).Microseconds(), P95US: nearestRank(durations, 0.95).Microseconds(),
-		P99US: nearestRank(durations, 0.99).Microseconds()}
+	primary := benchmarkPercentiles(durations)
+	report := BenchmarkReport{Schema: BenchmarkReportSchema, Scenario: options.Scenario, Policy: options.Policy,
+		Timeout: options.Timeout.String(), Samples: samples, DurationKind: durationKind, NearestRank: "ceil(p*n)", Counters: counters,
+		P50US: primary.P50US, P95US: primary.P95US, P99US: primary.P99US}
+	switch durationKind {
+	case "startup":
+		report.StartupDuration = &primary
+	case "source":
+		report.SourceDuration = &primary
+	default:
+		report.ActionDuration = &primary
+	}
+	if enrichmentPresent {
+		sort.Slice(enrichmentDurations, func(i, j int) bool { return enrichmentDurations[i] < enrichmentDurations[j] })
+		value := benchmarkPercentiles(enrichmentDurations)
+		report.EnrichmentDuration = &value
+	}
+	if lifecyclePresent {
+		sort.Slice(lifecycleDurations, func(i, j int) bool { return lifecycleDurations[i] < lifecycleDurations[j] })
+		value := benchmarkPercentiles(lifecycleDurations)
+		report.LifecycleDuration = &value
+	}
 	if options.Metadata != (BenchmarkMetadata{}) {
 		metadata := options.Metadata
 		report.Metadata = &metadata
@@ -136,7 +233,7 @@ func RunBenchmark(ctx context.Context, options BenchmarkOptions) (BenchmarkRepor
 
 func validBenchmarkScenario(value string) bool {
 	switch value {
-	case "startup-local-only", "startup-zoxide-present", "startup-zoxide-missing", "startup-zoxide-spawn-failure",
+	case "startup-local-only", "startup-zoxide-present", "startup-zoxide-missing", "startup-zoxide-spawn-failure", "startup-zoxide-blocked",
 		"startup-zoxide-timeout", "navigation-local-only", "preview-dispatch",
 		"candidate-initial-cached-overlap-10000", "candidate-timeout-discard", "candidate-cached-repeated",
 		"candidate-fresh-repeated", "candidate-missing", "candidate-spawn-failure", "candidate-cp-cached", "candidate-cp-fresh":
@@ -144,6 +241,48 @@ func validBenchmarkScenario(value string) bool {
 	default:
 		return false
 	}
+}
+
+func benchmarkDurationKind(scenario string) string {
+	if strings.HasPrefix(scenario, "candidate-") {
+		return "source"
+	}
+	if strings.HasPrefix(scenario, "startup-") {
+		return "startup"
+	}
+	return "action"
+}
+
+func primaryBenchmarkDuration(sample BenchmarkSample, durationKind string) time.Duration {
+	if duration := benchmarkNamedDuration(sample, durationKind); duration != nil {
+		return *duration
+	}
+	return sample.Duration
+}
+
+func benchmarkNamedDuration(sample BenchmarkSample, durationKind string) *time.Duration {
+	switch durationKind {
+	case "startup":
+		return sample.StartupDuration
+	case "source":
+		return sample.SourceDuration
+	default:
+		return sample.ActionDuration
+	}
+}
+
+func validBenchmarkSample(value BenchmarkSample) bool {
+	if value.Duration < 0 || value.StartupDuration != nil && *value.StartupDuration < 0 ||
+		value.LifecycleDuration != nil && *value.LifecycleDuration < 0 || value.SourceDuration != nil && *value.SourceDuration < 0 ||
+		value.ActionDuration != nil && *value.ActionDuration < 0 {
+		return false
+	}
+	return value.EnrichmentDuration == nil || *value.EnrichmentDuration >= 0
+}
+
+func benchmarkPercentiles(sorted []time.Duration) BenchmarkPercentiles {
+	return BenchmarkPercentiles{P50US: nearestRank(sorted, 0.50).Microseconds(),
+		P95US: nearestRank(sorted, 0.95).Microseconds(), P99US: nearestRank(sorted, 0.99).Microseconds()}
 }
 
 func validBenchmarkCounters(value BenchmarkCounters) bool {

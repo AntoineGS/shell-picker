@@ -3,10 +3,8 @@ package sessionipc
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -15,7 +13,6 @@ import (
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/protocol"
-	"github.com/AntoineGS/shell-picker/internal/session"
 )
 
 const (
@@ -131,8 +128,12 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	switch route {
 	case "/v1/event":
 		server.handleEvent(response, request, body)
+	case "/v1/event/finalize":
+		server.handleEventFinalization(response, request, body)
 	case "/v1/load":
 		server.handleLoad(response, request, body)
+	case "/v1/load/finalize":
+		server.handleLoadFinalization(response, request, body)
 	case "/v1/display":
 		server.handleDisplay(response, request, body)
 	case "/v1/preview":
@@ -176,14 +177,49 @@ func (server *Server) handleEvent(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusBadRequest)
 		return
 	}
-	effect, err := server.backend.HandleEvent(request.Context(), protocol.Event{
+	result, err := server.backend.HandleEvent(request.Context(), protocol.Event{
 		Opcode: input.Opcode, Key: input.Key, Query: query, CurrentItem: current,
 	})
 	if err != nil {
 		writeBackendError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusOK, EventResponse{Effect: effect})
+	if err := writeJSON(response, http.StatusOK, EventResponse{Effect: result.Effect, EventID: result.EventID}); err != nil {
+		server.finalizeEvent(request.Context(), EventFinalizeRequest{EventID: result.EventID, Applied: false})
+	}
+}
+
+func (server *Server) handleEventFinalization(response http.ResponseWriter, request *http.Request, body []byte) {
+	var wire struct {
+		EventID *uint64 `json:"event_id"`
+		Applied *bool   `json:"applied"`
+	}
+	if decodeObject(body, &wire) != nil || wire.EventID == nil || *wire.EventID == 0 || wire.Applied == nil {
+		writeError(response, http.StatusBadRequest)
+		return
+	}
+	input := EventFinalizeRequest{EventID: *wire.EventID, Applied: *wire.Applied}
+	if err := server.finalizeEvent(request.Context(), input); err != nil {
+		writeBackendError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) finalizeEvent(ctx context.Context, request EventFinalizeRequest) error {
+	if request.EventID == 0 {
+		return nil
+	}
+	finalizer, ok := server.backend.(EventFinalizer)
+	if !ok {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	bounded, cancel := requestContext(context.WithoutCancel(ctx), 250*time.Millisecond)
+	defer cancel()
+	return finalizer.FinalizeEvent(bounded, request)
 }
 
 func (server *Server) handleLoad(response http.ResponseWriter, request *http.Request, body []byte) {
@@ -192,14 +228,16 @@ func (server *Server) handleLoad(response http.ResponseWriter, request *http.Req
 		writeError(response, http.StatusBadRequest)
 		return
 	}
-	data, err := server.backend.LoadGeneration(request.Context(), input.Generation)
+	data, err := server.backend.LoadGeneration(request.Context(), input)
 	if err != nil {
 		writeBackendError(response, err)
 		return
 	}
 	response.Header().Set("Content-Type", "application/octet-stream")
 	response.WriteHeader(http.StatusOK)
-	_, _ = response.Write(data)
+	if _, err := response.Write(data); err != nil && input.EventID != 0 {
+		_ = server.finalizeLoad(request.Context(), LoadFinalizeRequest{EventID: input.EventID, Applied: false})
+	}
 }
 
 func (server *Server) handleDisplay(response http.ResponseWriter, request *http.Request, body []byte) {
@@ -290,45 +328,4 @@ func (server *Server) close(ctx context.Context) error {
 		return errors.New("close IPC server")
 	}
 	return nil
-}
-
-func canonicalRoute(request *http.Request) (string, bool) {
-	if request.URL.RawQuery != "" || request.URL.RawPath != "" {
-		return "", false
-	}
-	switch request.RequestURI {
-	case "/v1/event", "/v1/load", "/v1/display", "/v1/preview":
-		return request.RequestURI, true
-	default:
-		return "", false
-	}
-}
-
-func readRequestBody(response http.ResponseWriter, request *http.Request) ([]byte, error) {
-	defer request.Body.Close()
-	return io.ReadAll(http.MaxBytesReader(response, request.Body, maxRequestBody))
-}
-
-func writeBackendError(response http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, session.ErrUnknownRecord), errors.Is(err, session.ErrStaleGeneration):
-		writeError(response, http.StatusNotFound)
-	case errors.Is(err, session.ErrInvalidEvent), errors.Is(err, session.ErrInvalidNavigation):
-		writeError(response, http.StatusBadRequest)
-	default:
-		writeError(response, http.StatusInternalServerError)
-	}
-}
-
-func writeJSON(response http.ResponseWriter, status int, value any) {
-	response.Header().Set("Content-Type", "application/json")
-	response.WriteHeader(status)
-	_ = json.NewEncoder(response).Encode(value)
-}
-
-func writeError(response http.ResponseWriter, status int) {
-	message := http.StatusText(status)
-	writeJSON(response, status, struct {
-		Error string `json:"error"`
-	}{Error: message})
 }

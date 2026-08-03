@@ -3,9 +3,12 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -36,9 +39,45 @@ func main() {
 			os.Exit(30)
 		}
 		os.Exit(0)
+	case "prompt-return":
+		os.Exit(runPromptReturn(os.Args[2], os.Args[3], os.Args[4:]))
 	default:
 		os.Exit(2)
 	}
+}
+
+func runPromptReturn(path, sentinel string, args []string) int {
+	if path == "" || sentinel == "" {
+		return 2
+	}
+	command := exec.Command(path, args...)
+	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
+	err := command.Run()
+	if sentinelErr := writePromptReturnSentinel(sentinel); sentinelErr != nil {
+		return 125
+	}
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return 126
+}
+
+func writePromptReturnSentinel(sentinel string) error {
+	terminalName := "/dev/tty"
+	if runtime.GOOS == "windows" {
+		terminalName = "CONOUT$"
+	}
+	terminal, err := os.OpenFile(terminalName, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer terminal.Close()
+	_, err = fmt.Fprintln(terminal, sentinel)
+	return err
 }
 
 func runRenderer(address, nonce string, overflow bool) int {
@@ -94,6 +133,11 @@ func runGrandchild(address, nonce string) int {
 	defer connection.Close()
 	if err := writeFrame(connection, message{Event: "grandchild-started", Nonce: nonce, PID: os.Getpid()}); err != nil {
 		return 21
+	}
+	if readyPath := os.Getenv("SHELL_PICKER_GRANDCHILD_READY"); readyPath != "" {
+		if err := os.WriteFile(readyPath, []byte{1}, 0o600); err != nil {
+			return 23
+		}
 	}
 	var command message
 	if err := readFrame(connection, &command); err != nil {

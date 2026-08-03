@@ -121,6 +121,11 @@ func traceContractRowsForSchema(t *testing.T, schema traceSchemaRules) []string 
 		profiles := map[string][]string{}
 		for _, outcome := range acceptedOutcomes {
 			base := TraceEvent{Name: event, Outcome: outcome}
+			if event == "zoxide.enrichment" {
+				base.Generation = 1
+				base.ZoxidePolicy = schema.ZoxidePolicies[0]
+				base.ZoxideOutcome = firstTerminalZoxideOutcome(schema)
+			}
 			acceptedRenderers := []string{}
 			if validateTraceEventWithSchema(base, schema, time.Now()) == nil {
 				acceptedRenderers = append(acceptedRenderers, "")
@@ -281,6 +286,7 @@ func acceptedOptionalFields(base TraceEvent, schema traceSchemaRules) []string {
 		"local_us":            func(event *TraceEvent) { event.LocalDuration = time.Microsecond },
 		"path":                func(event *TraceEvent) { event.Path = []byte("path") },
 		"transform_us":        func(event *TraceEvent) { event.TransformDuration = time.Microsecond },
+		"zoxide_us":           func(event *TraceEvent) { event.ZoxideDuration = time.Microsecond },
 	}
 	accepted := []string{}
 	for name, apply := range fields {
@@ -290,8 +296,14 @@ func acceptedOptionalFields(base TraceEvent, schema traceSchemaRules) []string {
 			accepted = append(accepted, name)
 		}
 	}
-	if states := acceptedZoxideRequiredFields(base, schema); len(states) != 0 {
-		accepted = append(accepted, "zoxide_*:"+strings.Join(states, "|"))
+	if base.Name == "zoxide.enrichment" {
+		accepted = append(accepted, "zoxide_*:policy+outcome")
+	} else if states := acceptedZoxideRequiredFields(base, schema); len(states) != 0 {
+		fields := "zoxide_*:" + strings.Join(states, "|")
+		if base.Name == "generation.publish" || base.Name == "generation.discard" {
+			fields += "|zoxide_us"
+		}
+		accepted = append(accepted, fields)
 	}
 	sort.Strings(accepted)
 	return accepted
@@ -319,6 +331,15 @@ func acceptedZoxideRequiredFields(base TraceEvent, schema traceSchemaRules) []st
 	}
 	sort.Strings(states)
 	return states
+}
+
+func firstTerminalZoxideOutcome(schema traceSchemaRules) string {
+	for _, outcome := range schema.ZoxideOutcomes {
+		if outcome != "pending" && outcome != "not-run" {
+			return outcome
+		}
+	}
+	return ""
 }
 
 func documentedTraceContractRows(t *testing.T) []string {

@@ -28,13 +28,14 @@ type Spec struct {
 	// Non-file streams must be cooperative or promptly closable. Pumped closers
 	// require stable pointer identity and are never structurally compared.
 	// Emergency cleanup closes them once; direct files remain caller-owned.
-	Stdin         io.Reader
-	Stdout        io.Writer
-	Stderr        io.Writer
-	Containment   Containment
-	ForegroundTTY *os.File
-	ExtraFiles    []*os.File
-	WaitDelay     time.Duration
+	Stdin            io.Reader
+	Stdout           io.Writer
+	Stderr           io.Writer
+	CloseStdinOnExit bool
+	Containment      Containment
+	ForegroundTTY    *os.File
+	ExtraFiles       []*os.File
+	WaitDelay        time.Duration
 }
 
 type ProcessEvent struct {
@@ -113,6 +114,9 @@ func validateSpec(ctx context.Context, spec Spec) error {
 	if spec.Path == "" {
 		return errors.New("process: empty executable path")
 	}
+	if err := validateEnvironment(spec.Env); err != nil {
+		return err
+	}
 	if spec.WaitDelay < 0 {
 		return errors.New("process: negative WaitDelay")
 	}
@@ -126,6 +130,7 @@ func validateSpec(ctx context.Context, spec Spec) error {
 	}
 	return nil
 }
+
 func validateStream(stream any) error {
 	if stream == nil {
 		return nil
@@ -156,6 +161,18 @@ type emergencyClosers struct {
 	items []io.Closer
 	seen  map[closerIdentity]struct{}
 }
+
+type onceCloser struct {
+	once   sync.Once
+	closer io.Closer
+	err    error
+}
+
+func (closer *onceCloser) Close() error {
+	closer.once.Do(func() { closer.err = closer.closer.Close() })
+	return closer.err
+}
+
 type closerIdentity struct {
 	typ     reflect.Type
 	pointer uintptr
@@ -195,6 +212,26 @@ func pointerIdentity(value any) (closerIdentity, bool) {
 		return closerIdentity{}, false
 	}
 	return closerIdentity{typ: ref.Type(), pointer: ref.Pointer()}, true
+}
+
+func samePointer(left, right any) bool {
+	leftID, leftOK := pointerIdentity(left)
+	rightID, rightOK := pointerIdentity(right)
+	return leftOK && rightOK && leftID == rightID
+}
+
+func optInStdinCloser(spec Spec) *onceCloser {
+	if !spec.CloseStdinOnExit {
+		return nil
+	}
+	closer, ok := spec.Stdin.(io.Closer)
+	if !ok {
+		return nil
+	}
+	if _, direct := spec.Stdin.(*os.File); direct || samePointer(spec.Stdin, spec.Stdout) || samePointer(spec.Stdin, spec.Stderr) {
+		return nil
+	}
+	return &onceCloser{closer: closer}
 }
 
 type serializedWriter struct {
@@ -267,82 +304,3 @@ func validateObserverResult(pid int, result exitObserverResult, registration boo
 	}
 	return fmt.Errorf("%w: missing expected process event", ErrExitObserver)
 }
-
-type unixOwnedFile struct {
-	file *os.File
-	once sync.Once
-}
-
-func (f *unixOwnedFile) close() { f.once.Do(func() { _ = f.file.Close() }) }
-
-type unixStreams struct {
-	stdin          io.Reader
-	stdout, stderr io.Writer
-	children       []*os.File
-	parents        []*unixOwnedFile
-	pumps          []func() error
-	closers        emergencyClosers
-}
-
-func prepareUnixStreams(spec Spec) (*unixStreams, error) {
-	streams := &unixStreams{stdin: spec.Stdin, stdout: spec.Stdout, stderr: spec.Stderr}
-	if sharedWriter(spec.Stdout, spec.Stderr) {
-		streams.closers.add(spec.Stdout)
-		writer := &serializedWriter{writer: spec.Stdout}
-		spec.Stdout, spec.Stderr = writer, writer
-	}
-	streams.stdout, streams.stderr = spec.Stdout, spec.Stderr
-	if spec.Stdin != nil {
-		if _, ok := spec.Stdin.(*os.File); !ok {
-			streams.closers.add(spec.Stdin)
-			read, write, err := os.Pipe()
-			if err != nil {
-				return nil, err
-			}
-			parent := &unixOwnedFile{file: write}
-			streams.stdin = read
-			streams.children, streams.parents = append(streams.children, read), append(streams.parents, parent)
-			streams.pumps = append(streams.pumps, func() error { _, err := io.Copy(write, spec.Stdin); parent.close(); return err })
-		}
-	}
-	var err error
-	if streams.stdout, err = streams.prepareOutput(spec.Stdout); err != nil {
-		streams.closeAll()
-		return nil, err
-	}
-	if streams.stderr, err = streams.prepareOutput(spec.Stderr); err != nil {
-		streams.closeAll()
-		return nil, err
-	}
-	return streams, nil
-}
-func (s *unixStreams) prepareOutput(writer io.Writer) (io.Writer, error) {
-	if writer == nil {
-		return nil, nil
-	}
-	if _, ok := writer.(*os.File); ok {
-		return writer, nil
-	}
-	s.closers.add(writer)
-	read, write, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
-	parent := &unixOwnedFile{file: read}
-	s.children, s.parents = append(s.children, write), append(s.parents, parent)
-	s.pumps = append(s.pumps, func() error { _, err := io.Copy(writer, read); parent.close(); return err })
-	return write, nil
-}
-func (s *unixStreams) closeChildren() {
-	for _, file := range s.children {
-		_ = file.Close()
-	}
-	s.children = nil
-}
-func (s *unixStreams) closeParents() {
-	for _, file := range s.parents {
-		file.close()
-	}
-}
-func (s *unixStreams) closeAll()       { s.closeChildren(); s.closeParents() }
-func (s *unixStreams) emergencyClose() { s.closeParents(); s.closers.close() }

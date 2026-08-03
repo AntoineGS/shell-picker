@@ -19,10 +19,15 @@ var (
 
 func (fixture *realFZFFixture) startSized(t *testing.T, picker protocol.Picker, extraEnvironment []string,
 	columns, lines uint16) terminalSession {
+	return fixture.startSizedWithZoxideTimeout(t, picker, extraEnvironment, columns, lines, "5ms")
+}
+
+func (fixture *realFZFFixture) startSizedWithZoxideTimeout(t *testing.T, picker protocol.Picker,
+	extraEnvironment []string, columns, lines uint16, timeout string) terminalSession {
 	t.Helper()
 	fixture.wantOutput = nil
 	args := []string{string(picker), "--cwd", fixture.cwd, "--home", fixture.home, "--fzf", fixture.fzf,
-		"--zoxide-policy", "cached", "--zoxide-timeout", "5ms"}
+		"--zoxide-policy", "cached", "--zoxide-timeout", timeout}
 	environment := replaceEnvironment(os.Environ(),
 		"FZF_DEFAULT_OPTS=--bind=start:abort", "FZF_DEFAULT_COMMAND=printf forged",
 		"SHELL_PICKER_ADDR=http://127.0.0.1:1", "SHELL_PICKER_TOKEN=forged", "TERM=xterm-256color")
@@ -130,23 +135,23 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		retainedPathTail := "rightmost-location" + string(os.PathSeparator)
 		beforeNormal := len(term.Output())
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeNormal, "[N] ")
+		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
 		assertModePathSeparated(t, term, beforeNormal, "[N] ", fixture.cwd, retainedPathTail)
 		beforeAdd := len(term.Output())
 		sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeAdd, "[A] ")
+		waitForTerminalTextAfter(t, term, beforeAdd, "[A]")
 		assertModePathSeparated(t, term, beforeAdd, "[A] ", fixture.cwd, retainedPathTail)
 		if err := term.Send([]byte("../invalid")); err != nil {
 			t.Fatal(err)
 		}
 		beforeAddError := len(term.Output())
 		sendAndWait(t, term, keyEnter, barrier{Event: "callback.event", Operation: "en", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeAddError, "[A!] ")
+		waitForTerminalTextAfter(t, term, beforeAddError, "[A!]")
 		assertModePathSeparated(t, term, beforeAddError, "[A!] ", fixture.cwd, retainedPathTail)
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
 		beforeInsert := len(term.Output())
 		sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeInsert, "[I] ")
+		waitForTerminalTextAfter(t, term, beforeInsert, "[I]")
 		assertModePathSeparated(t, term, beforeInsert, "[I] ", fixture.cwd, retainedPathTail)
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
 		beforeNavigation := len(term.Output())
@@ -180,7 +185,7 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 			parityHelperEnvironment + "=zoxide-ok",
 			"PARITY_TEST_ROOT=" + longParent,
 		}
-		term := fixture.startSized(t, protocol.PickerCD, environment, 48, 24)
+		term := fixture.startSizedWithZoxideTimeout(t, protocol.PickerCD, environment, 48, 24, "30s")
 		defer term.Close()
 		term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
@@ -229,10 +234,15 @@ func assertRealFZFSelectionInfo(t *testing.T, fixture *realFZFFixture, picker pr
 	term := fixture.start(t, picker, []string{"PATH=" + t.TempDir()})
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	waitForTerminalText(t, term, "3/3")
 	beforeNormal := len(term.Output())
+	loadCount := traceCountGeneration(term.TraceEvents(), "callback.load", 1)
+	finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalTextAfter(t, term, beforeNormal, "[N] ")
+	waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
+	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 1, Count: loadCount + 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
 	if bytes.Contains(visibleTerminalOutput(term.Output()), []byte("(0)")) {
 		t.Fatalf("zero selection count rendered: %q", term.Output())
 	}
@@ -240,9 +250,14 @@ func assertRealFZFSelectionInfo(t *testing.T, fixture *realFZFFixture, picker pr
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
+	if wantSelected {
+		waitForTerminalTextAfter(t, term, beforeSelection, "(1)")
+	} else {
+		term.WaitOutputAfter(testContext(t), beforeSelection)
+	}
 	beforeInsert := len(term.Output())
 	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
-	waitForTerminalTextAfter(t, term, beforeInsert, "[I] ")
+	waitForTerminalTextAfter(t, term, beforeInsert, "[I]")
 	output := term.Output()
 	selectedOutput := visibleTerminalOutput(output[beforeSelection:])
 	if bytes.Contains(selectedOutput, []byte("(0)")) {

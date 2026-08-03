@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,19 +19,35 @@ import (
 )
 
 type backendStub struct {
-	handleEvent    func(context.Context, protocol.Event) (protocol.Effect, error)
-	loadGeneration func(context.Context, uint64) ([]byte, error)
+	handleEvent    func(context.Context, protocol.Event) (EventResult, error)
+	finalizeEvent  func(EventFinalizeRequest)
+	finalizeLoad   func(LoadFinalizeRequest)
+	loadGeneration func(context.Context, LoadRequest) ([]byte, error)
 	resolvePreview func(context.Context, []byte) (protocol.ResolvedCandidate, error)
 	recordPreview  func(context.Context, PreviewRequest) error
 	currentHeader  func(context.Context) (string, error)
 }
 
-func (b backendStub) HandleEvent(ctx context.Context, event protocol.Event) (protocol.Effect, error) {
+func (b backendStub) HandleEvent(ctx context.Context, event protocol.Event) (EventResult, error) {
 	return b.handleEvent(ctx, event)
 }
 
-func (b backendStub) LoadGeneration(ctx context.Context, generation uint64) ([]byte, error) {
-	return b.loadGeneration(ctx, generation)
+func (b backendStub) FinalizeEvent(_ context.Context, request EventFinalizeRequest) error {
+	if b.finalizeEvent != nil {
+		b.finalizeEvent(request)
+	}
+	return nil
+}
+
+func (b backendStub) FinalizeLoad(_ context.Context, request LoadFinalizeRequest) error {
+	if b.finalizeLoad != nil {
+		b.finalizeLoad(request)
+	}
+	return nil
+}
+
+func (b backendStub) LoadGeneration(ctx context.Context, request LoadRequest) ([]byte, error) {
+	return b.loadGeneration(ctx, request)
 }
 
 func (b backendStub) ResolvePreview(ctx context.Context, current []byte) (protocol.ResolvedCandidate, error) {
@@ -47,11 +64,11 @@ func (b backendStub) CurrentHeader(ctx context.Context) (string, error) {
 
 func benignBackend() backendStub {
 	return backendStub{
-		handleEvent: func(_ context.Context, event protocol.Event) (protocol.Effect, error) {
-			return protocol.Effect{Put: event.Key}, nil
+		handleEvent: func(_ context.Context, event protocol.Event) (EventResult, error) {
+			return EventResult{Effect: protocol.Effect{Put: event.Key}}, nil
 		},
-		loadGeneration: func(_ context.Context, generation uint64) ([]byte, error) {
-			return []byte{byte(generation)}, nil
+		loadGeneration: func(_ context.Context, request LoadRequest) ([]byte, error) {
+			return []byte{byte(request.Generation)}, nil
 		},
 		resolvePreview: func(_ context.Context, current []byte) (protocol.ResolvedCandidate, error) {
 			return protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: []byte("/tmp/preview"), Size: 7, Mode: 0o644}, nil
@@ -59,14 +76,6 @@ func benignBackend() backendStub {
 		recordPreview: func(context.Context, PreviewRequest) error { return nil },
 		currentHeader: func(context.Context) (string, error) { return "/", nil },
 	}
-}
-
-func benignBackendForPath(path []byte) backendStub {
-	backend := benignBackend()
-	backend.resolvePreview = func(_ context.Context, _ []byte) (protocol.ResolvedCandidate, error) {
-		return protocol.ResolvedCandidate{Kind: protocol.KindFile, Path: append([]byte(nil), path...), Size: 7, Mode: 0o644}, nil
-	}
-	return backend
 }
 
 func fixedToken(value byte) Token {
@@ -89,15 +98,6 @@ func startServer(t *testing.T, backend Backend) (*Server, *Client) {
 		closeSessionIPC(t, server, "test cleanup", nil)
 	})
 	return server, client
-}
-
-func eventRequest() EventRequest {
-	return EventRequest{
-		Opcode:            protocol.OpEscape,
-		Key:               "escape",
-		QueryBase64:       base64.StdEncoding.EncodeToString([]byte{0xff, 'q'}),
-		CurrentItemBase64: base64.StdEncoding.EncodeToString([]byte("file\titem\tL3RtcC94")),
-	}
 }
 
 func TestTokenAndEnvironmentAreStrict(t *testing.T) {
@@ -149,9 +149,9 @@ func TestClientAcceptsOnlyExactLoopbackURL(t *testing.T) {
 func TestServerAuthenticatesAndPreservesOpaqueBytes(t *testing.T) {
 	seen := make(chan protocol.Event, 1)
 	backend := benignBackend()
-	backend.handleEvent = func(_ context.Context, event protocol.Event) (protocol.Effect, error) {
+	backend.handleEvent = func(_ context.Context, event protocol.Event) (EventResult, error) {
 		seen <- event
-		return protocol.Effect{Put: "ok"}, nil
+		return EventResult{Effect: protocol.Effect{Put: "ok"}}, nil
 	}
 	_, client := startServer(t, backend)
 
@@ -168,6 +168,111 @@ func TestServerAuthenticatesAndPreservesOpaqueBytes(t *testing.T) {
 	_, err = client.Event(context.Background(), eventRequest())
 	if !errors.Is(err, ErrUnauthorized) || strings.Contains(err.Error(), client.token.String()) {
 		t.Fatalf("forged bearer error=%v", err)
+	}
+}
+
+func TestClientFinalizeEventCallsBackendAfterEventResponse(t *testing.T) {
+	finalized := make(chan EventFinalizeRequest, 1)
+	backend := benignBackend()
+	backend.finalizeEvent = func(request EventFinalizeRequest) { finalized <- request }
+	effect := protocol.Effect{Abort: true}
+	backend.handleEvent = func(context.Context, protocol.Event) (EventResult, error) {
+		return EventResult{Effect: effect, EventID: 1}, nil
+	}
+	_, client := startServer(t, backend)
+
+	response, err := client.Event(context.Background(), eventRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-finalized:
+		t.Fatalf("event response finalized before callback acknowledgement: %+v", got)
+	default:
+	}
+	if err := client.FinalizeEvent(context.Background(), EventFinalizeRequest{EventID: response.EventID, Applied: true}); err != nil {
+		t.Fatalf("FinalizeEvent: %v", err)
+	}
+	select {
+	case got := <-finalized:
+		if got.EventID != 1 || !got.Applied {
+			t.Fatalf("finalized effect=%+v want=%+v", got, effect)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("backend finalizer was not called")
+	}
+}
+
+func TestFinalizeRouteAcceptsOnlyAnExactNonzeroEventIDAndAppliedFlag(t *testing.T) {
+	server, _ := startServer(t, benignBackend())
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{name: "applied", body: `{"event_id":7,"applied":true}`, want: http.StatusNoContent},
+		{name: "unapplied", body: `{"event_id":8,"applied":false}`, want: http.StatusNoContent},
+		{name: "zero id", body: `{"event_id":0,"applied":true}`, want: http.StatusBadRequest},
+		{name: "missing applied", body: `{"event_id":7}`, want: http.StatusBadRequest},
+		{name: "missing id", body: `{"applied":true}`, want: http.StatusBadRequest},
+		{name: "effect authority rejected", body: `{"event_id":7,"applied":true,"effect":{"abort":true}}`, want: http.StatusBadRequest},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			response := rawRequest(t, server.Address()+"/v1/event/finalize", fixedToken(7), http.MethodPost, "application/json", []byte(test.body))
+			defer response.Body.Close()
+			if response.StatusCode != test.want {
+				t.Fatalf("status=%d want=%d", response.StatusCode, test.want)
+			}
+		})
+	}
+}
+
+func TestFinalizeRouteUsesTheSameBearerAuthentication(t *testing.T) {
+	server, _ := startServer(t, benignBackend())
+	body := []byte(`{"event_id":7,"applied":true}`)
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.Address()+"/v1/event/finalize", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := (&http.Client{Transport: &http.Transport{Proxy: nil}}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d want=%d", response.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestClientRejectsZeroFinalizeIDBeforeTransport(t *testing.T) {
+	client := newClient("http://127.0.0.1:1", fixedToken(7))
+	if err := client.FinalizeEvent(context.Background(), EventFinalizeRequest{Applied: true}); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("FinalizeEvent zero ID error=%v, want %v", err, ErrBadRequest)
+	}
+}
+
+func TestServerFinalizesEventWhenResponseWriteFails(t *testing.T) {
+	finalized := make(chan EventFinalizeRequest, 1)
+	backend := benignBackend()
+	backend.finalizeEvent = func(request EventFinalizeRequest) { finalized <- request }
+	backend.handleEvent = func(context.Context, protocol.Event) (EventResult, error) {
+		return EventResult{Effect: protocol.Effect{Abort: true}, EventID: 2}, nil
+	}
+	body, err := json.Marshal(eventRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{backend: backend}
+	server.handleEvent(&eventResponseErrorWriter{header: make(http.Header)}, httptest.NewRequest(http.MethodPost, "/v1/event", bytes.NewReader(body)), body)
+	select {
+	case got := <-finalized:
+		if got.EventID != 2 || got.Applied {
+			t.Fatalf("finalized effect=%+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("response failure did not finalize event")
 	}
 }
 
@@ -228,11 +333,11 @@ func TestRoutesMapResponsesAndErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend := benignBackendForPath([]byte(previewPath))
-	backend.loadGeneration = func(_ context.Context, generation uint64) ([]byte, error) {
-		if generation == 9 {
+	backend.loadGeneration = func(_ context.Context, request LoadRequest) ([]byte, error) {
+		if request.Generation == 9 {
 			return nil, session.ErrStaleGeneration
 		}
-		return []byte{0, 0xff, byte(generation)}, nil
+		return []byte{0, 0xff, byte(request.Generation)}, nil
 	}
 	backend.resolvePreview = func(_ context.Context, current []byte) (protocol.ResolvedCandidate, error) {
 		if bytes.Equal(current, []byte("missing")) {
@@ -246,7 +351,7 @@ func TestRoutesMapResponsesAndErrors(t *testing.T) {
 	if err != nil || !bytes.Equal(loaded, []byte{0, 0xff, 4}) {
 		t.Fatalf("Load=%x err=%v", loaded, err)
 	}
-	if _, err := client.Load(context.Background(), LoadRequest{Generation: 9}); !errors.Is(err, ErrNotFound) {
+	if _, err := client.Load(context.Background(), LoadRequest{Generation: 9}); !errors.Is(err, ErrInvalidLoad) {
 		t.Fatalf("stale load err=%v", err)
 	}
 	preview, err := client.ResolvePreview(context.Background(), PreviewRequest{Phase: "resolve", CurrentItemBase64: base64.StdEncoding.EncodeToString([]byte("record"))})
@@ -358,47 +463,6 @@ func TestDisplayContextCancellationFlowsToBackend(t *testing.T) {
 	}
 }
 
-func TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins(t *testing.T) {
-	entered := make(chan struct{}, 16)
-	release := make(chan struct{})
-	exited := make(chan struct{}, 16)
-	finished := make(chan struct{}, 16)
-	requestCtx, cancelRequests := context.WithCancel(context.Background())
-	defer cancelRequests()
-	backend := benignBackend()
-	backend.currentHeader = func(ctx context.Context) (string, error) {
-		entered <- struct{}{}
-		select {
-		case <-release:
-		case <-ctx.Done():
-		}
-		exited <- struct{}{}
-		return "", context.Cause(ctx)
-	}
-	server, client := startServer(t, backend)
-	for range 16 {
-		go func() {
-			_, _ = client.Display(requestCtx)
-			finished <- struct{}{}
-		}()
-	}
-	for range 16 {
-		awaitSessionIPC(t, entered, "display backend entry under handler pressure")
-	}
-	assertDisplayError(t, client, ErrTooManyRequests, "seventeenth display concurrency-limit request")
-
-	closeSessionIPC(t, server, "handler cancellation and join", nil)
-	assertSessionIPCListenerClosed(t, server.Address())
-	for range 16 {
-		awaitSessionIPC(t, exited, "display backend exit after server close")
-	}
-	for range 16 {
-		awaitSessionIPC(t, finished, "display request completion after server close")
-	}
-	close(release)
-	closeSessionIPC(t, server, "idempotent close", nil)
-}
-
 func TestPreviewTelemetryUsesIndependentSoftTimeout(t *testing.T) {
 	requestObserved := make(chan struct{})
 	previewPath := filepath.Join(t.TempDir(), "preview.bin")
@@ -425,19 +489,4 @@ func TestPreviewTelemetryUsesIndependentSoftTimeout(t *testing.T) {
 		t.Fatalf("telemetry blocked %v", elapsed)
 	}
 	awaitSessionIPC(t, requestObserved, "preview telemetry backend entry")
-}
-
-func rawRequest(t *testing.T, url string, token Token, method, contentType string, body []byte) *http.Response {
-	t.Helper()
-	request, err := http.NewRequestWithContext(context.Background(), method, url, bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Authorization", "Bearer "+token.String())
-	request.Header.Set("Content-Type", contentType)
-	response, err := (&http.Client{Transport: &http.Transport{Proxy: nil}}).Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return response
 }

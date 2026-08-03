@@ -25,6 +25,7 @@ var (
 	ErrUnauthorized    = errors.New("IPC request unauthorized")
 	ErrNotFound        = errors.New("IPC resource not found")
 	ErrBadRequest      = errors.New("invalid IPC request")
+	ErrInvalidLoad     = errors.New("invalid IPC load reservation")
 	ErrTooManyRequests = errors.New("too many IPC requests")
 	ErrInternal        = errors.New("IPC request failed")
 )
@@ -77,6 +78,39 @@ func (client *Client) Event(ctx context.Context, request EventRequest) (EventRes
 	return response, err
 }
 
+func (client *Client) FinalizeEvent(ctx context.Context, request EventFinalizeRequest) error {
+	if request.EventID == 0 {
+		return ErrBadRequest
+	}
+	return client.finalize(ctx, "/v1/event/finalize", request.EventID, request.Applied)
+}
+
+func (client *Client) FinalizeLoad(ctx context.Context, request LoadFinalizeRequest) error {
+	if request.EventID == 0 {
+		return ErrBadRequest
+	}
+	return client.finalize(ctx, "/v1/load/finalize", request.EventID, request.Applied)
+}
+
+func (client *Client) finalize(ctx context.Context, path string, eventID uint64, applied bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := requestContext(context.WithoutCancel(ctx), 250*time.Millisecond)
+	defer cancel()
+	response, err := client.do(ctx, path, struct {
+		EventID uint64 `json:"event_id"`
+		Applied bool   `json:"applied"`
+	}{EventID: eventID, Applied: applied})
+	if err != nil {
+		return err
+	}
+	if _, err := client.readResponse(response, maxTelemetryResponseBytes); err != nil {
+		return err
+	}
+	return statusError(response.StatusCode)
+}
+
 func (client *Client) Display(ctx context.Context) (DisplayResponse, error) {
 	var response DisplayResponse
 	err := client.doJSON(ctx, "/v1/display", DisplayRequest{}, &response)
@@ -97,7 +131,7 @@ func (client *Client) Load(ctx context.Context, request LoadRequest) ([]byte, er
 		if response.Header.Get("Content-Type") != "application/json" {
 			return nil, ErrInternal
 		}
-		return nil, statusError(response.StatusCode)
+		return nil, loadStatusError(response.StatusCode)
 	}
 	if response.Header.Get("Content-Type") != "application/octet-stream" {
 		response.Body.Close()
@@ -244,6 +278,13 @@ func statusError(status int) error {
 	default:
 		return ErrInternal
 	}
+}
+
+func loadStatusError(status int) error {
+	if status == http.StatusBadRequest || status == http.StatusNotFound {
+		return ErrInvalidLoad
+	}
+	return statusError(status)
 }
 
 func requestContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {

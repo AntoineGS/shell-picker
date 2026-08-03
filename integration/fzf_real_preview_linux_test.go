@@ -217,9 +217,11 @@ type observedPreviewTree struct {
 }
 
 type linuxProcessNode struct {
-	pid, ppid int
-	exe       string
-	args      []string
+	pid, ppid   int
+	exe         string
+	args        []string
+	startMarker string
+	identity    ownedProcessIdentity
 }
 
 func (fixture *blockingPreviewFixture) waitTree(t *testing.T, rendererCount int) observedPreviewTree {

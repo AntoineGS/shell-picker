@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -95,6 +96,30 @@ func TestWindowsRejectsExtraFilesBeforeProcessAttempt(t *testing.T) {
 	_, err = (Runner{Observe: func(ProcessEvent) { attempted = true }}).Start(context.Background(), spec)
 	if err == nil || attempted {
 		t.Fatalf("err=%v attempted=%v", err, attempted)
+	}
+}
+
+func TestWindowsEnvironmentValidationAndEncodingPreservesDriveEntry(t *testing.T) {
+	environment := []string{"PATH=C:\\bin", "=C:=C:\\path", "ユニコード=значение"}
+	if err := validateSpec(context.Background(), Spec{Path: os.Args[0], Env: environment, Containment: ContainmentOwnTree}); err != nil {
+		t.Fatal(err)
+	}
+	block := buildEnvironmentBlock(environment)
+	decoded := string(utf16.Decode(block))
+	want := "=C:=C:\\path\x00PATH=C:\\bin\x00ユニコード=значение\x00\x00"
+	if decoded != want {
+		t.Fatalf("environment block=%q want %q", decoded, want)
+	}
+}
+
+func TestWindowsEnvironmentValidationRejectsInvalidDrivePseudoEntries(t *testing.T) {
+	for _, entry := range []string{"=C:=", "=C:=D:\\path", "=1:=C:\\path", "=CC:=C:\\path", "=C:relative"} {
+		t.Run(entry, func(t *testing.T) {
+			err := validateSpec(context.Background(), Spec{Path: os.Args[0], Env: []string{entry}, Containment: ContainmentOwnTree})
+			if err == nil {
+				t.Fatalf("invalid drive entry %q accepted", entry)
+			}
+		})
 	}
 }
 
@@ -225,4 +250,72 @@ func TestSanitizeEnvWindowsDeduplicatesControlledKeys(t *testing.T) {
 	if len(got) != 2 || got[0] != "Path=first" || got[1] != "PATO=middle" {
 		t.Fatalf("controlled env=%q", got)
 	}
+}
+
+func TestWindowsEnvironmentPipelinePreservesDistinctDrivesAndOverrides(t *testing.T) {
+	inherited := []string{
+		"=D:=D:\\inherited",
+		"=C:=C:\\inherited",
+		"A=old",
+		"A0=zero",
+		"Unicode=old",
+		"a=case-old",
+		"=c:=C:\\case-old",
+	}
+	controlled := map[string]string{
+		"=C:":     `C:\controlled`,
+		"A":       "controlled-a",
+		"unicode": "controlled-unicode",
+	}
+	got := SanitizeEnv(inherited, controlled)
+	block, err := BuildEnvironmentBlock(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := decodeEnvironmentBlock(block)
+	want := []string{
+		"=C:=C:\\controlled",
+		"=D:=D:\\inherited",
+		"A=controlled-a",
+		"A0=zero",
+		"unicode=controlled-unicode",
+	}
+	if strings.Join(entries, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("environment entries=%q want %q; sanitized=%q", entries, want, got)
+	}
+}
+
+func TestBuildEnvironmentBlockUsesDeterministicCaseTieByVariableName(t *testing.T) {
+	block, err := BuildEnvironmentBlock([]string{"a=lower", "A=upper", "A0=zero"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := decodeEnvironmentBlock(block)
+	want := []string{"A=upper", "a=lower", "A0=zero"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("environment entries=%q want %q", got, want)
+	}
+}
+
+func TestBuildEnvironmentBlockRejectsMalformedAndNulEntries(t *testing.T) {
+	for _, entry := range []string{"", "MISSING_EQUALS", "KEY\x00=value", "KEY=value\x00", "=C:=D:\\path"} {
+		t.Run(entry, func(t *testing.T) {
+			if _, err := BuildEnvironmentBlock([]string{entry}); err == nil {
+				t.Fatalf("malformed environment entry %q accepted", entry)
+			}
+		})
+	}
+}
+
+func decodeEnvironmentBlock(block []uint16) []string {
+	entries := make([]string, 0)
+	start := 0
+	for index, value := range block[:len(block)-1] {
+		if value != 0 {
+			continue
+		}
+		entries = append(entries, windows.UTF16ToString(block[start:index]))
+		start = index + 1
+	}
+	return entries
 }

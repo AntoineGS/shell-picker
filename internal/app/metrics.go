@@ -24,6 +24,7 @@ type pickerMetrics struct {
 	callbackIPC, loadLatency time.Duration
 	queueWait, transform     time.Duration
 	sources                  candidate.SourceMetrics
+	zoxideSourceRecorded     bool
 
 	previewStarted, previewFinished uint64
 	previewDuration                 time.Duration
@@ -43,16 +44,34 @@ func (metrics *pickerMetrics) recordTransition(result session.TransitionResult) 
 	metrics.queueWait = saturatingDuration(metrics.queueWait, result.Metrics.QueueWait)
 	metrics.transform = saturatingDuration(metrics.transform, result.Metrics.TransformDuration)
 	metrics.sources.LocalDuration = saturatingDuration(metrics.sources.LocalDuration, result.Metrics.Sources.LocalDuration)
-	metrics.sources.ZoxideDuration = saturatingDuration(metrics.sources.ZoxideDuration, result.Metrics.Sources.ZoxideDuration)
-	metrics.sources.ZoxideOutcome = result.Metrics.Sources.ZoxideOutcome
-	metrics.sources.ZoxideAttempts = boundedIntAdd(metrics.sources.ZoxideAttempts, result.Metrics.Sources.ZoxideAttempts)
-	metrics.sources.ZoxideStarts = boundedIntAdd(metrics.sources.ZoxideStarts, result.Metrics.Sources.ZoxideStarts)
-	metrics.sources.ZoxideExits = boundedIntAdd(metrics.sources.ZoxideExits, result.Metrics.Sources.ZoxideExits)
-	metrics.sources.ZoxideProcesses = boundedIntAdd(metrics.sources.ZoxideProcesses, result.Metrics.Sources.ZoxideProcesses)
-	metrics.sources.ZoxideLive = result.Metrics.Sources.ZoxideLive
-	if result.Metrics.Sources.ZoxideMaxLive > metrics.sources.ZoxideMaxLive {
-		metrics.sources.ZoxideMaxLive = result.Metrics.Sources.ZoxideMaxLive
+}
+
+// recordZoxideSource records the one session-owned zoxide source terminal.
+// Transitions only contribute local timing; pending initial state must not
+// overwrite the eventual terminal source outcome.
+func (metrics *pickerMetrics) recordZoxideSource(source candidate.SourceMetrics) bool {
+	if metrics == nil {
+		return false
 	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	if metrics.zoxideSourceRecorded {
+		return false
+	}
+	metrics.zoxideSourceRecorded = true
+	metrics.sources.ZoxideDuration = saturatingDuration(metrics.sources.ZoxideDuration, source.ZoxideDuration)
+	if source.ZoxideOutcome != "" {
+		metrics.sources.ZoxideOutcome = source.ZoxideOutcome
+	}
+	metrics.sources.ZoxideAttempts = boundedIntAdd(metrics.sources.ZoxideAttempts, source.ZoxideAttempts)
+	metrics.sources.ZoxideStarts = boundedIntAdd(metrics.sources.ZoxideStarts, source.ZoxideStarts)
+	metrics.sources.ZoxideExits = boundedIntAdd(metrics.sources.ZoxideExits, source.ZoxideExits)
+	metrics.sources.ZoxideProcesses = boundedIntAdd(metrics.sources.ZoxideProcesses, source.ZoxideProcesses)
+	metrics.sources.ZoxideLive = source.ZoxideLive
+	if source.ZoxideMaxLive > metrics.sources.ZoxideMaxLive {
+		metrics.sources.ZoxideMaxLive = source.ZoxideMaxLive
+	}
+	return true
 }
 
 func (metrics *pickerMetrics) recordCallback(duration time.Duration) {

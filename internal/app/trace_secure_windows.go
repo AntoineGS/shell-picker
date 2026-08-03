@@ -29,6 +29,38 @@ type windowsTraceOps struct {
 	closeHandle  func(windows.Handle) error
 }
 
+type windowsTraceSink struct {
+	file  *os.File
+	flush func(*os.File) error
+	close func(*os.File) error
+}
+
+func (sink *windowsTraceSink) Write(data []byte) (int, error) {
+	if sink == nil || sink.file == nil {
+		return 0, os.ErrClosed
+	}
+	return sink.file.Write(data)
+}
+
+func (sink *windowsTraceSink) Close() error {
+	if sink == nil || sink.file == nil {
+		return nil
+	}
+	file := sink.file
+	sink.file = nil
+	flush := sink.flush
+	if flush == nil {
+		flush = func(file *os.File) error {
+			return windows.FlushFileBuffers(windows.Handle(file.Fd()))
+		}
+	}
+	closeFile := sink.close
+	if closeFile == nil {
+		closeFile = func(file *os.File) error { return file.Close() }
+	}
+	return errors.Join(flush(file), closeFile(file))
+}
+
 func isCanonicalNamedPipePath(path string) bool {
 	const prefix = `\\.\pipe\`
 	return len(path) > len(prefix) && strings.EqualFold(path[:len(prefix)], prefix)
@@ -82,7 +114,7 @@ func openTraceSink(path string) (io.WriteCloser, error) {
 	// The caller authorizes every ancestor and the target; elevated wrappers
 	// must not accept an untrusted trace path. Final-handle DACL, type, and
 	// no-follow checks are defense in depth, not anchored traversal.
-	return file, nil
+	return &windowsTraceSink{file: file}, nil
 }
 
 type windowsTraceSecurity struct {
@@ -113,7 +145,8 @@ func openWindowsTraceHandleWithSecurity(path string, ops windowsTraceOps, securi
 		Creation: windows.OPEN_ALWAYS, Flags: windows.FILE_ATTRIBUTE_NORMAL | windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		Security: security}
 	if isCanonicalNamedPipePath(path) {
-		call.Share, call.Creation, call.Flags, call.Security = 0, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, nil
+		call.Share, call.Creation, call.Flags, call.Security = 0, windows.OPEN_EXISTING,
+			windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_WRITE_THROUGH, nil
 	} else {
 		call.Access |= windows.WRITE_DAC
 	}

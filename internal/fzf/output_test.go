@@ -35,9 +35,8 @@ func TestParseOutputAbort(t *testing.T) {
 		code   int
 		query  []byte
 	}{
-		{protocol.PickerCD, []byte("needle\x00"), 1, []byte("needle")},
 		{protocol.PickerCD, []byte("\x00"), 130, []byte{}},
-		{protocol.PickerCP, nil, 1, nil},
+		{protocol.PickerCD, []byte{}, 130, nil},
 		{protocol.PickerCP, []byte{}, 130, nil},
 	}
 	for _, test := range tests {
@@ -45,6 +44,24 @@ func TestParseOutputAbort(t *testing.T) {
 		if err != nil || !got.Aborted || got.ExitCode != test.code || !reflect.DeepEqual(got.Query, test.query) {
 			t.Fatalf("picker=%q raw=%q code=%d got=%+v err=%v", test.picker, test.raw, test.code, got, err)
 		}
+	}
+}
+
+func TestParseOutputRejectsGenericNoMatchExit(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		picker protocol.Picker
+		raw    []byte
+	}{
+		{name: "cd query", picker: protocol.PickerCD, raw: []byte("needle\x00")},
+		{name: "cp empty", picker: protocol.PickerCP},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := ParseOutput(test.picker, test.raw, 1)
+			if err == nil || got.Aborted {
+				t.Fatalf("got=%+v err=%v, want non-aborted no-match error", got, err)
+			}
+		})
 	}
 }
 

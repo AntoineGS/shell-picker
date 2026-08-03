@@ -74,6 +74,20 @@ type applyReply struct {
 	err    error
 }
 
+type enrichCommand struct {
+	ctx            context.Context
+	baseGeneration uint64
+	records        []candidate.Record
+	sources        candidate.SourceMetrics
+	submitted      time.Time
+	reply          chan enrichReply
+}
+
+type enrichReply struct {
+	result TransitionResult
+	err    error
+}
+
 type currentCommand struct {
 	ctx   context.Context
 	reply chan snapshotReply
@@ -266,6 +280,17 @@ func transitionResult(snapshot Snapshot, command *applyCommand, accepted time.Ti
 	return TransitionResult{
 		Snapshot: cloneSnapshot(snapshot), Effect: effect,
 		Metrics: TransitionMetrics{QueueWait: accepted.Sub(command.submitted), TransformDuration: time.Since(command.submitted), Sources: sources},
+	}
+}
+
+func enrichTransitionResult(snapshot Snapshot, command *enrichCommand, accepted time.Time) TransitionResult {
+	return TransitionResult{
+		Snapshot: cloneSnapshot(snapshot),
+		Metrics: TransitionMetrics{
+			QueueWait:         accepted.Sub(command.submitted),
+			TransformDuration: time.Since(command.submitted),
+			Sources:           command.sources,
+		},
 	}
 }
 

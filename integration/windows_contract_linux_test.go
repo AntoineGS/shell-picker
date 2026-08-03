@@ -92,7 +92,7 @@ func TestWindowsOutputDrainUsesCancellableOverlappedIO(t *testing.T) {
 func TestWindowsTerminalLifecycleSourceContract(t *testing.T) {
 	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go")
 	for _, required := range []string{"waitErr", "waitDone", "DuplicateHandle", "ops.closeHandle(information.Thread)",
-		"ops.cancelIO(session.output", "ops.cancelIO(session.trace", "<-session.drainDone", "<-session.traceDone"} {
+		"cancelWorkerIO(&session.output", "cancelWorkerIO(&session.trace", "<-session.drainDone", "<-session.traceDone"} {
 		if !strings.Contains(source, required) {
 			t.Errorf("Windows lifecycle source lacks %s", required)
 		}

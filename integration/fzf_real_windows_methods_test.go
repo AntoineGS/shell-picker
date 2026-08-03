@@ -5,109 +5,71 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
+	"testing"
+	"time"
 
+	"github.com/AntoineGS/shell-picker/internal/process"
 	"golang.org/x/sys/windows"
 )
 
-func (session *windowsTerminalSession) drainTrace(handle windows.Handle, ready chan<- struct{}) {
-	defer close(session.traceDone)
-	defer session.ops.closeHandle(handle)
-	event, err := windows.CreateEvent(nil, 1, 0, nil)
-	if err != nil {
-		close(ready)
-		session.publishTraceError(err)
-		return
-	}
-	defer session.ops.closeHandle(event)
-	overlapped := windows.Overlapped{HEvent: event}
-	err = windows.ConnectNamedPipe(handle, &overlapped)
-	close(ready)
-	if errors.Is(err, windows.ERROR_IO_PENDING) {
-		var connected uint32
-		err = windows.GetOverlappedResult(handle, &overlapped, &connected, true)
-	}
-	if err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
-		session.publishTraceError(err)
-		return
-	}
-	buffer, pending := make([]byte, 32<<10), make([]byte, 0, 32<<10)
-	for {
-		if err := windows.ResetEvent(event); err != nil {
-			session.publishTraceError(err)
-			return
-		}
-		var read uint32
-		err := windows.ReadFile(handle, buffer, &read, &overlapped)
-		if errors.Is(err, windows.ERROR_IO_PENDING) {
-			err = windows.GetOverlappedResult(handle, &overlapped, &read, true)
-		}
-		if read > 0 {
-			pending = append(pending, buffer[:read]...)
-			for {
-				newline := bytes.IndexByte(pending, '\n')
-				if newline < 0 {
-					break
-				}
-				var trace traceEvent
-				if decodeErr := json.Unmarshal(pending[:newline], &trace); decodeErr != nil {
-					session.publishTraceError(decodeErr)
-					return
-				}
-				pending = pending[newline+1:]
-				session.eventMu.Lock()
-				session.events = append(session.events, trace)
-				close(session.changed)
-				session.changed = make(chan struct{})
-				session.eventMu.Unlock()
-			}
-		}
-		if errors.Is(err, windows.ERROR_BROKEN_PIPE) {
-			if len(pending) != 0 {
-				session.publishTraceError(io.ErrUnexpectedEOF)
-			}
-			return
-		}
-		if err != nil {
-			session.publishTraceError(err)
-			return
-		}
-	}
-}
-
-func (session *windowsTerminalSession) publishTraceError(err error) {
-	session.eventMu.Lock()
-	session.events = append(session.events, traceEvent{Event: "trace.error", Outcome: err.Error()})
-	close(session.changed)
-	session.changed = make(chan struct{})
-	session.eventMu.Unlock()
-}
-
 func windowsEnvironment(environment []string) ([]uint16, error) {
-	sorted := append([]string(nil), environment...)
-	sort.SliceStable(sorted, func(i, j int) bool { return strings.ToUpper(sorted[i]) < strings.ToUpper(sorted[j]) })
-	block := make([]uint16, 0)
-	for _, entry := range sorted {
-		encoded, err := windows.UTF16FromString(entry)
-		if err != nil {
-			return nil, fmt.Errorf("encode Windows environment entry: %w", err)
-		}
-		block = append(block, encoded...)
-	}
-	if len(block) == 0 {
-		return []uint16{0, 0}, nil
-	}
-	return append(block, 0), nil
+	return process.BuildEnvironmentBlock(environment)
 }
 
-func (session *windowsTerminalSession) drainOutput(handle windows.Handle) {
-	defer close(session.drainDone)
+func TestEnvironmentBlockEncodesDriveCurrentDirectoryEntries(t *testing.T) {
+	input := []string{"PATH=C:\\tools", "=X:=X:\\working", "EMPTY="}
+	got, err := windowsEnvironment(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 2 || got[len(got)-1] != 0 || got[len(got)-2] != 0 {
+		t.Fatalf("environment block is not double terminated: %v", got)
+	}
+	entries := make([]string, 0, len(input))
+	start := 0
+	for index, value := range got[:len(got)-1] {
+		if value != 0 {
+			continue
+		}
+		entries = append(entries, windows.UTF16ToString(got[start:index]))
+		start = index + 1
+	}
+	want := append([]string(nil), input...)
+	sort.SliceStable(want, func(i, j int) bool { return strings.ToUpper(want[i]) < strings.ToUpper(want[j]) })
+	if !reflect.DeepEqual(entries, want) {
+		t.Fatalf("environment entries=%q want %q", entries, want)
+	}
+}
+
+func (session *windowsTerminalSession) drainOutput(handle windows.Handle, done chan<- struct{}) {
+	session.drainBytes(handle, done, func(data []byte) {
+		session.outputMu.Lock()
+		_, _ = session.buffer.Write(data)
+		if session.outputChanged != nil {
+			close(session.outputChanged)
+		}
+		session.outputChanged = make(chan struct{})
+		session.outputMu.Unlock()
+	})
+}
+
+func (session *windowsTerminalSession) drainResult(handle windows.Handle, done chan<- struct{}) {
+	session.drainBytes(handle, done, func(data []byte) {
+		session.resultMu.Lock()
+		_, _ = session.resultBuffer.Write(data)
+		session.resultMu.Unlock()
+	})
+}
+
+func (session *windowsTerminalSession) drainBytes(handle windows.Handle, done chan<- struct{}, appendBytes func([]byte)) {
+	defer close(done)
 	defer session.ops.closeHandle(handle)
 	event, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
@@ -126,13 +88,7 @@ func (session *windowsTerminalSession) drainOutput(handle windows.Handle) {
 			err = windows.GetOverlappedResult(handle, &overlapped, &read, true)
 		}
 		if read > 0 {
-			session.outputMu.Lock()
-			_, _ = session.buffer.Write(buffer[:read])
-			if session.outputChanged != nil {
-				close(session.outputChanged)
-			}
-			session.outputChanged = make(chan struct{})
-			session.outputMu.Unlock()
+			appendBytes(buffer[:read])
 		}
 		if err != nil {
 			return
@@ -223,7 +179,7 @@ func (session *windowsTerminalSession) WaitBarrier(ctx context.Context, wanted b
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			session.t.Fatalf("wait for barrier %+v: %v; output=%q", wanted, ctx.Err(), session.Output())
+			session.t.Fatalf("wait for barrier %+v: %v; events=%+v; output=%q", wanted, ctx.Err(), session.TraceEvents(), session.Output())
 		}
 	}
 }
@@ -234,6 +190,12 @@ func (session *windowsTerminalSession) Output() []byte {
 	session.outputMu.Lock()
 	defer session.outputMu.Unlock()
 	return bytes.Clone(session.buffer.Bytes())
+}
+
+func (session *windowsTerminalSession) ResultBytes() []byte {
+	session.resultMu.Lock()
+	defer session.resultMu.Unlock()
+	return bytes.Clone(session.resultBuffer.Bytes())
 }
 
 func (session *windowsTerminalSession) WaitOutputAfter(ctx context.Context, before int) {
@@ -252,7 +214,7 @@ func (session *windowsTerminalSession) WaitOutputAfter(ctx context.Context, befo
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			session.t.Fatalf("wait for terminal output after %d bytes: %v", before, ctx.Err())
+			session.t.Fatalf("wait for terminal output after %d bytes: %v; events=%+v; result=%q", before, ctx.Err(), session.TraceEvents(), session.ResultBytes())
 		}
 	}
 }
@@ -276,6 +238,13 @@ func (session *windowsTerminalSession) Wait(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		if session.resultStarted {
+			select {
+			case <-session.resultDone:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		select {
 		case <-session.traceDone:
 		case <-ctx.Done():
@@ -290,53 +259,188 @@ func (session *windowsTerminalSession) Wait(ctx context.Context) error {
 	}
 }
 
+const defaultWindowsTerminalCleanupTimeout = 5 * time.Second
+
+func waitForWindowsTerminalDone(done <-chan struct{}, deadline time.Time) bool {
+	if done == nil {
+		return true
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func windowsTerminalDone(done <-chan struct{}) bool {
+	if done == nil {
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (session *windowsTerminalSession) cancelWorkerIO(handle *windows.Handle, done <-chan struct{}) error {
+	if *handle == 0 || windowsTerminalDone(done) {
+		*handle = 0
+		return nil
+	}
+	if session.ops.beforeCancelIO != nil {
+		session.ops.beforeCancelIO(*handle)
+	}
+	cancelErr := session.ops.cancelIO(*handle, nil)
+	if cancelErr == nil || errors.Is(cancelErr, windows.ERROR_NOT_FOUND) {
+		return nil
+	}
+	if errors.Is(cancelErr, windows.ERROR_INVALID_HANDLE) && windowsTerminalDone(done) {
+		*handle = 0
+		return nil
+	}
+	return cancelErr
+}
+
 func (session *windowsTerminalSession) Close() error {
-	session.closeOnce.Do(func() {
-		session.handleMu.Lock()
-		if session.process != 0 {
-			_ = session.ops.terminateProcess(session.process, 1)
-		}
-		if session.console != 0 {
-			session.ops.closePseudoConsole(session.console)
-			session.console = 0
-		}
-		if session.output != 0 {
-			if session.outputStarted {
-				_ = session.ops.cancelIO(session.output, nil)
-			} else {
-				session.closeErr = errors.Join(session.closeErr, session.ops.closeHandle(session.output))
-				session.output = 0
-			}
-		}
-		if session.trace != 0 {
-			if session.traceStarted {
-				_ = session.ops.cancelIO(session.trace, nil)
-			} else {
-				session.closeErr = errors.Join(session.closeErr, session.ops.closeHandle(session.trace))
-				session.trace = 0
-			}
-		}
-		if session.input != 0 {
-			session.closeErr = errors.Join(session.closeErr, session.ops.closeHandle(session.input))
-			session.input = 0
-		}
-		session.handleMu.Unlock()
-		if session.waitStarted {
-			<-session.waitDone
-		}
+	session.closeMu.Lock()
+	if session.closed {
+		err := session.closeErr
+		session.closeMu.Unlock()
+		return err
+	}
+	if session.closeRunning {
+		attempt := session.closeAttempt
+		session.closeMu.Unlock()
+		<-attempt
+		session.closeMu.Lock()
+		err := session.closeErr
+		session.closeMu.Unlock()
+		return err
+	}
+	session.closeRunning = true
+	session.closeAttempt = make(chan struct{})
+	attempt := session.closeAttempt
+	session.closeMu.Unlock()
+
+	err := session.closeAttemptRun()
+
+	session.closeMu.Lock()
+	session.closeErr = err
+	session.closeRunning = false
+	if session.resourcesReleased() {
+		session.closed = true
+	}
+	close(attempt)
+	session.closeMu.Unlock()
+	return err
+}
+
+func (session *windowsTerminalSession) closeAttemptRun() error {
+	session.requestStop()
+	session.handleMu.Lock()
+	if session.process != 0 && !windowsTerminalDone(session.waitDone) {
+		_ = session.ops.terminateProcess(session.process, 1)
+	}
+	if session.console != 0 {
+		session.ops.closePseudoConsole(session.console)
+		session.console = 0
+	}
+	var err error
+	if session.output != 0 {
 		if session.outputStarted {
-			<-session.drainDone
+			err = errors.Join(err, session.cancelWorkerIO(&session.output, session.drainDone))
+		} else {
+			err = errors.Join(err, session.ops.closeHandle(session.output))
+			session.output = 0
 		}
+	}
+	if session.result != 0 {
+		if session.resultStarted {
+			err = errors.Join(err, session.cancelWorkerIO(&session.result, session.resultDone))
+		} else {
+			err = errors.Join(err, session.ops.closeHandle(session.result))
+			session.result = 0
+		}
+	}
+	if session.resultWrite != 0 {
+		err = errors.Join(err, session.ops.closeHandle(session.resultWrite))
+		session.resultWrite = 0
+	}
+	if session.standardInput != 0 {
+		err = errors.Join(err, session.ops.closeHandle(session.standardInput))
+		session.standardInput = 0
+	}
+	if session.trace != 0 {
 		if session.traceStarted {
-			<-session.traceDone
+			err = errors.Join(err, session.cancelWorkerIO(&session.trace, session.traceDone))
+		} else {
+			err = errors.Join(err, session.ops.closeHandle(session.trace))
+			session.trace = 0
 		}
-		session.handleMu.Lock()
-		if session.process != 0 {
-			session.closeErr = errors.Join(session.closeErr, session.ops.closeHandle(session.process))
-			session.process = 0
+	}
+	if session.input != 0 {
+		err = errors.Join(err, session.ops.closeHandle(session.input))
+		session.input = 0
+	}
+	session.handleMu.Unlock()
+
+	timeout := session.cleanupTimeout
+	if timeout <= 0 {
+		timeout = defaultWindowsTerminalCleanupTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	await := func(name string, started bool, done <-chan struct{}) bool {
+		if started && !waitForWindowsTerminalDone(done, deadline) {
+			err = errors.Join(err, fmt.Errorf("wait for %s cleanup: %w", name, process.ErrWaitDelay))
+			return false
 		}
-		session.output, session.trace = 0, 0
-		session.handleMu.Unlock()
+		return true
+	}
+	processDone := await("process", session.waitStarted, session.waitDone)
+	outputDone := await("output", session.outputStarted, session.drainDone)
+	resultDone := await("result", session.resultStarted, session.resultDone)
+	traceDone := await("trace", session.traceStarted, session.traceDone)
+	session.handleMu.Lock()
+	if processDone && session.process != 0 {
+		err = errors.Join(err, session.ops.closeHandle(session.process))
+		session.process = 0
+	}
+	if outputDone {
+		session.output = 0
+	}
+	if resultDone {
+		session.result = 0
+	}
+	if traceDone {
+		session.trace = 0
+	}
+	session.handleMu.Unlock()
+	return err
+}
+
+func (session *windowsTerminalSession) requestStop() {
+	session.stopOnce.Do(func() {
+		session.stop = make(chan struct{})
+		close(session.stop)
 	})
-	return session.closeErr
+}
+
+func (session *windowsTerminalSession) resourcesReleased() bool {
+	session.handleMu.Lock()
+	defer session.handleMu.Unlock()
+	return session.process == 0 && session.output == 0 && session.result == 0 && session.trace == 0
 }

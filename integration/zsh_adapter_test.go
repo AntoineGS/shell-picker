@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -307,16 +308,36 @@ codeset=${langinfo[CODESET]:l}
 	return "", false
 }
 
+func TestReplaceEnvironmentReplacesCaseVariantOnWindows(t *testing.T) {
+	environment := []string{"Path=old-tools", "KEEP=yes"}
+	got := replaceEnvironment(environment, "PATH=new-tools")
+	if runtime.GOOS == "windows" {
+		if !reflect.DeepEqual(got, []string{"KEEP=yes", "PATH=new-tools"}) {
+			t.Fatalf("case-insensitive environment replacement=%q", got)
+		}
+		return
+	}
+	if !reflect.DeepEqual(got, []string{"Path=old-tools", "KEEP=yes", "PATH=new-tools"}) {
+		t.Fatalf("case-sensitive environment replacement=%q", got)
+	}
+}
+
 func replaceEnvironment(environment []string, replacements ...string) []string {
+	keyName := func(key string) string {
+		if runtime.GOOS == "windows" {
+			return strings.ToUpper(key)
+		}
+		return key
+	}
 	keys := make(map[string]bool, len(replacements))
 	for _, replacement := range replacements {
 		key, _, _ := strings.Cut(replacement, "=")
-		keys[key] = true
+		keys[keyName(key)] = true
 	}
 	result := make([]string, 0, len(environment)+len(replacements))
 	for _, entry := range environment {
 		key, _, _ := strings.Cut(entry, "=")
-		if !keys[key] {
+		if !keys[keyName(key)] {
 			result = append(result, entry)
 		}
 	}

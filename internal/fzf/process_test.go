@@ -68,8 +68,38 @@ func TestSessionSpecUsesForegroundTTYForUIStderrByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if runtime.GOOS == "windows" {
+		if spec.Stderr != nil {
+			t.Fatalf("stderr=%T want nil without a foreground terminal", spec.Stderr)
+		}
+		return
+	}
 	if spec.Stderr != config.ForegroundTTY {
 		t.Fatalf("stderr=%T want foreground tty", spec.Stderr)
+	}
+}
+
+func TestSessionSpecForwardsInputReaderDirectly(t *testing.T) {
+	config := testConfig()
+	input := NewInputStream([]byte("record\x00"))
+	config.Input = input
+	spec, _, err := prepareSession(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Stdin != input {
+		t.Fatalf("spec.Stdin=%T %p, want input %p", spec.Stdin, spec.Stdin, input)
+	}
+	if !spec.CloseStdinOnExit {
+		t.Fatal("fzf session did not opt in to closing pumped stdin on child exit")
+	}
+}
+
+func TestPrepareSessionRejectsNilInput(t *testing.T) {
+	config := testConfig()
+	config.Input = nil
+	if _, _, err := prepareSession(config); err == nil || err.Error() != "fzf: nil input" {
+		t.Fatalf("prepareSession() error = %v, want fzf: nil input", err)
 	}
 }
 
@@ -157,9 +187,9 @@ func TestRunAllowsExecutableDirectoryWithSpacesPastValidation(t *testing.T) {
 			attempts++
 		}
 	}
-	_, _ = Run(context.Background(), config)
+	result, err := Run(context.Background(), config)
 	if attempts != 1 {
-		t.Fatalf("attempts=%d", attempts)
+		t.Fatalf("attempts=%d err=%v result=%+v", attempts, err, result)
 	}
 }
 
@@ -171,9 +201,9 @@ func TestRunDoesNotProbeVersion(t *testing.T) {
 			paths = append(paths, event.Path)
 		}
 	}
-	_, _ = Run(context.Background(), config)
+	result, err := Run(context.Background(), config)
 	if len(paths) != 1 {
-		t.Fatalf("process attempts=%q", paths)
+		t.Fatalf("process attempts=%q err=%v result=%+v", paths, err, result)
 	}
 	for _, path := range paths {
 		if strings.Contains(path, "--version") {
@@ -193,6 +223,8 @@ func TestInstalledFZFCheckVersion(t *testing.T) {
 }
 
 func testConfig() Config {
+	input := NewInputStream([]byte("record\x00"))
+	_ = input.Close()
 	return Config{
 		Picker:          protocol.PickerCP,
 		FZFPath:         filepath.Join(os.TempDir(), "missing-fzf"),
@@ -201,7 +233,7 @@ func testConfig() Config {
 		CallbackAddress: "http://127.0.0.1:4321",
 		CallbackToken:   "controlled-token",
 		Options:         Options(protocol.PickerCP, "[N] ", "/work/"),
-		Input:           []byte("record\x00"),
+		Input:           input,
 		Runner:          processpkg.Runner{},
 		ForegroundTTY:   nonTerminalFile(),
 	}

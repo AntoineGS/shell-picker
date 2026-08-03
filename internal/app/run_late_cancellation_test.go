@@ -4,10 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
+	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
 )
@@ -95,4 +102,104 @@ func TestSelectLifecycleErrorPrefersActorCloseOverParentCancellation(t *testing.
 			}
 		})
 	}
+}
+
+func TestRunPickerFZFChildExitClosesInputWithoutOverridingResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX child fixture")
+	}
+	for _, test := range []struct {
+		name   string
+		result func([]byte) fzf.Result
+		status protocol.Status
+	}{
+		{name: "accepted", result: func(record []byte) fzf.Result {
+			return fzf.Result{Key: "enter", Records: [][]byte{record}}
+		}, status: protocol.StatusAccepted},
+		{name: "aborted", result: func([]byte) fzf.Result {
+			return fzf.Result{Aborted: true, ExitCode: 130}
+		}, status: protocol.StatusAborted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newPickerFixture(t, protocol.PickerCD)
+			fixture.options.ZoxidePolicy = candidate.ZoxideFresh
+			fixture.options.TracePath = filepath.Join(t.TempDir(), "stream-close.trace.jsonl")
+			fixture.options.FZFPath = exitProcessFixture(t)
+			localStarted := make(chan struct{})
+			zoxideStarted := make(chan struct{})
+			zoxideRelease := make(chan struct{})
+			zoxideDone := make(chan struct{})
+			var localOnce, zoxideStartOnce, zoxideDoneOnce, releaseOnce sync.Once
+			fixture.dependencies.buildLocal = func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error) {
+				localOnce.Do(func() { close(localStarted) })
+				return candidate.BuildResult{Records: []candidate.Record{enrichmentRecord(protocol.KindLocal, fixture.child)}, Metrics: candidate.SourceMetrics{ZoxideOutcome: "not-run"}}, nil
+			}
+			fixture.dependencies.loadInitialZoxide = func(ctx context.Context) (candidate.InitialZoxideResult, error) {
+				zoxideStartOnce.Do(func() { close(zoxideStarted) })
+				select {
+				case <-zoxideRelease:
+				case <-ctx.Done():
+					return candidate.InitialZoxideResult{}, context.Cause(ctx)
+				}
+				zoxideDoneOnce.Do(func() { close(zoxideDone) })
+				return enrichmentSource(t.TempDir()), nil
+			}
+			fixture.dependencies.launchFZF = func(ctx context.Context, config fzf.Config) (fzf.Result, error) {
+				select {
+				case <-localStarted:
+				case <-time.After(2 * time.Second):
+					return fzf.Result{}, errors.New("local build did not start")
+				}
+				select {
+				case <-zoxideStarted:
+				case <-time.After(2 * time.Second):
+					return fzf.Result{}, errors.New("zoxide source did not start")
+				}
+				record := recordForPath(t, config.Input, fixture.child)
+				runner := config.Runner
+				observe := runner.Observe
+				runner.Observe = func(event process.ProcessEvent) {
+					if observe != nil {
+						observe(event)
+					}
+					if event.Phase == "exit" && event.Path == config.FZFPath {
+						releaseOnce.Do(func() { close(zoxideRelease) })
+					}
+				}
+				if err := runner.Run(ctx, process.Spec{
+					Path: config.FZFPath, Stdin: config.Input, Stdout: io.Discard, Stderr: io.Discard,
+					CloseStdinOnExit: true, Containment: process.ContainmentOwnTree,
+				}); err != nil {
+					return fzf.Result{}, err
+				}
+				select {
+				case <-zoxideDone:
+				case <-time.After(2 * time.Second):
+					return fzf.Result{}, errors.New("zoxide source did not finish after child exit")
+				}
+				return test.result(record), nil
+			}
+
+			outcome, err := RunPicker(context.Background(), fixture.options, fixture.dependencies)
+			if err != nil || outcome.Status != test.status {
+				t.Fatalf("outcome=%+v err=%v want status=%q", outcome, err, test.status)
+			}
+			trace, err := os.ReadFile(fixture.options.TracePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(trace, []byte(`"generation":2`)) {
+				t.Fatalf("closed fzf input still published enrichment: %s", trace)
+			}
+		})
+	}
+}
+
+func exitProcessFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fzf-exit")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

@@ -30,8 +30,352 @@ func testRequest(picker protocol.Picker, initial bool) BuildRequest {
 	return BuildRequest{Picker: picker, Location: pathutil.Filesystem([]byte("/local")), Initial: initial}
 }
 
+func TestBuildLocalCompletesWhileInitialZoxideIsBlocked(t *testing.T) {
+	zoxideStarted := make(chan struct{})
+	releaseZoxide := make(chan struct{})
+	cache, err := NewZoxideCache(process.Runner{BeforeStart: func(process.Spec) error {
+		close(zoxideStarted)
+		<-releaseZoxide
+		return errors.New("blocked zoxide")
+	}}, "blocked-zoxide", nil, zoxideFixtureTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
+
+	zoxideDone := make(chan struct {
+		result InitialZoxideResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := builder.LoadInitialZoxide(context.Background())
+		zoxideDone <- struct {
+			result InitialZoxideResult
+			err    error
+		}{result, err}
+	}()
+	<-zoxideStarted
+
+	local, err := builder.BuildLocal(context.Background(), testRequest(protocol.PickerCD, true))
+	if err != nil || !reflect.DeepEqual(paths(local.Records), []string{"/local", "/z/same"}) {
+		t.Fatalf("local=%+v err=%v", local, err)
+	}
+
+	close(releaseZoxide)
+	loaded := <-zoxideDone
+	if loaded.err != nil || !loaded.result.Discarded || loaded.result.Metrics.ZoxideOutcome != "process-error" {
+		t.Fatalf("zoxide=%+v err=%v", loaded.result, loaded.err)
+	}
+}
+
+func TestMergeNewRecordsUsesMergeRecordsIdentityAndOrdering(t *testing.T) {
+	baseVirtual := newVirtualDrivesRecord("..")
+	base := []Record{
+		newRecord(protocol.KindLocal, "base", []byte("/base")),
+		baseVirtual,
+	}
+	additions := []Record{
+		newRecord(protocol.KindZoxide, "duplicate-base", []byte("/base")),
+		newRecord(protocol.KindZoxide, "new", []byte("/new")),
+		newRecord(protocol.KindZoxide, "duplicate-new", []byte("/new")),
+		newVirtualDrivesRecord(".."),
+		newVirtualDrivesRecord("different-display"),
+	}
+
+	merged, admitted := MergeNewRecords(base, additions)
+	if got, want := fullKeys(merged), []string{base[0].FullKey(), baseVirtual.FullKey(), additions[1].FullKey(), additions[4].FullKey()}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged keys=%q, want %q", got, want)
+	}
+	if got, want := fullKeys(admitted), []string{additions[1].FullKey(), additions[4].FullKey()}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("admitted keys=%q, want %q", got, want)
+	}
+	if merged[0].FullKey() != base[0].FullKey() || merged[1].FullKey() != baseVirtual.FullKey() {
+		t.Fatalf("base records were not preserved first: %+v", merged)
+	}
+}
+
+func TestMergeNewRecordsUsesPlatformFilesystemIdentityWithoutChangingRecords(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows filesystem aliases")
+	}
+
+	base := newRecord(protocol.KindLocal, `C:\Work\Base`, []byte(`C:\Work\Base\Item`))
+	addition := newRecord(protocol.KindZoxide, `c:/work/base/item`, []byte(`c:/work/base/item`))
+	merged, admitted := MergeNewRecords([]Record{base}, []Record{addition})
+
+	if len(merged) != 1 || len(admitted) != 0 {
+		t.Fatalf("merged=%+v admitted=%+v, want base alias deduplicated", merged, admitted)
+	}
+	if string(merged[0].Path) != `C:\Work\Base\Item` || merged[0].Display != base.Display || merged[0].Payload != base.Payload {
+		t.Fatalf("base record changed: %+v", merged[0])
+	}
+}
+
+func readyZoxideCache(records []Record, metrics SourceMetrics) *ZoxideCache {
+	cache := &ZoxideCache{
+		ready:   make(chan struct{}),
+		records: cloneRecords(records),
+		metrics: metrics,
+	}
+	cache.once.Do(func() {})
+	close(cache.ready)
+	return cache
+}
+
+func TestBuildLocalValidatesWithoutTouchingZoxide(t *testing.T) {
+	var factoryCalls atomic.Int32
+	builder := &Builder{enumerate: testLocal}
+	builder.ConfigureFresh(func() (*ZoxideCache, error) {
+		factoryCalls.Add(1)
+		t.Fatal("BuildLocal invoked the zoxide factory")
+		return nil, nil
+	})
+
+	got, err := builder.BuildLocal(context.Background(), testRequest(protocol.PickerCP, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metrics.ZoxideOutcome != "not-run" || got.Metrics.ZoxideAttempts != 0 || factoryCalls.Load() != 0 {
+		t.Fatalf("local-only result=%+v factory-calls=%d", got, factoryCalls.Load())
+	}
+}
+
+func TestBuilderMethodsRejectNilBuilder(t *testing.T) {
+	var builder *Builder
+	for name, call := range map[string]func() error{
+		"local": func() error {
+			_, err := builder.BuildLocal(context.Background(), testRequest(protocol.PickerCD, false))
+			return err
+		},
+		"zoxide": func() error {
+			_, err := builder.LoadInitialZoxide(context.Background())
+			return err
+		},
+		"build": func() error {
+			_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false))
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := call(); err == nil {
+				t.Fatal("nil builder succeeded")
+			}
+		})
+	}
+}
+
+func TestBuildLocalRejectsInvalidContextAndPickerBeforeEnumeration(t *testing.T) {
+	cache := readyZoxideCache(nil, SourceMetrics{ZoxideOutcome: "ok"})
+	var enumerateCalls atomic.Int32
+	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error) {
+		enumerateCalls.Add(1)
+		return nil, nil
+	}}
+	cancelled, cancel := context.WithCancelCause(context.Background())
+	cause := errors.New("already cancelled")
+	cancel(cause)
+
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		request BuildRequest
+	}{
+		{name: "nil context", request: testRequest(protocol.PickerCD, false)},
+		{name: "cancelled context", ctx: cancelled, request: testRequest(protocol.PickerCD, false)},
+		{name: "unsupported picker", ctx: context.Background(), request: BuildRequest{Picker: protocol.Picker("unknown")}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := builder.BuildLocal(test.ctx, test.request); err == nil {
+				t.Fatal("invalid BuildLocal request succeeded")
+			}
+		})
+	}
+	if got := enumerateCalls.Load(); got != 0 {
+		t.Fatalf("enumeration calls=%d, want 0", got)
+	}
+}
+
+func TestLoadInitialZoxideUsesCachedStateAndReturnsClones(t *testing.T) {
+	source := newRecord(protocol.KindZoxide, "zoxide", []byte("/zoxide"))
+	cache := readyZoxideCache([]Record{source}, SourceMetrics{ZoxideOutcome: "ok", ZoxideAttempts: 1})
+	builder := &Builder{Cache: cache, Policy: ZoxideCached}
+
+	got, err := builder.LoadInitialZoxide(context.Background())
+	if err != nil || got.Discarded || got.Metrics.ZoxideOutcome != "ok" || !reflect.DeepEqual(paths(got.Records), []string{"/zoxide"}) {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+	got.Records[0].Path[0] = 'X'
+	again, _, err := cache.Records()
+	if err != nil || !reflect.DeepEqual(paths(again), []string{"/zoxide"}) {
+		t.Fatalf("cache records changed through result: records=%+v err=%v", again, err)
+	}
+}
+
+func TestLoadInitialZoxideWaitsForBlockingCacheLoad(t *testing.T) {
+	loadStarted := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	cache, err := NewZoxideCache(process.Runner{BeforeStart: func(process.Spec) error {
+		close(loadStarted)
+		<-release
+		return errors.New("controlled cache load")
+	}}, "blocked-zoxide", nil, zoxideFixtureTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder := &Builder{Cache: cache, Policy: ZoxideCached}
+	releaseCache := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseCache()
+	done := make(chan struct {
+		result InitialZoxideResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := builder.LoadInitialZoxide(context.Background())
+		done <- struct {
+			result InitialZoxideResult
+			err    error
+		}{result, err}
+	}()
+	<-loadStarted
+	select {
+	case got := <-done:
+		t.Fatalf("LoadInitialZoxide returned before cache release: result=%+v err=%v", got.result, got.err)
+	default:
+	}
+	releaseCache()
+	got := <-done
+	if got.err != nil || !got.result.Discarded || got.result.Metrics.ZoxideOutcome != "process-error" {
+		t.Fatalf("result=%+v err=%v", got.result, got.err)
+	}
+}
+
+func TestLoadInitialZoxideFreshPermitCancellationAndReuse(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	cache := readyZoxideCache(nil, SourceMetrics{ZoxideOutcome: "ok"})
+	var factoryCalls atomic.Int32
+	builder := &Builder{}
+	builder.ConfigureFresh(func() (*ZoxideCache, error) {
+		if factoryCalls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return cache, nil
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := builder.LoadInitialZoxide(context.Background())
+		firstDone <- err
+	}()
+	<-started
+
+	cause := errors.New("cancelled behind fresh permit")
+	waiterContext, cancelWaiter := context.WithCancelCause(context.Background())
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := builder.LoadInitialZoxide(waiterContext)
+		waiterDone <- err
+	}()
+	cancelWaiter(cause)
+	if err := <-waiterDone; !errors.Is(err, cause) {
+		t.Fatalf("waiter error=%v, want %v", err, cause)
+	}
+	if got := factoryCalls.Load(); got != 1 {
+		t.Fatalf("factory calls while permit held=%d, want 1", got)
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.LoadInitialZoxide(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := factoryCalls.Load(); got != 2 {
+		t.Fatalf("factory calls after permit release=%d, want 2", got)
+	}
+}
+
+func TestBuildReturnsFreshCacheErrorAndCancelsBlockedLocal(t *testing.T) {
+	localStarted := make(chan struct{})
+	factoryStarted := make(chan struct{})
+	localCancelled := make(chan struct{})
+	var localCancelOnce sync.Once
+	want := errors.New("fresh cache creation failed")
+	builder := &Builder{enumerate: func(ctx context.Context, _ protocol.Picker, _ pathutil.Location, _ LocalOptions) ([]Record, error) {
+		close(localStarted)
+		<-ctx.Done()
+		localCancelOnce.Do(func() { close(localCancelled) })
+		return nil, ctx.Err()
+	}}
+	builder.ConfigureFresh(func() (*ZoxideCache, error) {
+		<-localStarted
+		close(factoryStarted)
+		return nil, want
+	})
+	done := make(chan struct {
+		result BuildResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
+		done <- struct {
+			result BuildResult
+			err    error
+		}{result, err}
+	}()
+	<-factoryStarted
+
+	var completed struct {
+		result BuildResult
+		err    error
+	}
+	select {
+	case completed = <-done:
+		if !errors.Is(completed.err, want) || len(completed.result.Records) != 0 {
+			t.Fatalf("result=%+v err=%v, want fresh cache error", completed.result, completed.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Build remained blocked after fresh cache creation failed")
+	}
+	select {
+	case <-localCancelled:
+	case <-time.After(time.Second):
+		t.Fatalf("Build returned without cancelling and joining local enumeration: err=%v", completed.err)
+	}
+}
+
+func TestBuildInitialCompatibilityMergesLocalBeforeCachedZoxide(t *testing.T) {
+	cache := readyZoxideCache([]Record{
+		newRecord(protocol.KindZoxide, "same-zoxide", []byte("/same")),
+		newRecord(protocol.KindZoxide, "zoxide", []byte("/zoxide")),
+	}, SourceMetrics{ZoxideOutcome: "ok", ZoxideAttempts: 1})
+	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error) {
+		return []Record{
+			newRecord(protocol.KindLocal, "local", []byte("/local")),
+			newRecord(protocol.KindLocal, "same-local", []byte("/same")),
+		}, nil
+	}}
+
+	got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		newRecord(protocol.KindLocal, "local", []byte("/local")).FullKey(),
+		newRecord(protocol.KindLocal, "same-local", []byte("/same")).FullKey(),
+		newRecord(protocol.KindZoxide, "zoxide", []byte("/zoxide")).FullKey(),
+	}
+	if !reflect.DeepEqual(fullKeys(got.Records), want) || got.ZoxideDiscarded || got.Metrics.ZoxideOutcome != "ok" {
+		t.Fatalf("result=%+v, want keys=%q", got, want)
+	}
+}
+
 func TestBuilderIgnoresGenerationSemantically(t *testing.T) {
-	cache, _ := newObservedCache(t, "printf '/z/one\\n'\n", time.Second, nil)
+	cache, _ := newObservedCache(t, "printf '/z/one\\n'\n", zoxideFixtureTimeout, nil)
 	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
 	first := testRequest(protocol.PickerCP, false)
 	first.Generation = 7
@@ -66,40 +410,16 @@ func paths(records []Record) []string {
 	return result
 }
 
-func TestInitialBuilderOverlapsCacheLoadAndMergesLocalFirst(t *testing.T) {
-	localStarted := make(chan struct{})
-	zoxideStarted := make(chan struct{})
-	var localOnce, zoxideOnce sync.Once
-	cache, _ := newObservedCache(t, "printf '/z/same\\n/z/one\\n/z/two\\n'\n", time.Second, func(event process.ProcessEvent) {
-		if event.Phase == "start" {
-			zoxideOnce.Do(func() { close(zoxideStarted) })
-			<-localStarted
-		}
-	})
-	builder := &Builder{
-		Cache:  cache,
-		Policy: ZoxideCached,
-		enumerate: func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error) {
-			localOnce.Do(func() { close(localStarted) })
-			<-zoxideStarted
-			return testLocal(context.Background(), protocol.PickerCD, pathutil.Location{}, LocalOptions{})
-		},
+func fullKeys(records []Record) []string {
+	result := make([]string, len(records))
+	for index := range records {
+		result[index] = records[index].FullKey()
 	}
-	got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"/local", "/z/same", "/z/one", "/z/two"}; !reflect.DeepEqual(paths(got.Records), want) {
-		t.Fatalf("paths=%q, want %q", paths(got.Records), want)
-	}
-	if got.Metrics.ZoxideAttempts != 1 || got.Metrics.ZoxideStarts != 1 || got.Metrics.ZoxideExits != 1 ||
-		got.Metrics.ZoxideProcesses != 1 || got.Metrics.ZoxideLive != 0 || got.Metrics.ZoxideMaxLive != 1 {
-		t.Fatalf("metrics=%+v", got.Metrics)
-	}
+	return result
 }
 
 func TestCachedPolicyNoninitialBuildIsLocalOnlyWithoutReadyCache(t *testing.T) {
-	cache, _ := newObservedCache(t, "printf '/z/one\\n'\n", time.Second, nil)
+	cache, _ := newObservedCache(t, "printf '/z/one\\n'\n", zoxideFixtureTimeout, nil)
 	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
 	got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, false))
 	if err != nil || !reflect.DeepEqual(paths(got.Records), []string{"/local", "/z/same"}) {
@@ -123,7 +443,7 @@ func TestFreshPolicyRejectsIncompleteConfiguration(t *testing.T) {
 }
 
 func TestExplicitPolicyConfigurationClearsStaleStateAndSuppliesOneFreshPermit(t *testing.T) {
-	stale, _ := newObservedCache(t, "printf '/stale\\n'\n", time.Second, nil)
+	stale, _ := newObservedCache(t, "printf '/stale\\n'\n", zoxideFixtureTimeout, nil)
 	builder := &Builder{Cache: stale, Policy: ZoxideCached, NewCache: func() (*ZoxideCache, error) { return stale, nil }}
 	factory := func() (*ZoxideCache, error) { return stale, nil }
 	builder.ConfigureFresh(factory)
@@ -174,310 +494,5 @@ func TestFreshPolicyNoninitialBuildSkipsFactoryPermitAndProcess(t *testing.T) {
 	}
 	if factoryCalls.Load() != 0 {
 		t.Fatalf("factory calls=%d", factoryCalls.Load())
-	}
-}
-
-func TestFreshZeroTimeoutIsAuthoritativeForInitialBuild(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell timing fixture")
-	}
-	name, environment := zoxideExecutable(t, "sleep 0.1\nprintf '/z/one\\n'\n")
-	counts := new(processCounts)
-	builder := &Builder{enumerate: testLocal}
-	builder.ConfigureFresh(func() (*ZoxideCache, error) {
-		return NewZoxideCache(process.Runner{Observe: counts.observe}, name, environment, 0)
-	})
-	got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-	if err != nil || !reflect.DeepEqual(paths(got.Records), []string{"/local", "/z/same", "/z/one"}) {
-		t.Fatalf("got=%+v err=%v", got, err)
-	}
-	if attempts, starts, maxLive, exits := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 {
-		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
-	}
-}
-
-func TestFreshBuilderSerializesSessionQueriesAndCancelledWaiterDoesNotAttempt(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX executable fixture")
-	}
-	name, environment := zoxideExecutable(t, "printf '/z/one\\n'\n")
-	counts := new(processCounts)
-	started := make(chan struct{}, 3)
-	release := make(chan struct{}, 3)
-	runner := process.Runner{Observe: func(event process.ProcessEvent) {
-		counts.observe(event)
-		if event.Phase == "start" {
-			started <- struct{}{}
-			<-release
-		}
-	}}
-	var factoryCalls atomic.Int32
-	builder := &Builder{enumerate: testLocal}
-	builder.ConfigureFresh(func() (*ZoxideCache, error) {
-		factoryCalls.Add(1)
-		return NewZoxideCache(runner, name, environment, 0)
-	})
-	firstDone := make(chan error, 1)
-	go func() {
-		_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-		firstDone <- err
-	}()
-	<-started
-
-	cause := errors.New("cancelled behind permit")
-	cancellable, cancelWaiter := context.WithCancelCause(context.Background())
-	waiterCtx := &causeCheckedContext{Context: cancellable, checked: make(chan struct{})}
-	waiterDone := make(chan error, 1)
-	go func() {
-		_, err := builder.Build(waiterCtx, testRequest(protocol.PickerCD, true))
-		waiterDone <- err
-	}()
-	<-waiterCtx.checked
-	cancelWaiter(cause)
-	select {
-	case err := <-waiterDone:
-		if !errors.Is(err, cause) {
-			t.Fatalf("waiter err=%v", err)
-		}
-	case <-time.After(100 * time.Millisecond):
-		release <- struct{}{}
-		<-firstDone
-		<-waiterDone
-		t.Fatal("cancelled waiter remained blocked behind fresh generation")
-	}
-	if factoryCalls.Load() != 1 {
-		t.Fatalf("factory calls=%d", factoryCalls.Load())
-	}
-	if attempts, starts, maxLive, _ := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 {
-		t.Fatalf("counts=(%d,%d,%d)", attempts, starts, maxLive)
-	}
-
-	release <- struct{}{}
-	if err := <-firstDone; err != nil {
-		t.Fatal(err)
-	}
-	nextDone := make(chan error, 1)
-	go func() {
-		_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-		nextDone <- err
-	}()
-	<-started
-	release <- struct{}{}
-	if err := <-nextDone; err != nil {
-		t.Fatal(err)
-	}
-	if attempts, starts, maxLive, exits := counts.values(); factoryCalls.Load() != 2 || attempts != 2 || starts != 2 || maxLive != 1 || exits != 2 {
-		t.Fatalf("factory=%d counts=(%d,%d,%d,%d)", factoryCalls.Load(), attempts, starts, maxLive, exits)
-	}
-}
-
-func TestIndependentFreshSessionBuildersMayQueryConcurrently(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX executable fixture")
-	}
-	name, environment := zoxideExecutable(t, "printf '/z/one\\n'\n")
-	counts := new(processCounts)
-	started := make(chan struct{}, 2)
-	release := make(chan struct{}, 2)
-	runner := process.Runner{Observe: func(event process.ProcessEvent) {
-		counts.observe(event)
-		if event.Phase == "start" {
-			started <- struct{}{}
-			<-release
-		}
-	}}
-	newBuilder := func() *Builder {
-		builder := &Builder{enumerate: testLocal}
-		builder.ConfigureFresh(func() (*ZoxideCache, error) {
-			return NewZoxideCache(runner, name, environment, 0)
-		})
-		return builder
-	}
-	done := make(chan error, 2)
-	for range 2 {
-		builder := newBuilder()
-		go func() {
-			_, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-			done <- err
-		}()
-	}
-	for range 2 {
-		select {
-		case <-started:
-		case <-time.After(time.Second):
-			t.Fatal("independent session did not start concurrently")
-		}
-	}
-	if _, starts, maxLive, _ := counts.values(); starts != 2 || maxLive != 2 {
-		t.Fatalf("starts=%d max-live=%d", starts, maxLive)
-	}
-	release <- struct{}{}
-	release <- struct{}{}
-	for range 2 {
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-	}
-	if attempts, starts, maxLive, exits := counts.values(); attempts != 2 || starts != 2 || maxLive != 2 || exits != 2 {
-		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
-	}
-}
-
-func TestCPNeverLoadsCacheOrInvokesFreshFactory(t *testing.T) {
-	for _, policy := range []ZoxidePolicy{ZoxideCached, ZoxideFresh} {
-		t.Run(policy.String(), func(t *testing.T) {
-			cache, counts := newObservedCache(t, "printf '/z/one\\n'\n", time.Second, nil)
-			builder := &Builder{Cache: cache, Policy: policy, enumerate: testLocal}
-			if policy == ZoxideFresh {
-				builder.ConfigureFresh(func() (*ZoxideCache, error) {
-					t.Fatal("fresh factory called for cp")
-					return nil, nil
-				})
-			}
-			got, err := builder.Build(context.Background(), testRequest(protocol.PickerCP, true))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Metrics.ZoxideOutcome != "not-run" || got.Metrics.ZoxideAttempts != 0 || got.Metrics.ZoxideStarts != 0 {
-				t.Fatalf("metrics=%+v", got.Metrics)
-			}
-			if attempts, starts, _, _ := counts.values(); attempts != 0 || starts != 0 {
-				t.Fatalf("counts=(%d,%d)", attempts, starts)
-			}
-		})
-	}
-}
-
-func TestBuilderPreservesVirtualRecordAndDeduplicatesOnlyFilesystemTargets(t *testing.T) {
-	cache, _ := newObservedCache(t, "printf '/z/same\\n/z/other\\n'\n", time.Second, nil)
-	virtual := newVirtualDrivesRecord("..")
-	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error) {
-		return []Record{virtual, newRecord(protocol.KindLocal, "same", []byte("/z/same"))}, nil
-	}}
-	got, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got.Records) != 3 || got.Records[0].Kind != protocol.KindVirtual || got.Records[0].FullKey() != virtual.FullKey() || got.Records[0].Target.Kind != pathutil.KindDrives {
-		t.Fatalf("records=%+v", got.Records)
-	}
-}
-
-func TestLocalHardErrorCancelsAndWaitsForZoxide(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell timing fixture")
-	}
-	started := make(chan struct{})
-	var once sync.Once
-	cache, counts := newObservedCache(t, "sleep 10\n", 0, func(event process.ProcessEvent) {
-		if event.Phase == "start" {
-			once.Do(func() { close(started) })
-		}
-	})
-	want := errors.New("local failed")
-	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error) {
-		<-started
-		return nil, want
-	}}
-	if _, err := builder.Build(context.Background(), testRequest(protocol.PickerCD, true)); !errors.Is(err, want) {
-		t.Fatalf("err=%v", err)
-	}
-	if _, starts, _, exits := counts.values(); starts != 1 || exits != 1 {
-		t.Fatalf("starts=%d exits=%d", starts, exits)
-	}
-}
-
-func TestCallerCancellationBeforePrivateTimeoutWinsAndReaps(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell timing fixture")
-	}
-	started := make(chan struct{})
-	var once sync.Once
-	cache, counts := newObservedCache(t, "printf '/z/partial\\n'\nsleep 10\n", 250*time.Millisecond, func(event process.ProcessEvent) {
-		if event.Phase == "start" {
-			once.Do(func() { close(started) })
-		}
-	})
-	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
-	cause := errors.New("caller cancelled first")
-	ctx, cancel := context.WithCancelCause(context.Background())
-	done := make(chan struct {
-		result BuildResult
-		err    error
-	}, 1)
-	go func() {
-		result, err := builder.Build(ctx, testRequest(protocol.PickerCD, true))
-		done <- struct {
-			result BuildResult
-			err    error
-		}{result, err}
-	}()
-	<-started
-	cancel(cause)
-	got := <-done
-	if !errors.Is(got.err, cause) || len(got.result.Records) != 0 {
-		t.Fatalf("result=%+v err=%v", got.result, got.err)
-	}
-	if attempts, starts, maxLive, exits := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 {
-		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
-	}
-}
-
-func TestBuilderCancellationAfterLocalEnumerationPreservesCause(t *testing.T) {
-	cache, _ := newObservedCache(t, "printf '/z/one\\n'\n", time.Second, nil)
-	if err := cache.Load(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	want := errors.New("session stopped")
-	for _, request := range []BuildRequest{testRequest(protocol.PickerCP, false), testRequest(protocol.PickerCD, false)} {
-		t.Run(string(request.Picker), func(t *testing.T) {
-			ctx, cancel := context.WithCancelCause(context.Background())
-			builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: func(context.Context, protocol.Picker, pathutil.Location, LocalOptions) ([]Record, error) {
-				cancel(want)
-				return testLocal(context.Background(), request.Picker, pathutil.Location{}, LocalOptions{})
-			}}
-			if _, err := builder.Build(ctx, request); !errors.Is(err, want) {
-				t.Fatalf("err=%v", err)
-			}
-		})
-	}
-}
-
-func TestBuilderZoxideTimeoutIsSoftAndDiscardsPartialOutput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX shell timing fixture")
-	}
-	exitObserved := make(chan struct{})
-	releaseExit := make(chan struct{})
-	var exitOnce sync.Once
-	cache, counts := newObservedCache(t, "printf '/z/partial\\n'\nsleep 10\n", 20*time.Millisecond, func(event process.ProcessEvent) {
-		if event.Phase == "exit" {
-			exitOnce.Do(func() { close(exitObserved) })
-			<-releaseExit
-		}
-	})
-	builder := &Builder{Cache: cache, Policy: ZoxideCached, enumerate: testLocal}
-	ctx, cancel := context.WithCancelCause(context.Background())
-	done := make(chan struct {
-		result BuildResult
-		err    error
-	}, 1)
-	go func() {
-		result, err := builder.Build(ctx, testRequest(protocol.PickerCD, true))
-		done <- struct {
-			result BuildResult
-			err    error
-		}{result, err}
-	}()
-	<-exitObserved
-	cancel(errors.New("caller cancelled after private timeout"))
-	close(releaseExit)
-	completed := <-done
-	got, err := completed.result, completed.err
-	if err != nil || len(got.Records) != 2 || !got.ZoxideDiscarded || got.Metrics.ZoxideOutcome != "timeout" {
-		t.Fatalf("got=%+v err=%v", got, err)
-	}
-	if attempts, starts, maxLive, exits := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 {
-		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
 	}
 }

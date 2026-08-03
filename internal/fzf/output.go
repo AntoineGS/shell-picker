@@ -23,14 +23,20 @@ func ParseOutput(picker protocol.Picker, output []byte, exitCode int) (Result, e
 	if exitCode != 0 && exitCode != 1 && exitCode != 130 {
 		return Result{}, fmt.Errorf("fzf: unexpected exit code %d", exitCode)
 	}
+	if exitCode == 1 {
+		return Result{}, errors.New("fzf: no match or search error (exit code 1)")
+	}
 	frames, err := nulFrames(output)
 	if err != nil {
 		return Result{}, err
 	}
-	if exitCode == 1 || exitCode == 130 {
+	if exitCode == 130 {
 		result := Result{Aborted: true, ExitCode: exitCode}
 		switch picker {
 		case protocol.PickerCD:
+			if exitCode == 130 && len(frames) == 0 {
+				return result, nil
+			}
 			if len(frames) != 1 {
 				return Result{}, errors.New("fzf: malformed cd abort output")
 			}

@@ -25,9 +25,9 @@ func assertDedicatedZoxideOutcome(events []traceEvent, scenario dedicatedScenari
 	if !ok {
 		return nil
 	}
-	outcome, err := traceZoxideOutcome(events, scenario.generation)
-	if err != nil {
-		return err
+	outcome := traceBenchmarkZoxideOutcome(events, scenario.generation)
+	if outcome == "" {
+		return errors.New("missing measured zoxide outcome")
 	}
 	if outcome != expected {
 		return fmt.Errorf("zoxide mode %q produced outcome %q; want %q", scenario.zoxideMode, outcome, expected)

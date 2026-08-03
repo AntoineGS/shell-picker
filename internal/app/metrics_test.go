@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AntoineGS/shell-picker/internal/candidate"
+	"github.com/AntoineGS/shell-picker/internal/session"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
 )
 
@@ -71,5 +73,37 @@ func TestPreviewMetricLabelsAreCardinalityBounded(t *testing.T) {
 	}
 	if len(metrics.rendererStarted) != maxMetricLabels || metrics.rendererOverflow != 2 {
 		t.Fatalf("labels=%d overflow=%d", len(metrics.rendererStarted), metrics.rendererOverflow)
+	}
+}
+
+func TestPickerMetricsRecordsOneTerminalZoxideSourceWithoutReplacingPending(t *testing.T) {
+	metrics := &pickerMetrics{sources: candidate.SourceMetrics{ZoxideOutcome: "not-run"}}
+	metrics.recordTransition(session.TransitionResult{Metrics: session.TransitionMetrics{
+		QueueWait:         2 * time.Microsecond,
+		TransformDuration: 3 * time.Microsecond,
+		Sources:           candidate.SourceMetrics{LocalDuration: 5 * time.Microsecond, ZoxideOutcome: "pending"},
+	}})
+
+	source := candidate.SourceMetrics{
+		ZoxideDuration: 7 * time.Microsecond, ZoxideOutcome: "ok",
+		ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideProcesses: 1, ZoxideMaxLive: 1,
+	}
+	if !metrics.recordZoxideSource(source) {
+		t.Fatal("first terminal source was not recorded")
+	}
+	metrics.recordTransition(session.TransitionResult{Metrics: session.TransitionMetrics{
+		Sources: candidate.SourceMetrics{ZoxideDuration: 11 * time.Microsecond, ZoxideOutcome: "ok", ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1, ZoxideProcesses: 1, ZoxideMaxLive: 1},
+	}})
+	if metrics.recordZoxideSource(source) {
+		t.Fatal("duplicate terminal source was recorded")
+	}
+
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	if metrics.sources.LocalDuration != 5*time.Microsecond || metrics.sources.ZoxideDuration != 7*time.Microsecond ||
+		metrics.sources.ZoxideOutcome != "ok" || metrics.sources.ZoxideAttempts != 1 || metrics.sources.ZoxideStarts != 1 ||
+		metrics.sources.ZoxideExits != 1 || metrics.sources.ZoxideProcesses != 1 || metrics.sources.ZoxideLive != 0 ||
+		metrics.sources.ZoxideMaxLive != 1 {
+		t.Fatalf("metrics=%+v", metrics.sources)
 	}
 }

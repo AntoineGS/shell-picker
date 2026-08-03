@@ -5,13 +5,14 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
+	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/callback"
 	"github.com/AntoineGS/shell-picker/internal/candidate"
@@ -54,7 +55,35 @@ func TestRunPickerOwnsOneSessionAndOneFZF(t *testing.T) {
 	}
 }
 
+func TestRunPickerCPClosesLocalInputBeforeFZFLaunch(t *testing.T) {
+	fixture := newPickerFixture(t, protocol.PickerCP)
+	counts := newProcessCounts()
+	fixture.dependencies.ProcessRunner.Observe = counts.observe
+	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
+		framed, err := io.ReadAll(config.Input)
+		if err != nil {
+			return fzf.Result{}, err
+		}
+		if _, err := recordForFramedPathE(framed, fixture.file); err != nil {
+			return fzf.Result{}, err
+		}
+		return fzf.Result{Aborted: true, ExitCode: 130}, nil
+	}
+
+	outcome, err := RunPicker(context.Background(), fixture.options, fixture.dependencies)
+	if err != nil || outcome.Status != protocol.StatusAborted {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	attempts, starts, maxLive := counts.values()
+	if attempts != 0 || starts != 0 || maxLive != 0 {
+		t.Fatalf("zoxide processes=(attempts=%d starts=%d maxLive=%d)", attempts, starts, maxLive)
+	}
+}
+
 func TestRunPickerCompactsZoxideHomeDisplay(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
 	fixture := newPickerFixture(t, protocol.PickerCD)
 	home := t.TempDir()
 	initialLocation := filepath.Join(home, "start")
@@ -84,6 +113,50 @@ func TestRunPickerCompactsZoxideHomeDisplay(t *testing.T) {
 	}
 	if outcome.Status != protocol.StatusAccepted || len(outcome.Paths) != 1 || string(outcome.Paths[0]) != zoxideTarget {
 		t.Fatalf("outcome=%+v", outcome)
+	}
+}
+
+func TestRunPickerPublishesCompletedZoxideBeforeFZFConsumesInput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture")
+	}
+	fixture := newPickerFixture(t, protocol.PickerCD)
+	zoxideTarget := t.TempDir()
+	fixture.dependencies.ZoxidePath = zoxideFixture(t, zoxideTarget)
+	counts := newProcessCounts()
+	zoxideExited := make(chan struct{}, 1)
+	fixture.dependencies.ProcessRunner.Observe = func(event process.ProcessEvent) {
+		counts.observe(event)
+		if event.Phase == "exit" {
+			zoxideExited <- struct{}{}
+		}
+	}
+	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
+		select {
+		case <-zoxideExited:
+		case <-time.After(2 * time.Second):
+			return fzf.Result{}, errors.New("zoxide did not complete before fzf input consumption")
+		}
+		records := readFramedRecordsUntil(t, config.Input, fixture.child, zoxideTarget)
+		for _, path := range []string{fixture.child, zoxideTarget} {
+			wire, err := protocol.ParseRecord(records[path])
+			if err != nil {
+				return fzf.Result{}, err
+			}
+			if path == zoxideTarget && wire.Kind != protocol.KindZoxide {
+				return fzf.Result{}, fmt.Errorf("zoxide record kind=%q", wire.Kind)
+			}
+		}
+		return fzf.Result{Aborted: true, ExitCode: 130}, nil
+	}
+
+	outcome, err := RunPicker(context.Background(), fixture.options, fixture.dependencies)
+	if err != nil || outcome.Status != protocol.StatusAborted {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+	attempts, starts, maxLive, exits, live := counts.lifecycleValues()
+	if attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 || live != 0 {
+		t.Fatalf("processes=(attempts=%d starts=%d maxLive=%d exits=%d live=%d)", attempts, starts, maxLive, exits, live)
 	}
 }
 
@@ -175,9 +248,11 @@ func TestRunPickerRejectsSelectionFromSupersededSnapshot(t *testing.T) {
 	fixture.dependencies.launchFZF = func(ctx context.Context, config fzf.Config) (fzf.Result, error) {
 		stale := recordForPath(t, config.Input, fixture.file)
 		client := callbackClient(t, config)
-		if _, err := client.Event(ctx, sessionipc.EventRequest{Opcode: protocol.OpParent, Key: "left"}); err != nil {
+		response, err := client.Event(ctx, sessionipc.EventRequest{Opcode: protocol.OpParent, Key: "left"})
+		if err != nil {
 			t.Fatal(err)
 		}
+		finalizeTestEvent(t, ctx, client, response, false)
 		return fzf.Result{Key: "enter", Records: [][]byte{stale}}, nil
 	}
 	if outcome, err := RunPicker(context.Background(), fixture.options, fixture.dependencies); err == nil {
@@ -263,10 +338,12 @@ func TestRunPickerAppliesZoxidePolicyProcessBudgets(t *testing.T) {
 					if err != nil || response.Effect.ReloadGeneration == 0 {
 						t.Fatalf("parent transform=%+v err=%v", response, err)
 					}
-					generation, err := client.Load(ctx, sessionipc.LoadRequest{Generation: response.Effect.ReloadGeneration})
+					finalizeTestEvent(t, ctx, client, response, true)
+					generation, err := client.Load(ctx, sessionipc.LoadRequest{Generation: response.Effect.ReloadGeneration, EventID: response.EventID})
 					if err != nil {
 						t.Fatal(err)
 					}
+					finalizeTestLoad(t, ctx, client, response.EventID, true)
 					for _, raw := range bytes.Split(bytes.TrimSuffix(generation, []byte{0}), []byte{0}) {
 						wire, err := protocol.ParseRecord(raw)
 						if err != nil {
@@ -331,16 +408,20 @@ func TestRunPickerMissingZoxideAttemptsWithoutStarting(t *testing.T) {
 }
 
 func TestRunPickerNavigationRemovesZoxideCandidates(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell fixture")
+	}
 	fixture := newPickerFixture(t, protocol.PickerCD)
 	zoxideTarget := t.TempDir()
 	fixture.dependencies.ZoxidePath = zoxideFixture(t, zoxideTarget)
 	fixture.dependencies.launchFZF = func(ctx context.Context, config fzf.Config) (fzf.Result, error) {
-		zoxideRecord := recordForPath(t, config.Input, zoxideTarget)
+		records := readFramedRecordsUntil(t, config.Input, zoxideTarget, fixture.child)
+		zoxideRecord := records[zoxideTarget]
 		wire, err := protocol.ParseRecord(zoxideRecord)
 		if err != nil || wire.Kind != protocol.KindZoxide {
 			t.Fatalf("zoxide record=%q kind=%q err=%v", zoxideRecord, wire.Kind, err)
 		}
-		childRecord := recordForPath(t, config.Input, fixture.child)
+		childRecord := records[fixture.child]
 		client := callbackClient(t, config)
 		response, err := client.Event(ctx, sessionipc.EventRequest{
 			Opcode:            protocol.OpForward,
@@ -349,10 +430,12 @@ func TestRunPickerNavigationRemovesZoxideCandidates(t *testing.T) {
 		if err != nil || response.Effect.ReloadGeneration == 0 {
 			t.Fatalf("forward transform=%+v err=%v", response, err)
 		}
-		generation, err := client.Load(ctx, sessionipc.LoadRequest{Generation: response.Effect.ReloadGeneration})
+		finalizeTestEvent(t, ctx, client, response, true)
+		generation, err := client.Load(ctx, sessionipc.LoadRequest{Generation: response.Effect.ReloadGeneration, EventID: response.EventID})
 		if err != nil {
 			t.Fatal(err)
 		}
+		finalizeTestLoad(t, ctx, client, response.EventID, true)
 		for _, raw := range bytes.Split(bytes.TrimSuffix(generation, []byte{0}), []byte{0}) {
 			wire, err := protocol.ParseRecord(raw)
 			if err != nil {
@@ -367,128 +450,4 @@ func TestRunPickerNavigationRemovesZoxideCandidates(t *testing.T) {
 	if _, err := RunPicker(context.Background(), fixture.options, fixture.dependencies); err != nil {
 		t.Fatal(err)
 	}
-}
-
-type pickerFixture struct {
-	options      PickerOptions
-	dependencies Dependencies
-	cwd, child   string
-	file         string
-	tty          *os.File
-}
-
-func newPickerFixture(t *testing.T, picker protocol.Picker) pickerFixture {
-	t.Helper()
-	cwd := t.TempDir()
-	child := filepath.Join(cwd, "child")
-	if err := os.Mkdir(child, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	file := filepath.Join(cwd, "readme.md")
-	if err := os.WriteFile(file, []byte("title\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	tty, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = tty.Close() })
-	return pickerFixture{
-		cwd: cwd, child: child, file: file, tty: tty,
-		options: PickerOptions{Picker: picker, CWD: []byte(cwd), Home: []byte(cwd), Output: protocol.OutputNUL,
-			FZFPath: "fzf", ExecutablePath: filepath.Join(cwd, "shell-picker"),
-			ZoxidePolicy: candidate.ZoxideCached, ZoxideTimeout: candidate.DefaultZoxideTimeout()},
-		dependencies: Dependencies{ProcessRunner: process.Runner{}, ZoxidePath: filepath.Join(cwd, "missing-zoxide"),
-			Environment: []string{"PATH=/usr/bin", "SHELL_PICKER_TOKEN=forged"}, ForegroundTTY: tty},
-	}
-}
-
-func recordForPath(t *testing.T, framed []byte, wanted string) []byte {
-	t.Helper()
-	for _, raw := range bytes.Split(bytes.TrimSuffix(framed, []byte{0}), []byte{0}) {
-		wire, err := protocol.ParseRecord(raw)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path, err := protocol.DecodePath(wire.Payload)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if string(path) == wanted {
-			return bytes.Clone(raw)
-		}
-	}
-	t.Fatalf("path %q absent from %q", wanted, framed)
-	return nil
-}
-
-func callbackClient(t *testing.T, config fzf.Config) *sessionipc.Client {
-	t.Helper()
-	values := map[string]string{"SHELL_PICKER_ADDR": config.CallbackAddress, "SHELL_PICKER_TOKEN": config.CallbackToken}
-	client, err := sessionipc.NewClientFromEnv(func(key string) string { return values[key] })
-	if err != nil {
-		t.Fatal(err)
-	}
-	return client
-}
-
-type processCounts struct {
-	mu                      sync.Mutex
-	attempts, starts, exits int
-	live, maxLive           int
-}
-
-func newProcessCounts() *processCounts { return &processCounts{} }
-func (counts *processCounts) observe(event process.ProcessEvent) {
-	counts.mu.Lock()
-	defer counts.mu.Unlock()
-	switch event.Phase {
-	case "attempt":
-		counts.attempts++
-	case "start":
-		counts.starts++
-		counts.live++
-		if counts.live > counts.maxLive {
-			counts.maxLive = counts.live
-		}
-	case "exit":
-		counts.live--
-		counts.exits++
-	}
-}
-
-func (counts *processCounts) lifecycleValues() (attempts, starts, maxLive, exits, live int) {
-	counts.mu.Lock()
-	defer counts.mu.Unlock()
-	return counts.attempts, counts.starts, counts.maxLive, counts.exits, counts.live
-}
-func (counts *processCounts) values() (int, int, int) {
-	counts.mu.Lock()
-	defer counts.mu.Unlock()
-	return counts.attempts, counts.starts, counts.maxLive
-}
-
-func zoxideFixture(t *testing.T, path string) string {
-	t.Helper()
-	executable := filepath.Join(t.TempDir(), "zoxide")
-	if err := os.WriteFile(executable, []byte("#!/bin/sh\nprintf '%s\\n' '"+path+"'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return executable
-}
-
-func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
-}
-
-func contains(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
 }

@@ -5,6 +5,8 @@ package integration
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"unsafe"
@@ -13,10 +15,12 @@ import (
 )
 
 type windowsProcessNode struct {
-	pid, ppid uint32
-	exe       string
-	command   string
-	queryErr  error
+	pid, ppid      uint32
+	exe            string
+	command        string
+	creationMarker uint64
+	identity       ownedProcessIdentity
+	queryErr       error
 }
 
 func (session *windowsTerminalSession) TraceEvents() []traceEvent {
@@ -51,9 +55,26 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 		}
 		node := nodes[pid]
 		if node.queryErr != nil {
-			t.Fatalf("query descendant process %d: %v", pid, node.queryErr)
+			// A Toolhelp snapshot can retain a just-exited child whose process
+			// handle is already invalid. It is not a live identity to validate;
+			// stable descendants are still checked below.
+			continue
 		}
 		if strings.EqualFold(node.exe, wantFZF) {
+			identity, identityErr := captureWindowsProcessIdentity(&node)
+			if identityErr != nil {
+				if isTransientProcessIdentityError(identityErr) {
+					continue
+				}
+				t.Fatalf("capture fzf process identity for pid %d: %v", pid, identityErr)
+			}
+			node.identity = identity
+			nodes[pid] = node
+			t.Cleanup(func() {
+				if err := identity.Close(); err != nil {
+					t.Errorf("close fzf process identity %d: %v", identity.PID(), err)
+				}
+			})
 			fzfCount++
 			if node.ppid != uint32(session.pid) {
 				t.Fatalf("fzf pid %d parent=%d want %d", pid, node.ppid, session.pid)
@@ -79,6 +100,98 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 	}
 }
 
+func (session *windowsTerminalSession) AssertNoLiveDescendants(t *testing.T) {
+	t.Helper()
+	nodes, err := snapshotWindowsProcesses(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := uint32(session.pid)
+	if _, exists := nodes[root]; !exists {
+		return
+	}
+	descendants := map[uint32]bool{root: true}
+	for changed := true; changed; {
+		changed = false
+		for pid, node := range nodes {
+			if !descendants[pid] && descendants[node.ppid] {
+				descendants[pid], changed = true, true
+			}
+		}
+	}
+	for pid := range descendants {
+		if pid != root {
+			t.Fatalf("picker retained live descendant %d after close", pid)
+		}
+	}
+}
+
+func (session *windowsTerminalSession) TrackLiveDescendants(t *testing.T) []trackedProcess {
+	t.Helper()
+	nodes, err := snapshotWindowsProcesses(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := uint32(session.pid)
+	if _, exists := nodes[root]; !exists {
+		t.Fatalf("picker root %d missing while tracking descendants", root)
+	}
+	descendants := map[uint32]bool{root: true}
+	for changed := true; changed; {
+		changed = false
+		for pid, node := range nodes {
+			if !descendants[pid] && descendants[node.ppid] {
+				descendants[pid], changed = true, true
+			}
+		}
+	}
+	pids := make([]int, 0, len(descendants)-1)
+	for pid := range descendants {
+		if pid != root {
+			pids = append(pids, int(pid))
+		}
+	}
+	sort.Ints(pids)
+	tracked := make([]trackedProcess, 0, len(pids))
+	wantFZF, err := filepath.Abs(session.fzfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fzfCount := 0
+	for _, rawPID := range pids {
+		pid := uint32(rawPID)
+		node := nodes[pid]
+		if node.queryErr != nil {
+			// Toolhelp can report a short-lived descendant after it has exited
+			// but before the snapshot's PID record disappears. It is not an
+			// observable live identity to retain; stable descendants below are
+			// still held by process handles.
+			continue
+		}
+		identity, identityErr := captureWindowsProcessIdentity(&node)
+		if identityErr != nil {
+			if isTransientProcessIdentityError(identityErr) {
+				continue
+			}
+			t.Fatalf("capture tracked %s process %d: %v", filepath.Base(node.exe), rawPID, identityErr)
+		}
+		node.identity = identity
+		if strings.EqualFold(node.exe, wantFZF) {
+			fzfCount++
+		}
+		tracked = append(tracked, trackedProcess{role: filepath.Base(node.exe), identity: identity})
+	}
+	if fzfCount != 1 {
+		t.Fatalf("tracked fzf descendant count=%d want 1; descendants=%+v", fzfCount, pids)
+	}
+	return registerTrackedProcesses(t, tracked)
+}
+
+func (session *windowsTerminalSession) AssertTrackedProcessesGone(t *testing.T, tracked []trackedProcess) {
+	t.Helper()
+	assertTrackedProcessesGone(t, tracked)
+}
+
 func snapshotWindowsProcesses(withCommandLine bool) (map[uint32]windowsProcessNode, error) {
 	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -96,18 +209,39 @@ func snapshotWindowsProcesses(withCommandLine bool) (map[uint32]windowsProcessNo
 			continue
 		}
 		exe, queryErr := queryWindowsProcessImage(handle)
+		var creationMarker uint64
+		if queryErr == nil {
+			creationMarker, queryErr = windowsProcessCreationTime(handle)
+		}
 		command := ""
 		if queryErr == nil && withCommandLine {
 			command, queryErr = queryWindowsProcessCommandLine(handle)
 		}
 		_ = windows.CloseHandle(handle)
-		node.exe, node.command, node.queryErr = exe, command, queryErr
+		node.exe, node.command, node.creationMarker, node.queryErr = exe, command, creationMarker, queryErr
 		nodes[entry.ProcessID] = node
 	}
 	if err != windows.ERROR_NO_MORE_FILES {
 		return nil, fmt.Errorf("Toolhelp process iteration: %w", err)
 	}
 	return nodes, nil
+}
+
+func captureWindowsProcessIdentity(node *windowsProcessNode) (ownedProcessIdentity, error) {
+	captured, err := captureOwnedProcessIdentities(
+		[]processIdentityEntry{{pid: int(node.pid), marker: strconv.FormatUint(node.creationMarker, 10)}},
+		openOwnedProcessIdentity,
+		verifyProcessIdentityMarker,
+		isTransientProcessIdentityError,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if len(captured) != 1 {
+		return nil, errProcessIdentityChanged
+	}
+	node.identity = captured[0].identity
+	return node.identity, nil
 }
 
 func queryWindowsProcessImage(handle windows.Handle) (string, error) {

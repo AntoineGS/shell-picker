@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -282,6 +281,15 @@ func (s winStage) String() string {
 }
 
 func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership, error) {
+	return startWithInjectedFailureObservedOwned(stage, nil)
+}
+
+func startWithInjectedFailureObserved(stage winStage, observer func(ProcessEvent)) (error, int) {
+	err, childPID, _, _ := startWithInjectedFailureObservedOwned(stage, observer)
+	return err, childPID
+}
+
+func startWithInjectedFailureObservedOwned(stage winStage, observer func(ProcessEvent)) (error, int, *testHandleOwnership, error) {
 	fail := error(syscall.Errno(windows.ERROR_INVALID_FUNCTION))
 	oldCreateFile, oldDuplicate, oldPipe, oldClose := winCreateFile, winDuplicateHandle, winCreatePipe, winCloseHandle
 	oldCloseFile := winCloseFile
@@ -416,7 +424,7 @@ func startWithInjectedFailure(stage winStage) (error, int, *testHandleOwnership,
 	}
 	spec := helperSpec("block")
 	spec.Stdin, spec.Stdout, spec.Stderr = bytes.NewReader(nil), nil, &bytes.Buffer{}
-	_, err := (Runner{}).Start(context.Background(), spec)
+	_, err := (Runner{Observe: observer}).Start(context.Background(), spec)
 	return err, childPID, ownership, fail
 }
 
@@ -454,28 +462,4 @@ func TestCleanupFailuresDoNotMaskStartFailure(t *testing.T) {
 	if terminates.Load() != 1 || waits.Load() != 1 || closes.Load() < 6 {
 		t.Fatalf("cleanup attempts terminate=%d wait=%d close=%d", terminates.Load(), waits.Load(), closes.Load())
 	}
-}
-
-var getProcessHandleCount = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessHandleCount")
-
-func processHandleCount(t *testing.T) uint32 {
-	t.Helper()
-	var count uint32
-	result, _, err := getProcessHandleCount.Call(uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&count)))
-	if result == 0 {
-		t.Fatal(err)
-	}
-	return count
-}
-
-func assertHandleCountReturns(t *testing.T, want uint32) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if processHandleCount(t) <= want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("handle count=%d want<=%d", processHandleCount(t), want)
 }

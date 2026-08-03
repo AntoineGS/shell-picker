@@ -1,19 +1,19 @@
 package integration
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +25,7 @@ var (
 	performanceSamples  = flag.Int("samples", 50, "warm sample count")
 	performanceOutput   = flag.String("output", "performance.json", "JSON output path")
 	performanceBaseline = flag.String("baseline", "host-baseline.json", "host baseline path")
+	performanceTraceDir = flag.String("trace-dir", "", "optional dedicated per-sample trace directory")
 )
 
 var errPrebuiltBinaryRequired = errors.New("dedicated performance requires prebuilt -binary")
@@ -41,34 +42,6 @@ func TestDedicatedHarnessDefaultsAndValidation(t *testing.T) {
 	}
 	if err := validateDedicatedOptions(os.Args[0], 7); err != nil {
 		t.Fatalf("explicit smoke samples rejected: %v", err)
-	}
-}
-
-func TestDedicatedTraceCountersRequireMeasuredExitAndNoLiveRemainder(t *testing.T) {
-	valid := []traceEvent{{Event: "generation.publish", ZoxideAttempts: 1, ZoxideStarts: 1,
-		ZoxideExits: 1, ZoxideProcesses: 1, ZoxideLive: 0, ZoxideMaxLive: 1}}
-	counters, err := traceBenchmarkCounters(valid, 0)
-	if err != nil || counters.ZoxideExits != 1 || counters.ZoxideProcesses != 1 {
-		t.Fatalf("valid counters=%+v err=%v", counters, err)
-	}
-	mutated := []traceEvent{{Event: "generation.publish", ZoxideAttempts: 1, ZoxideStarts: 1,
-		ZoxideExits: 0, ZoxideProcesses: 1, ZoxideLive: 1, ZoxideMaxLive: 1}}
-	if _, err := traceBenchmarkCounters(mutated, 0); err == nil {
-		t.Fatal("missing measured exit and live remainder accepted")
-	}
-}
-
-func TestDedicatedNavigationCountersUseMeasuredGeneration(t *testing.T) {
-	events := []traceEvent{{Event: "generation.publish", Generation: 1, ZoxideOutcome: "ok", ZoxideAttempts: 1,
-		ZoxideStarts: 1, ZoxideExits: 1, ZoxideProcesses: 1, ZoxideMaxLive: 1},
-		{Event: "generation.publish", Generation: 2, ZoxideOutcome: "not-run"}}
-	counters, err := traceBenchmarkCounters(events, 2)
-	if err != nil || counters != (integrationpkg.BenchmarkCounters{}) {
-		t.Fatalf("navigation counters=%+v err=%v", counters, err)
-	}
-	events[1].ZoxideOutcome = "ok"
-	if _, err := traceBenchmarkCounters(events, 2); err == nil {
-		t.Fatal("measured navigation generation without not-run outcome accepted")
 	}
 }
 
@@ -135,6 +108,7 @@ type dedicatedScenario struct {
 	timeout                          time.Duration
 	generation                       uint64
 	expected                         integrationpkg.BenchmarkCounters
+	expectedZoxideOutcome            string
 }
 
 func TestDedicatedTargets(t *testing.T) {
@@ -146,38 +120,50 @@ func TestDedicatedTargets(t *testing.T) {
 	metadata := collectBenchmarkMetadata(t, binary)
 	baseline := readHostBaseline(t, *performanceBaseline)
 	status := integrationpkg.QualifyBaseline(metadata, baseline)
+	zoxideSource := buildPerformanceZoxideHelper(t)
+	zoxideDirectory := t.TempDir()
+	zoxideName := "zoxide"
+	if runtime.GOOS == "windows" {
+		zoxideName += ".exe"
+	}
+	zoxideExecutable := filepath.Join(zoxideDirectory, zoxideName)
+	if err := copyExecutable(zoxideSource, zoxideExecutable); err != nil {
+		t.Fatal(err)
+	}
+	warmPerformanceZoxideHelper(t, zoxideExecutable)
+	if *performanceTraceDir != "" {
+		if err := os.MkdirAll(*performanceTraceDir, 0o700); err != nil {
+			t.Fatalf("create dedicated trace directory: %v", err)
+		}
+	}
 	defaultTimeout := 75 * time.Millisecond
 	if runtime.GOOS == "windows" {
 		defaultTimeout = 150 * time.Millisecond
 	}
-	scenarios := []dedicatedScenario{
-		{name: "startup-local-only", policy: "cached", zoxideMode: "empty", timeout: defaultTimeout,
-			expected: zoxideCounters(1, 1)},
-		{name: "startup-zoxide-present", policy: "cached", zoxideMode: "present", timeout: defaultTimeout,
-			expected: zoxideCounters(1, 1)},
-		{name: "startup-zoxide-missing", policy: "cached", zoxideMode: "missing", timeout: defaultTimeout,
-			expected: zoxideCounters(1, 0)},
-		{name: "startup-zoxide-spawn-failure", policy: "cached", zoxideMode: "spawn-failure", timeout: defaultTimeout,
-			expected: zoxideCounters(1, 0)},
-		{name: "startup-zoxide-timeout", policy: "cached", zoxideMode: "timeout", timeout: defaultTimeout,
-			expected: zoxideCounters(1, 1)},
-		{name: "navigation-local-only", policy: "cached", zoxideMode: "present", action: "event", timeout: defaultTimeout, generation: 2,
-			expected: integrationpkg.BenchmarkCounters{}},
-		{name: "preview-dispatch", policy: "cached", zoxideMode: "present", action: "preview", timeout: defaultTimeout,
-			expected: zoxideCounters(1, 1)},
-	}
+	scenarios := dedicatedPickerScenarios(defaultTimeout)
 	reports := make([]integrationpkg.BenchmarkReport, 0, len(scenarios))
 	for _, scenario := range scenarios {
 		scenario := scenario
+		sampleNumber := 0
 		report, err := integrationpkg.RunBenchmark(context.Background(), integrationpkg.BenchmarkOptions{
 			Scenario: scenario.name, Samples: *performanceSamples, Policy: scenario.policy, Timeout: scenario.timeout,
 			Expected: &scenario.expected, Metadata: metadata,
 			Measure: func(context.Context) (integrationpkg.BenchmarkSample, error) {
-				return runDedicatedPickerSample(t, binary, scenario)
+				sampleNumber++
+				return runDedicatedPickerSample(t, binary, scenario, zoxideExecutable, sampleNumber)
 			},
 		})
 		if err != nil {
 			t.Fatalf("scenario %s: %v", scenario.name, err)
+		}
+		if scenario.zoxideMode == "blocked" {
+			if report.StartupDuration == nil || report.EnrichmentDuration == nil ||
+				report.StartupDuration.P50US >= report.EnrichmentDuration.P50US {
+				t.Fatalf("blocked source did not separate startup/enrichment: %+v", report)
+			}
+			if report.LifecycleDuration == nil || report.LifecycleDuration.P50US < report.EnrichmentDuration.P50US {
+				t.Fatalf("blocked source lifecycle=%+v enrichment=%+v", report.LifecycleDuration, report.EnrichmentDuration)
+			}
 		}
 		reports = append(reports, report)
 	}
@@ -187,6 +173,27 @@ func TestDedicatedTargets(t *testing.T) {
 	writePerformanceJSON(t, *performanceOutput, output)
 	if status == "qualified" {
 		enforceDedicatedGoals(t, reports)
+	}
+}
+
+func dedicatedPickerScenarios(defaultTimeout time.Duration) []dedicatedScenario {
+	return []dedicatedScenario{
+		{name: "startup-local-only", policy: "cached", zoxideMode: "empty", timeout: defaultTimeout,
+			expected: zoxideCounters(1, 1), expectedZoxideOutcome: "ok"},
+		{name: "startup-zoxide-present", policy: "cached", zoxideMode: "present", timeout: defaultTimeout,
+			expected: zoxideCounters(1, 1), expectedZoxideOutcome: "ok"},
+		{name: "startup-zoxide-missing", policy: "cached", zoxideMode: "missing", timeout: defaultTimeout,
+			expected: zoxideCounters(1, 0), expectedZoxideOutcome: "missing"},
+		{name: "startup-zoxide-spawn-failure", policy: "cached", zoxideMode: "spawn-failure", timeout: defaultTimeout,
+			expected: zoxideCounters(1, 0), expectedZoxideOutcome: "process-error"},
+		{name: "startup-zoxide-blocked", policy: "cached", zoxideMode: "blocked", timeout: time.Second,
+			expected: zoxideCounters(1, 1), expectedZoxideOutcome: "ok"},
+		{name: "startup-zoxide-timeout", policy: "cached", zoxideMode: "timeout", timeout: defaultTimeout,
+			expected: zoxideCounters(1, 1), expectedZoxideOutcome: "timeout"},
+		{name: "navigation-local-only", policy: "cached", zoxideMode: "present", action: "event", timeout: defaultTimeout, generation: 2,
+			expected: integrationpkg.BenchmarkCounters{}, expectedZoxideOutcome: "not-run"},
+		{name: "preview-dispatch", policy: "cached", zoxideMode: "present", action: "preview", timeout: defaultTimeout,
+			expected: zoxideCounters(1, 1), expectedZoxideOutcome: "ok"},
 	}
 }
 
@@ -200,7 +207,7 @@ func requireDedicatedPerformance(t *testing.T) {
 	}
 }
 
-func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedScenario) (integrationpkg.BenchmarkSample, error) {
+func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedScenario, zoxideExecutable string, sampleNumber int) (integrationpkg.BenchmarkSample, error) {
 	t.Helper()
 	root := t.TempDir()
 	for index := 0; index < 32; index++ {
@@ -209,6 +216,24 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 		}
 	}
 	marker := filepath.Join(root, "marker.json")
+	var err error
+	var gate net.Listener
+	var releaseGate chan struct{}
+	var gateDone chan struct{}
+	var releaseGateOnce sync.Once
+	if scenario.zoxideMode == "blocked" {
+		gate, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return integrationpkg.BenchmarkSample{}, err
+		}
+		releaseGate, gateDone = make(chan struct{}), make(chan struct{})
+		go servePerformanceGate(gate, releaseGate, gateDone)
+		defer func() {
+			releaseGateOnce.Do(func() { close(releaseGate) })
+			_ = gate.Close()
+			<-gateDone
+		}()
+	}
 	harness, err := filepath.Abs(os.Args[0])
 	if err != nil {
 		return integrationpkg.BenchmarkSample{}, err
@@ -227,24 +252,35 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 		if err := os.Rename(fixture, zoxidePath); err != nil {
 			return integrationpkg.BenchmarkSample{}, err
 		}
-	} else if scenario.zoxideMode != "missing" {
-		if err := copyExecutable(harness, zoxidePath); err != nil {
-			return integrationpkg.BenchmarkSample{}, err
-		}
 	}
 	environment := replaceEnvironment(os.Environ(), parityHelperEnvironment+"=performance", "GO_PERF_HELPER=fzf", "GO_PERF_ZOXIDE_MODE="+scenario.zoxideMode,
 		"GO_PERF_ZOXIDE_PATH="+root, "GO_PERF_FZF_ACTION="+scenario.action, "GO_PERF_MARKER="+marker,
 		"TERM=xterm-256color", "XDG_CACHE_HOME="+filepath.Join(root, "cache"), "LOCALAPPDATA="+filepath.Join(root, "cache"))
+	if gate != nil {
+		environment = replaceEnvironment(environment, "GO_PERF_ZOXIDE_GATE="+gate.Addr().String())
+	}
 	args := []string{"cd", "--cwd", root, "--home", root, "--fzf", harness, "--zoxide-policy", scenario.policy,
 		"--zoxide-timeout", scenario.timeout.String()}
-	environment = replaceEnvironment(environment, "PATH="+tools+string(os.PathListSeparator)+filepath.Dir(binary))
+	pathEntries := []string{tools}
+	if scenario.zoxideMode != "missing" {
+		pathEntries = append(pathEntries, filepath.Dir(zoxideExecutable))
+	}
+	pathEntries = append(pathEntries, filepath.Dir(binary))
+	environment = replaceEnvironment(environment, "PATH="+strings.Join(pathEntries, string(os.PathListSeparator)))
 	term := newTerminalSession(t, terminalConfig{Path: binary, Args: args, Environment: environment,
 		Directory: root, Columns: 120, Lines: 35})
 	defer term.Close()
+	if scenario.zoxideMode == "blocked" {
+		term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+		releaseGateOnce.Do(func() { close(releaseGate) })
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := term.Wait(ctx); err != nil {
 		events := term.TraceEvents()
+		if traceErr := archiveDedicatedTrace(scenario, sampleNumber, events); traceErr != nil {
+			return integrationpkg.BenchmarkSample{}, errors.Join(fmt.Errorf("picker wait: %w", err), traceErr)
+		}
 		summary := make([]string, 0, len(events))
 		for _, event := range events {
 			summary = append(summary, event.Event+":"+event.Outcome)
@@ -252,11 +288,12 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 		return integrationpkg.BenchmarkSample{}, fmt.Errorf("picker wait: %w; trace=%v", err, summary)
 	}
 	events := term.TraceEvents()
-	if countTraceEvents(events, "fzf.start") != 1 {
-		return integrationpkg.BenchmarkSample{}, errors.New("dedicated sample did not start exactly one fzf")
+	if err := archiveDedicatedTrace(scenario, sampleNumber, events); err != nil {
+		return integrationpkg.BenchmarkSample{}, err
 	}
-	if countTraceEvents(events, "session.close") != 1 {
-		return integrationpkg.BenchmarkSample{}, errors.New("dedicated sample did not close session")
+	measurement, err := parseDedicatedTraceSample(events, true)
+	if err != nil {
+		return integrationpkg.BenchmarkSample{}, err
 	}
 	if err := assertDedicatedZoxideOutcome(events, scenario); err != nil {
 		return integrationpkg.BenchmarkSample{}, err
@@ -265,53 +302,35 @@ func runDedicatedPickerSample(t *testing.T, binary string, scenario dedicatedSce
 	if err != nil {
 		return integrationpkg.BenchmarkSample{}, err
 	}
+	if scenario.expectedZoxideOutcome != "" {
+		actual := traceBenchmarkZoxideOutcome(events, scenario.generation)
+		if actual != scenario.expectedZoxideOutcome {
+			return integrationpkg.BenchmarkSample{}, fmt.Errorf("zoxide outcome=%q want %q", actual, scenario.expectedZoxideOutcome)
+		}
+	}
 	duration, err := dedicatedDuration(events, marker, scenario.action)
 	if err != nil {
 		return integrationpkg.BenchmarkSample{}, err
 	}
-	return integrationpkg.BenchmarkSample{Duration: duration, BenchmarkCounters: counters}, nil
+	startupDuration, lifecycleDuration := measurement.StartupDuration, measurement.LifecycleDuration
+	sample := integrationpkg.BenchmarkSample{Duration: duration, StartupDuration: &startupDuration,
+		EnrichmentDuration: measurement.EnrichmentDuration, LifecycleDuration: &lifecycleDuration,
+		BenchmarkCounters: counters}
+	if scenario.action != "" {
+		sample.ActionDuration = &duration
+	}
+	return sample, nil
 }
 
-func countTraceEvents(events []traceEvent, name string) int {
-	count := 0
-	for _, event := range events {
-		if event.Event == name {
-			count++
-		}
+func archiveDedicatedTrace(scenario dedicatedScenario, sampleNumber int, events []traceEvent) error {
+	if *performanceTraceDir == "" {
+		return nil
 	}
-	return count
-}
-
-func traceBenchmarkCounters(events []traceEvent, generation uint64) (integrationpkg.BenchmarkCounters, error) {
-	counters := integrationpkg.BenchmarkCounters{}
-	foundGeneration := generation == 0
-	for _, event := range events {
-		if event.Event == "generation.publish" {
-			if generation != 0 && event.Generation != generation {
-				continue
-			}
-			foundGeneration = true
-			if generation != 0 && event.ZoxideOutcome != "not-run" {
-				return integrationpkg.BenchmarkCounters{}, errors.New("measured navigation generation ran zoxide")
-			}
-			if event.ZoxideExits != event.ZoxideStarts || event.ZoxideProcesses != event.ZoxideStarts || event.ZoxideLive != 0 {
-				return integrationpkg.BenchmarkCounters{}, errors.New("zoxide trace has unmatched process lifecycle")
-			}
-			counters.ZoxideAttempts += event.ZoxideAttempts
-			counters.ZoxideStarts += event.ZoxideStarts
-			counters.ZoxideExits += event.ZoxideExits
-			counters.ZoxideProcesses += event.ZoxideProcesses
-			counters.ZoxideMaxLive = max(counters.ZoxideMaxLive, event.ZoxideMaxLive)
-		}
-		if event.Event == "preview.finished" {
-			counters.PreviewStarts += event.ChildStarts
-			counters.PreviewMaxLive = max(counters.PreviewMaxLive, event.MaxLiveChildren)
-		}
+	tracePath := filepath.Join(*performanceTraceDir, fmt.Sprintf("%s-%03d.trace.jsonl", scenario.name, sampleNumber))
+	if err := writeDedicatedTrace(tracePath, events); err != nil {
+		return fmt.Errorf("write dedicated trace: %w", err)
 	}
-	if !foundGeneration {
-		return integrationpkg.BenchmarkCounters{}, errors.New("missing measured navigation generation")
-	}
-	return counters, nil
+	return nil
 }
 
 type performanceMarker struct {
@@ -322,12 +341,8 @@ type performanceMarker struct {
 
 func dedicatedDuration(events []traceEvent, markerPath, action string) (time.Duration, error) {
 	if action == "" {
-		start, err := traceTime(events, "session.start")
-		if err != nil {
-			return 0, err
-		}
-		end, err := traceTime(events, "fzf.start")
-		return end.Sub(start), err
+		measurement, err := parseDedicatedTraceSample(events, true)
+		return measurement.StartupDuration, err
 	}
 	data, err := os.ReadFile(markerPath)
 	if err != nil {
@@ -380,108 +395,28 @@ func enforceDedicatedGoals(t *testing.T, reports []integrationpkg.BenchmarkRepor
 	}
 	for _, report := range reports {
 		limit := int64(0)
+		measuredP95 := report.P95US
 		switch {
 		case strings.HasPrefix(report.Scenario, "startup-"):
 			limit = startup
+			if report.StartupDuration == nil {
+				t.Errorf("%s has no StartupDuration report", report.Scenario)
+				continue
+			}
+			measuredP95 = report.StartupDuration.P95US
 		case report.Scenario == "navigation-local-only":
 			limit = navigation
+			if report.ActionDuration != nil {
+				measuredP95 = report.ActionDuration.P95US
+			}
 		case report.Scenario == "preview-dispatch":
 			limit = preview
-		}
-		if limit > 0 && report.P95US > limit {
-			t.Errorf("%s p95=%dus goal=%dus", report.Scenario, report.P95US, limit)
-		}
-	}
-}
-
-func runPerformanceHelper() (int, bool) {
-	if len(os.Args) == 3 && os.Args[1] == "query" && os.Args[2] == "--list" && os.Getenv("GO_PERF_HELPER") != "" {
-		switch os.Getenv("GO_PERF_ZOXIDE_MODE") {
-		case "timeout":
-			signals := make(chan os.Signal, 1)
-			signal.Notify(signals, os.Interrupt)
-			<-signals
-		case "empty":
-		case "present", "":
-			_, _ = fmt.Fprintln(os.Stdout, os.Getenv("GO_PERF_ZOXIDE_PATH"))
-		case "records-10000":
-			root := os.Getenv("GO_PERF_ZOXIDE_PATH")
-			for index := range 10_000 {
-				_, _ = fmt.Fprintf(os.Stdout, "%s%cbench-%05d\n", root, os.PathSeparator, index)
-			}
-		default:
-			return 2, true
-		}
-		return 0, true
-	}
-	switch os.Getenv("GO_PERF_HELPER") {
-	case "fzf":
-		data, _ := io.ReadAll(os.Stdin)
-		action := os.Getenv("GO_PERF_FZF_ACTION")
-		if action != "" {
-			start := time.Now().UnixNano()
-			commandName := performanceCallbackName(os.Args[1:])
-			commandArg := "e:up"
-			if action == "preview" {
-				commandArg = "p"
-			}
-			current := data
-			if index := bytes.IndexByte(current, 0); index >= 0 {
-				current = current[:index]
-			}
-			command := exec.Command(commandName, "--fzf-shell", commandArg)
-			command.Env = replaceEnvironment(os.Environ(), "FZF_KEY=left", "FZF_QUERY=", "FZF_CURRENT_ITEM="+string(current))
-			command.Stderr = io.Discard
-			marker := performanceMarker{Start: start}
-			if err := runPerformanceCallback(command, action, &marker); err != nil {
-				return 3, true
-			}
-			encoded, _ := json.Marshal(marker)
-			if err := os.WriteFile(os.Getenv("GO_PERF_MARKER"), encoded, 0o600); err != nil {
-				return 4, true
+			if report.ActionDuration != nil {
+				measuredP95 = report.ActionDuration.P95US
 			}
 		}
-		_, _ = os.Stdout.Write([]byte{0})
-		return 130, true
-	default:
-		return 0, false
-	}
-}
-
-func runPerformanceCallback(command *exec.Cmd, action string, marker *performanceMarker) error {
-	if action != "event" {
-		command.Stdout = io.Discard
-		err := command.Run()
-		marker.Reaped = time.Now().UnixNano()
-		return err
-	}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := command.Start(); err != nil {
-		return err
-	}
-	buffer := make([]byte, 64<<10)
-	written, readErr := stdout.Read(buffer)
-	if written > 0 {
-		marker.ActionWritten = time.Now().UnixNano()
-	}
-	_, drainErr := io.Copy(io.Discard, stdout)
-	waitErr := command.Wait()
-	marker.Reaped = time.Now().UnixNano()
-	if written == 0 {
-		return errors.Join(errors.New("callback wrote no action"), readErr, drainErr, waitErr)
-	}
-	return errors.Join(readErr, drainErr, waitErr)
-}
-
-func performanceCallbackName(arguments []string) string {
-	for _, argument := range arguments {
-		if value, ok := strings.CutPrefix(argument, "--with-shell="); ok {
-			name, _, _ := strings.Cut(value, " ")
-			return name
+		if limit > 0 && measuredP95 > limit {
+			t.Errorf("%s p95=%dus goal=%dus", report.Scenario, measuredP95, limit)
 		}
 	}
-	return "shell-picker"
 }

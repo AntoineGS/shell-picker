@@ -4,6 +4,8 @@ package app
 
 import (
 	"errors"
+	"os"
+	"reflect"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -34,7 +36,7 @@ func TestOpenWindowsTraceSinkUsesPipeAndFileDispositions(t *testing.T) {
 		wantFlags    uint32
 	}{
 		{name: "named pipe", path: `\\.\pipe\random`, wantAccess: windows.GENERIC_WRITE,
-			wantCreation: windows.OPEN_EXISTING, wantFlags: windows.FILE_ATTRIBUTE_NORMAL},
+			wantCreation: windows.OPEN_EXISTING, wantFlags: windows.FILE_ATTRIBUTE_NORMAL | windows.FILE_FLAG_WRITE_THROUGH},
 		{name: "ordinary file", path: `C:\trace.jsonl`, wantAccess: windows.GENERIC_WRITE | windows.WRITE_DAC,
 			wantCreation: windows.OPEN_ALWAYS, wantFlags: windows.FILE_ATTRIBUTE_NORMAL | windows.FILE_FLAG_OPEN_REPARSE_POINT},
 	}
@@ -72,5 +74,32 @@ func TestOpenWindowsTraceSinkValidatesBeforeTruncatingAndClosesOnFailure(t *test
 	}
 	if truncated || !closed {
 		t.Fatalf("truncated=%v closed=%v", truncated, closed)
+	}
+}
+
+func TestWindowsTraceSinkFlushesBeforeClose(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "trace-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	order := make([]string, 0, 2)
+	sink := &windowsTraceSink{
+		file: file,
+		flush: func(*os.File) error {
+			order = append(order, "flush")
+			return nil
+		},
+		close: func(*os.File) error {
+			order = append(order, "close")
+			return nil
+		},
+	}
+
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close() error=%v", err)
+	}
+	if !reflect.DeepEqual(order, []string{"flush", "close"}) {
+		t.Fatalf("close order=%v", order)
 	}
 }

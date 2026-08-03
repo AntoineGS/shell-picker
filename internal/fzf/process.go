@@ -28,7 +28,7 @@ type Config struct {
 	CallbackAddress string
 	CallbackToken   string
 	Options         []string
-	Input           []byte
+	Input           io.ReadCloser
 	Runner          process.Runner
 	ForegroundTTY   *os.File
 	TTYOut          io.Writer
@@ -56,6 +56,9 @@ func Run(ctx context.Context, config Config) (Result, error) {
 }
 
 func prepareSession(config Config) (process.Spec, *bytes.Buffer, error) {
+	if config.Input == nil {
+		return process.Spec{}, nil, errors.New("fzf: nil input")
+	}
 	if config.FZFPath == "" {
 		return process.Spec{}, nil, errors.New("fzf: empty fzf path")
 	}
@@ -92,19 +95,20 @@ func prepareSession(config Config) (process.Spec, *bytes.Buffer, error) {
 	args = append(args, "--with-shell="+basename+" --fzf-shell")
 	output := &bytes.Buffer{}
 	stderr := config.TTYErr
-	if stderr == nil {
+	if stderr == nil && config.ForegroundTTY != nil {
 		stderr = config.ForegroundTTY
 	}
 	return process.Spec{
-		Path:          config.FZFPath,
-		Args:          args,
-		Env:           environment,
-		Stdin:         bytes.NewReader(config.Input),
-		Stdout:        output,
-		Stderr:        stderr,
-		Containment:   process.ContainmentForegroundTree,
-		ForegroundTTY: config.ForegroundTTY,
-		WaitDelay:     time.Second,
+		Path:             config.FZFPath,
+		Args:             args,
+		Env:              environment,
+		Stdin:            config.Input,
+		Stdout:           output,
+		Stderr:           stderr,
+		CloseStdinOnExit: true,
+		Containment:      process.ContainmentForegroundTree,
+		ForegroundTTY:    config.ForegroundTTY,
+		WaitDelay:        time.Second,
 	}, output, nil
 }
 

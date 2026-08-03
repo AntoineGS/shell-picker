@@ -41,6 +41,7 @@ type preparedStreams struct {
 	pumps                 []func() error
 	waitDelay             time.Duration
 	closers               emergencyClosers
+	stdinCloser           *onceCloser
 }
 
 func prepareStreams(spec Spec) (*preparedStreams, error) {
@@ -52,7 +53,7 @@ func prepareStreams(spec Spec) (*preparedStreams, error) {
 		stdout, stderr = locked, locked
 	}
 	var err error
-	if p.stdin, err = p.prepareInput(spec.Stdin); err != nil {
+	if p.stdin, err = p.prepareInput(spec); err != nil {
 		p.closeAll()
 		return nil, fmt.Errorf("prepare stdin: %w", err)
 	}
@@ -67,14 +68,20 @@ func prepareStreams(spec Spec) (*preparedStreams, error) {
 	return p, nil
 }
 
-func (p *preparedStreams) prepareInput(reader io.Reader) (windows.Handle, error) {
+func (p *preparedStreams) prepareInput(spec Spec) (windows.Handle, error) {
+	reader := spec.Stdin
 	if reader == nil {
 		return p.duplicateNull(windows.GENERIC_READ)
 	}
 	if file, ok := reader.(*os.File); ok {
 		return p.duplicate(windows.Handle(file.Fd()))
 	}
-	p.closers.add(reader)
+	if closer := optInStdinCloser(spec); closer != nil {
+		p.stdinCloser = closer
+		p.closers.add(closer)
+	} else {
+		p.closers.add(reader)
+	}
 	child, parent, err := inheritablePipe(true)
 	if err != nil {
 		return 0, err
@@ -185,6 +192,11 @@ func (p *preparedStreams) closeParents() {
 
 func (p *preparedStreams) closeAll()       { p.closeChildren(); p.closeParents() }
 func (p *preparedStreams) emergencyClose() { p.closeParents(); p.closers.close() }
+func (p *preparedStreams) closeStdin() {
+	if p.stdinCloser != nil {
+		_ = p.stdinCloser.Close()
+	}
+}
 
 type lockedWriter struct {
 	mu     sync.Mutex

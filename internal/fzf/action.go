@@ -34,6 +34,7 @@ func disableSearch() action { return action{text: "disable-search"} }
 func clearQuery() action    { return action{text: "clear-query"} }
 func clearMulti() action    { return action{text: "clear-multi"} }
 func acceptEnter() action   { return action{text: "print(enter)+accept"} }
+func cancel() action        { return action{text: "cancel"} }
 func ignore() action        { return action{text: "ignore"} }
 func wait() action          { return action{text: "wait"} }
 func first() action         { return action{text: "first"} }
@@ -41,10 +42,14 @@ func last() action          { return action{text: "last"} }
 func jump() action          { return action{text: "jump"} }
 func down() action          { return action{text: "down"} }
 func up() action            { return action{text: "up"} }
-func abort() action         { return action{text: "abort"} }
-func toggle() action        { return action{text: "toggle"} }
-func halfPageUp() action    { return action{text: "half-page-up"} }
-func halfPageDown() action  { return action{text: "half-page-down"} }
+func abort() action {
+	// While fzf is wait-blocked it permits cancel, but defers a direct abort.
+	// Cancel first releases the wait, then abort produces exit status 130.
+	return action{text: sequence(cancel(), action{text: "abort"})}
+}
+func toggle() action       { return action{text: "toggle"} }
+func halfPageUp() action   { return action{text: "half-page-up"} }
+func halfPageDown() action { return action{text: "half-page-down"} }
 func previewHalfPageUp() action {
 	return action{text: "preview-half-page-up"}
 }
@@ -193,6 +198,13 @@ func reload(generation uint64) action {
 	return action{text: fmt.Sprintf("reload-sync(l:%d)", generation)}
 }
 
+func reloadForEvent(generation, eventID uint64) action {
+	if eventID == 0 {
+		return reload(generation)
+	}
+	return action{text: fmt.Sprintf("reload-sync(l:%d:%d)", generation, eventID)}
+}
+
 func changeModePrompt(prompt string) (action, error) {
 	switch prompt {
 	case "[I] ", "[N] ", "[A] ", "[A!] ":
@@ -237,6 +249,14 @@ func binding(keys string, actions ...action) string {
 }
 
 func RenderEffect(effect protocol.Effect) (string, error) {
+	return renderEffect(effect, 0)
+}
+
+func RenderEffectForEvent(effect protocol.Effect, eventID uint64) (string, error) {
+	return renderEffect(effect, eventID)
+}
+
+func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 	if effect.InvalidPath && effect.Put != "/" {
 		return "", errors.New("fzf: invalid path effect requires put slash")
 	}
@@ -263,10 +283,10 @@ func RenderEffect(effect protocol.Effect) (string, error) {
 		actions = append(actions, clearMulti())
 	}
 	if effect.ReloadGeneration != 0 {
-		actions = append(actions, reload(effect.ReloadGeneration))
+		actions = append(actions, reloadForEvent(effect.ReloadGeneration, eventID))
 	}
 	if effect.RestoreGeneration != 0 {
-		actions = append(actions, reload(effect.RestoreGeneration))
+		actions = append(actions, reloadForEvent(effect.RestoreGeneration, eventID))
 	}
 	if effect.ClearQuery {
 		actions = append(actions, clearQuery())

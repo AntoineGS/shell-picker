@@ -4,10 +4,86 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 )
+
+type blockingTraceWriter struct {
+	started chan struct{}
+	release chan struct{}
+	closed  chan struct{}
+}
+
+type chunkedTraceWriter struct {
+	bytes.Buffer
+	chunk int
+}
+
+func (writer *chunkedTraceWriter) Write(data []byte) (int, error) {
+	if len(data) > writer.chunk {
+		data = data[:writer.chunk]
+		_, _ = writer.Buffer.Write(data)
+		return len(data), io.ErrShortWrite
+	}
+	return writer.Buffer.Write(data)
+}
+
+func (*chunkedTraceWriter) Close() error { return nil }
+
+func (writer *blockingTraceWriter) Write(data []byte) (int, error) {
+	close(writer.started)
+	<-writer.release
+	return len(data), nil
+}
+
+func (writer *blockingTraceWriter) Close() error {
+	close(writer.closed)
+	return nil
+}
+
+func TestTraceCloseWaitsForInFlightEvent(t *testing.T) {
+	writer := &blockingTraceWriter{started: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{})}
+	trace := NewTrace(writer, fixedSessionID())
+	eventDone := make(chan struct{})
+	go func() {
+		defer close(eventDone)
+		if err := trace.Event(TraceEvent{Name: "session.start", Outcome: "cp"}); err != nil {
+			t.Errorf("trace event: %v", err)
+		}
+	}()
+	<-writer.started
+	closeDone := make(chan struct{})
+	go func() {
+		_ = trace.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+		t.Fatal("trace closed while an event was writing")
+	default:
+	}
+	close(writer.release)
+	<-eventDone
+	<-closeDone
+	select {
+	case <-writer.closed:
+	default:
+		t.Fatal("trace close did not close writer")
+	}
+}
+
+func TestTraceCompletesShortJSONLWrites(t *testing.T) {
+	writer := &chunkedTraceWriter{chunk: 3}
+	trace := NewTrace(writer, fixedSessionID())
+	if err := trace.Event(TraceEvent{Name: "session.start", Outcome: "cp"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeTraceRecord(writer.Bytes()); err != nil {
+		t.Fatalf("short write produced invalid trace: %v; bytes=%q", err, writer.Bytes())
+	}
+}
 
 func fixedSessionID() [16]byte {
 	return [16]byte{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'}
@@ -70,6 +146,80 @@ func TestTraceAllowsBoundedLifecycleExtensionsWithoutInventedExitLatency(t *test
 	}
 	if strings.Contains(output.String(), "exit_latency") || strings.Contains(output.String(), "cancel_to_exit") {
 		t.Fatalf("trace claims OS exit latency: %s", output.String())
+	}
+}
+
+func TestTraceAcceptsPendingInitialPublicationAndStandaloneZoxideTerminals(t *testing.T) {
+	valid := []TraceEvent{
+		{Name: "generation.publish", Generation: 1, CandidateCount: 3, Outcome: "ok",
+			ZoxidePolicy: "cached", ZoxideOutcome: "pending"},
+		{Name: "zoxide.enrichment", Generation: 2, CandidateCount: 5, Outcome: "published",
+			ZoxidePolicy: "cached", ZoxideAttempts: 1, ZoxideStarts: 1, ZoxideExits: 1,
+			ZoxideProcesses: 1, ZoxideLive: 0, ZoxideMaxLive: 1,
+			ZoxideDuration: time.Microsecond, ZoxideOutcome: "ok"},
+		{Name: "zoxide.enrichment", Generation: 2, Outcome: "discarded",
+			ZoxidePolicy: "cached", ZoxideOutcome: "cached"},
+		{Name: "zoxide.enrichment", Generation: 2, Outcome: "failed",
+			ZoxidePolicy: "fresh", ZoxideAttempts: 1, ZoxideOutcome: "missing"},
+		{Name: "generation.discard", Generation: 3, Outcome: "error",
+			ZoxidePolicy: "cached", ZoxideDuration: time.Microsecond, ZoxideOutcome: "not-run"},
+	}
+	var output bytes.Buffer
+	trace := NewTrace(&output, fixedSessionID())
+	for _, event := range valid {
+		if err := trace.Event(event); err != nil {
+			t.Fatalf("valid event %+v: %v", event, err)
+		}
+	}
+
+	invalid := []TraceEvent{
+		{Name: "zoxide.enrichment", Outcome: "published", CandidateCount: 1,
+			ZoxidePolicy: "cached", ZoxideOutcome: "ok"},
+		{Name: "zoxide.enrichment", Generation: 2, Outcome: "discarded", CandidateCount: 1,
+			ZoxidePolicy: "cached", ZoxideOutcome: "ok"},
+		{Name: "zoxide.enrichment", Generation: 2, Outcome: "failed", Path: []byte("/secret"),
+			ZoxidePolicy: "cached", ZoxideOutcome: "missing"},
+		{Name: "zoxide.enrichment", Generation: 2, Outcome: "failed"},
+		{Name: "zoxide.enrichment", Generation: 2, Outcome: "failed",
+			ZoxidePolicy: "cached", ZoxideOutcome: "pending"},
+		{Name: "zoxide.enrichment", Generation: 2, Outcome: "failed",
+			ZoxidePolicy: "cached", ZoxideOutcome: "not-run"},
+		{Name: "generation.publish", Generation: 1, Outcome: "ok", ZoxidePolicy: "cached",
+			ZoxideOutcome: "pending", ZoxideAttempts: 1},
+		{Name: "generation.publish", Generation: 1, Outcome: "ok", ZoxidePolicy: "cached",
+			ZoxideOutcome: "pending", ZoxideDuration: time.Microsecond},
+		{Name: "zoxide.enrichment", Generation: 2, Outcome: "discarded", ZoxidePolicy: "cached",
+			ZoxideOutcome: "cached", ActorQueueWait: time.Microsecond},
+	}
+	for _, event := range invalid {
+		if err := trace.Event(event); err == nil {
+			t.Fatalf("invalid event accepted: %+v", event)
+		}
+	}
+}
+
+func TestTraceSchemaAcceptsBalancedMultipleZoxideProcesses(t *testing.T) {
+	valid := TraceEvent{Name: "zoxide.enrichment", Generation: 2, Outcome: "failed",
+		ZoxidePolicy: "cached", ZoxideOutcome: "process-error", ZoxideAttempts: 2,
+		ZoxideStarts: 2, ZoxideExits: 2, ZoxideProcesses: 2, ZoxideLive: 0, ZoxideMaxLive: 2}
+	if err := validateTraceEvent(valid); err != nil {
+		t.Fatalf("balanced multiple processes rejected: %v", err)
+	}
+
+	invalid := []TraceEvent{
+		{ // starts must still be bounded by attempts
+			Name: "zoxide.enrichment", Generation: 2, Outcome: "failed", ZoxidePolicy: "cached",
+			ZoxideOutcome: "process-error", ZoxideAttempts: 1, ZoxideStarts: 2, ZoxideExits: 2, ZoxideProcesses: 2,
+		},
+		{ // exits and processes must remain balanced with starts
+			Name: "zoxide.enrichment", Generation: 2, Outcome: "failed", ZoxidePolicy: "cached",
+			ZoxideOutcome: "process-error", ZoxideAttempts: 2, ZoxideStarts: 2, ZoxideExits: 1, ZoxideProcesses: 2,
+		},
+	}
+	for index, event := range invalid {
+		if err := validateTraceEvent(event); err == nil {
+			t.Errorf("unbalanced event %d accepted: %+v", index, event)
+		}
 	}
 }
 
@@ -155,6 +305,41 @@ func TestTraceAlwaysEmitsRFC3339NanoUTCTimestamp(t *testing.T) {
 	}
 }
 
+func TestDecodeTraceRecordUsesProductionSchemaAuthority(t *testing.T) {
+	valid := TraceRecord{Schema: TraceSchema, Time: "2026-07-31T10:00:00Z", Session: "sha256:0123456789abcdef",
+		Event: "fzf.start", Outcome: "ok"}
+	if err := ValidateTraceRecordAt(valid, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	invalid := []TraceRecord{
+		{Schema: 1, Time: valid.Time, Session: valid.Session, Event: valid.Event, Outcome: valid.Outcome},
+		{Schema: TraceSchema, Time: valid.Time, Session: "sha256:bad", Event: valid.Event, Outcome: valid.Outcome},
+		{Schema: TraceSchema, Time: valid.Time, Session: valid.Session, Event: "fzf.start", Outcome: "error"},
+		{Schema: TraceSchema, Time: valid.Time, Session: valid.Session, Event: "fzf.start", Outcome: "ok", ZoxideAttempts: 1},
+	}
+	for _, record := range invalid {
+		if err := ValidateTraceRecordAt(record, time.Time{}); err == nil {
+			t.Fatalf("invalid record accepted: %+v", record)
+		}
+	}
+	legacy := valid
+	legacy.Schema = 1
+	if err := ValidateTraceRecordAt(legacy, time.Time{}); err == nil || !strings.Contains(err.Error(), "unsupported schema 1") {
+		t.Fatalf("legacy schema error=%v", err)
+	}
+	legacyData, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecodeTraceRecordAt(legacyData, time.Time{}); err == nil || !strings.Contains(err.Error(), "unsupported schema 1") {
+		t.Fatalf("legacy parser error=%v", err)
+	}
+	data := []byte(`{"schema":1,"time":"2026-07-31T10:00:00Z","session":"sha256:0123456789abcdef","event":"fzf.start","outcome":"ok","unexpected":true}`)
+	if _, err := DecodeTraceRecordAt(data, time.Time{}); err == nil {
+		t.Fatal("unknown trace field accepted")
+	}
+}
+
 func TestTraceWritesStableRedactedJSONL(t *testing.T) {
 	var output bytes.Buffer
 	trace := NewTrace(&output, fixedSessionID())
@@ -171,7 +356,7 @@ func TestTraceWritesStableRedactedJSONL(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]any{
-		"schema": float64(1), "session": "sha256:9f9f5111f7b27a78", "event": "generation.publish",
+		"schema": float64(2), "session": "sha256:9f9f5111f7b27a78", "event": "generation.publish",
 		"generation": float64(2), "candidate_count": float64(4), "outcome": "ok",
 		"path": "sha256:267273ff1ea6a14f",
 	}

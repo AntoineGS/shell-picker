@@ -19,22 +19,36 @@ import (
 )
 
 type fakeClient struct {
-	events    []sessionipc.EventRequest
-	loads     []sessionipc.LoadRequest
-	previews  []sessionipc.PreviewRequest
-	displays  int
-	effect    protocol.Effect
-	load      []byte
-	display   sessionipc.DisplayResponse
-	resolved  sessionipc.PreviewResponse
-	err       error
-	recordErr error
+	events            []sessionipc.EventRequest
+	loads             []sessionipc.LoadRequest
+	previews          []sessionipc.PreviewRequest
+	displays          int
+	effect            protocol.Effect
+	eventID           uint64
+	load              []byte
+	display           sessionipc.DisplayResponse
+	resolved          sessionipc.PreviewResponse
+	err               error
+	recordErr         error
+	finalizeErr       error
+	finalizeCount     int
+	loadFinalizeErr   error
+	loadFinalizeCount int
+	onFinalize        func(context.Context, sessionipc.EventFinalizeRequest)
+	onLoadFinalize    func(context.Context, sessionipc.LoadFinalizeRequest)
+	onEvent           func()
 }
 
 type panicClient struct{}
 
 func (panicClient) Event(context.Context, sessionipc.EventRequest) (sessionipc.EventResponse, error) {
 	panic("unexpected IPC Event")
+}
+func (panicClient) FinalizeEvent(context.Context, sessionipc.EventFinalizeRequest) error {
+	panic("unexpected IPC FinalizeEvent")
+}
+func (panicClient) FinalizeLoad(context.Context, sessionipc.LoadFinalizeRequest) error {
+	panic("unexpected IPC FinalizeLoad")
 }
 func (panicClient) Load(context.Context, sessionipc.LoadRequest) ([]byte, error) {
 	panic("unexpected IPC Load")
@@ -66,7 +80,24 @@ func (writer *shortWriter) String() string { return string(writer.data) }
 
 func (client *fakeClient) Event(_ context.Context, request sessionipc.EventRequest) (sessionipc.EventResponse, error) {
 	client.events = append(client.events, request)
-	return sessionipc.EventResponse{Effect: client.effect}, client.err
+	if client.onEvent != nil {
+		client.onEvent()
+	}
+	return sessionipc.EventResponse{Effect: client.effect, EventID: client.eventID}, client.err
+}
+func (client *fakeClient) FinalizeEvent(ctx context.Context, request sessionipc.EventFinalizeRequest) error {
+	client.finalizeCount++
+	if client.onFinalize != nil {
+		client.onFinalize(ctx, request)
+	}
+	return client.finalizeErr
+}
+func (client *fakeClient) FinalizeLoad(ctx context.Context, request sessionipc.LoadFinalizeRequest) error {
+	client.loadFinalizeCount++
+	if client.onLoadFinalize != nil {
+		client.onLoadFinalize(ctx, request)
+	}
+	return client.loadFinalizeErr
 }
 func (client *fakeClient) Load(_ context.Context, request sessionipc.LoadRequest) ([]byte, error) {
 	client.loads = append(client.loads, request)
@@ -99,6 +130,73 @@ func TestEventReadsOnlyFZFEnvironmentAndWritesTypedEffect(t *testing.T) {
 	}
 	if stdout.String() != "disable-search+change-prompt([N] )+change-header:··ath/" {
 		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func TestEventFinalizesOnceAfterActionOutput(t *testing.T) {
+	client := &fakeClient{effect: protocol.Effect{Abort: true}, eventID: 1}
+	var stdout bytes.Buffer
+	client.onFinalize = func(_ context.Context, request sessionipc.EventFinalizeRequest) {
+		if stdout.Len() == 0 {
+			t.Fatal("finalized before action output")
+		}
+		if request.EventID != 1 || !request.Applied {
+			t.Fatalf("finalized request=%+v", request)
+		}
+	}
+	deps := Dependencies{Client: client, LookupEnv: func(key string) string {
+		if key == "FZF_KEY" {
+			return "esc"
+		}
+		return ""
+	}, Stdout: &stdout, Stderr: io.Discard}
+	if err := Dispatch(context.Background(), mustParse(t, "e:es"), deps); err != nil {
+		t.Fatal(err)
+	}
+	if client.finalizeCount != 1 {
+		t.Fatalf("finalize count=%d want=1", client.finalizeCount)
+	}
+}
+
+func TestEventFinalizesAfterActionWriteFailure(t *testing.T) {
+	client := &fakeClient{effect: protocol.Effect{Abort: true}, eventID: 1}
+	var request sessionipc.EventFinalizeRequest
+	client.onFinalize = func(_ context.Context, got sessionipc.EventFinalizeRequest) { request = got }
+	writer := &shortWriter{maximum: 0}
+	deps := Dependencies{Client: client, LookupEnv: func(key string) string {
+		if key == "FZF_KEY" {
+			return "esc"
+		}
+		return ""
+	}, Stdout: writer, Stderr: io.Discard}
+	if err := Dispatch(context.Background(), mustParse(t, "e:es"), deps); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Dispatch error=%v, want short write", err)
+	}
+	if client.finalizeCount != 1 {
+		t.Fatalf("finalize count=%d want=1", client.finalizeCount)
+	}
+	if request.EventID != 1 || request.Applied {
+		t.Fatalf("finalize request=%+v, want exact unapplied event", request)
+	}
+}
+
+func TestEventFinalizesAfterContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client := &fakeClient{effect: protocol.Effect{Abort: true}, eventID: 1, onEvent: cancel}
+	var finalizerContext context.Context
+	client.onFinalize = func(ctx context.Context, _ sessionipc.EventFinalizeRequest) { finalizerContext = ctx }
+	deps := Dependencies{Client: client, LookupEnv: func(key string) string {
+		if key == "FZF_KEY" {
+			return "esc"
+		}
+		return ""
+	}, Stdout: io.Discard, Stderr: io.Discard}
+	if err := Dispatch(ctx, mustParse(t, "e:es"), deps); err != nil {
+		t.Fatal(err)
+	}
+	if client.finalizeCount != 1 || finalizerContext == nil || finalizerContext.Err() != nil {
+		t.Fatalf("finalize count=%d context=%v", client.finalizeCount, finalizerContext)
 	}
 }
 
@@ -204,6 +302,19 @@ func TestFixedLocalCallbacksNeedNoIPCOrFilesystem(t *testing.T) {
 	}
 }
 
+func TestPreviewWithoutCurrentItemIsIgnored(t *testing.T) {
+	var output bytes.Buffer
+	err := Dispatch(context.Background(), mustParse(t, "p"), Dependencies{
+		Client: panicClient{}, LookupEnv: func(string) string { return "" }, Stdout: &output, Stderr: io.Discard,
+		Preview: func(context.Context, protocol.ResolvedCandidate, io.Writer, io.Writer) error {
+			panic("preview should not run without a current item")
+		},
+	})
+	if err != nil || output.Len() != 0 {
+		t.Fatalf("err=%v output=%q", err, output.Bytes())
+	}
+}
+
 func TestLocalDisplayAndInfoValidationReadNoEnvironment(t *testing.T) {
 	for _, raw := range []string{"d", "i:cd", "i:cp"} {
 		var keys []string
@@ -213,18 +324,6 @@ func TestLocalDisplayAndInfoValidationReadNoEnvironment(t *testing.T) {
 		}); err != nil || len(keys) != 0 {
 			t.Fatalf("command=%q err=%v keys=%q", raw, err, keys)
 		}
-	}
-}
-
-func TestLoadWritesExactOctets(t *testing.T) {
-	client := &fakeClient{load: []byte{'a', 0, '\n', 0xff}}
-	var stdout bytes.Buffer
-	deps := Dependencies{Client: client, LookupEnv: func(string) string { return "" }, Stdout: &stdout, Stderr: io.Discard}
-	if err := Dispatch(context.Background(), mustParse(t, "l:42"), deps); err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(stdout.Bytes(), client.load) || !reflect.DeepEqual(client.loads, []sessionipc.LoadRequest{{Generation: 42}}) {
-		t.Fatalf("output=%v loads=%+v", stdout.Bytes(), client.loads)
 	}
 }
 
@@ -303,6 +402,23 @@ func TestPreviewRejectsVirtualAndRelativeBeforeRenderer(t *testing.T) {
 	}
 }
 
+func TestPreviewIgnoresMissingCandidateDuringReload(t *testing.T) {
+	client := &fakeClient{err: sessionipc.ErrNotFound}
+	called := false
+	deps := Dependencies{Client: client, LookupEnv: func(string) string { return "stale item" }, Stdout: io.Discard, Stderr: io.Discard,
+		Preview: func(context.Context, protocol.ResolvedCandidate, io.Writer, io.Writer) error {
+			called = true
+			return nil
+		}}
+
+	if err := Dispatch(context.Background(), mustParse(t, "p"), deps); err != nil {
+		t.Fatalf("Dispatch(p) error=%v, want nil", err)
+	}
+	if called {
+		t.Fatal("preview renderer called for missing candidate")
+	}
+}
+
 func TestPreviewTelemetryFailureDoesNotReplaceRendererStatus(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file")
 	renderErr := errors.New("render failed")
@@ -377,13 +493,4 @@ func TestPreviewTelemetryDistinguishesNativeFallbackAfterChild(t *testing.T) {
 	if finished.Renderer != "bat-fallback" || finished.ChildStarts != 1 || finished.MaxLiveChildren != 1 {
 		t.Fatalf("finished=%+v", finished)
 	}
-}
-
-func mustParse(t *testing.T, raw string) Command {
-	t.Helper()
-	command, err := Parse(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return command
 }

@@ -292,6 +292,11 @@ func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
 			term.AssertProcessTopology(t)
 			tree := f.waitTree(t, 1)
 			defer tree.close()
+			if test.mode == "overflow-renderer" {
+				if err := f.controller.startOverflow(tree.RendererPID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), test.bound)
 			defer cancel()
 			if err := waitTreeExit(ctx, tree); err != nil {
@@ -306,7 +311,16 @@ func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
 					t.Fatalf("terminal renderer claimed completion")
 				}
 			}
-			sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+			if test.mode == "overflow-renderer" {
+				if err := term.Close(); err != nil {
+					t.Fatal(err)
+				}
+				assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "eza", "ok", 1)
+				assertFinishedTrace(t, term.TraceEvents(), "eza", 0)
+				return
+			} else {
+				sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+			}
 			if err := term.Send([]byte("q")); err != nil {
 				t.Fatal(err)
 			}

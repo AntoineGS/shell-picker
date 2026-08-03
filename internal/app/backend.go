@@ -13,21 +13,25 @@ import (
 )
 
 type pickerBackend struct {
-	actor   *session.Actor
-	metrics *pickerMetrics
-	trace   *pickerTrace
-	stat    func(string) (os.FileInfo, error)
+	actor      *session.Actor
+	metrics    *pickerMetrics
+	trace      *pickerTrace
+	enrichment *initialEnrichment
+	stat       func(string) (os.FileInfo, error)
 }
 
-func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (protocol.Effect, error) {
+func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (sessionipc.EventResult, error) {
+	if backend.enrichment != nil {
+		return backend.enrichment.HandleEvent(ctx, event)
+	}
 	if cause := context.Cause(ctx); cause != nil {
-		return protocol.Effect{}, cause
+		return sessionipc.EventResult{}, cause
 	}
 	started := time.Now()
 	result, err := session.Handle(ctx, backend.actor, event)
 	duration := time.Since(started)
 	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.event", Outcome: string(event.Opcode), CallbackIPC: duration,
-		Timestamp: started})
+		Timestamp: time.Now()})
 	if err == nil {
 		backend.metrics.recordTransition(result)
 		if result.Effect.ReloadGeneration != 0 {
@@ -36,23 +40,50 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 		}
 	}
 	backend.metrics.recordCallback(duration)
-	return result.Effect, err
+	return sessionipc.EventResult{Effect: result.Effect}, err
 }
 
-func (backend *pickerBackend) LoadGeneration(ctx context.Context, generation uint64) ([]byte, error) {
+func (backend *pickerBackend) FinalizeEvent(ctx context.Context, request sessionipc.EventFinalizeRequest) error {
+	if backend.enrichment != nil {
+		return backend.enrichment.FinalizeEvent(ctx, request)
+	}
+	return nil
+}
+
+func (backend *pickerBackend) FinalizeLoad(ctx context.Context, request sessionipc.LoadFinalizeRequest) error {
+	if backend.enrichment != nil {
+		return backend.enrichment.FinalizeLoad(ctx, request)
+	}
+	return nil
+}
+
+func (backend *pickerBackend) LoadGeneration(ctx context.Context, request sessionipc.LoadRequest) ([]byte, error) {
 	if cause := context.Cause(ctx); cause != nil {
 		return nil, cause
 	}
 	started := time.Now()
-	snapshot, err := backend.actor.Snapshot(ctx, generation)
+	if backend.enrichment != nil {
+		if err := backend.enrichment.ValidateLoad(request); err != nil {
+			return nil, err
+		}
+	}
+	snapshot, err := backend.actor.Snapshot(ctx, request.Generation)
 	duration := time.Since(started)
 	if err != nil {
-		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: generation, Outcome: "error", LoadDuration: duration})
+		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: request.Generation, Outcome: "error", LoadDuration: duration})
 		return nil, err
 	}
-	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: generation, Outcome: "ok", LoadDuration: duration})
+	data := frameCandidateRecords(snapshot.Records())
+	if backend.enrichment != nil {
+		// Mark the exact reservation only after Snapshot and framing have copied
+		// the bytes returned to fzf. FinalizeLoad performs the release.
+		if err := backend.enrichment.BeginLoad(request); err != nil {
+			return nil, err
+		}
+	}
+	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: request.Generation, Outcome: "ok", LoadDuration: duration})
 	backend.metrics.recordLoad(duration)
-	return frameCandidateRecords(snapshot.Records()), nil
+	return data, nil
 }
 
 func (backend *pickerBackend) CurrentHeader(ctx context.Context) (string, error) {
