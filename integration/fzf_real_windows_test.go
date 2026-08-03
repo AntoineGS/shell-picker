@@ -11,47 +11,62 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 type windowsTerminalSession struct {
-	ops          windowsTerminalOps
-	t            *testing.T
-	console      windows.Handle
-	input        windows.Handle
-	output       windows.Handle
-	trace        windows.Handle
-	process      windows.Handle // control handle; waiter owns a duplicate
-	pid          int
-	fzfPath      string
-	argvCanaries []string
-	handleMu     sync.Mutex
+	ops           windowsTerminalOps
+	t             *testing.T
+	console       windows.Handle
+	input         windows.Handle
+	output        windows.Handle
+	result        windows.Handle
+	resultWrite   windows.Handle
+	standardInput windows.Handle
+	trace         windows.Handle
+	process       windows.Handle // control handle; waiter owns a duplicate
+	pid           int
+	fzfPath       string
+	argvCanaries  []string
+	handleMu      sync.Mutex
 
 	outputMu      sync.Mutex
 	buffer        bytes.Buffer
 	outputChanged chan struct{}
+	resultMu      sync.Mutex
+	resultBuffer  bytes.Buffer
 	eventMu       sync.Mutex
 	events        []traceEvent
 	changed       chan struct{}
 
-	waitMu        sync.Mutex
-	waitErr       error
-	waitDone      chan struct{}
-	drainDone     chan struct{}
-	traceDone     chan struct{}
-	closeOnce     sync.Once
-	closeErr      error
-	outputStarted bool
-	traceStarted  bool
-	waitStarted   bool
+	waitMu         sync.Mutex
+	waitErr        error
+	waitDone       chan struct{}
+	drainDone      chan struct{}
+	resultDone     chan struct{}
+	traceDone      chan struct{}
+	closeMu        sync.Mutex
+	closeAttempt   chan struct{}
+	closeRunning   bool
+	closed         bool
+	closeErr       error
+	stop           chan struct{}
+	stopOnce       sync.Once
+	outputStarted  bool
+	resultStarted  bool
+	traceStarted   bool
+	waitStarted    bool
+	cleanupTimeout time.Duration
 }
 
 type windowsTerminalOps struct {
 	closeHandle         func(windows.Handle) error
 	terminateProcess    func(windows.Handle, uint32) error
 	cancelIO            func(windows.Handle, *windows.Overlapped) error
+	beforeCancelIO      func(windows.Handle)
 	closePseudoConsole  func(windows.Handle)
 	resizePseudoConsole func(windows.Handle, windows.Coord) error
 	writeFile           func(windows.Handle, []byte, *uint32, *windows.Overlapped) error
@@ -72,6 +87,7 @@ type windowsTerminalFactory struct {
 	ops                 windowsTerminalOps
 	createInputPipe     func() (windows.Handle, windows.Handle, error)
 	createOutputPipe    func() (windows.Handle, windows.Handle, error)
+	createResultPipe    func() (windows.Handle, windows.Handle, error)
 	createPseudoConsole func(windows.Coord, windows.Handle, windows.Handle) (windows.Handle, error)
 	createTracePipe     func() (string, windows.Handle, error)
 }
@@ -85,6 +101,7 @@ func defaultWindowsTerminalFactory() windowsTerminalFactory {
 			return read, write, err
 		},
 		createOutputPipe: createWindowsOverlappedReadPipe,
+		createResultPipe: createWindowsResultPipe,
 		createPseudoConsole: func(size windows.Coord, input, output windows.Handle) (windows.Handle, error) {
 			var console windows.Handle
 			err := windows.CreatePseudoConsole(size, input, output, 0, &console)
@@ -104,13 +121,21 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 		return nil, "", errors.Join(fmt.Errorf("create ConPTY output pipe: %w", err),
 			factory.ops.closeHandle(inputRead), factory.ops.closeHandle(inputWrite))
 	}
+	resultRead, resultWrite, err := factory.createResultPipe()
+	if err != nil {
+		return nil, "", errors.Join(fmt.Errorf("create picker result pipe: %w", err),
+			factory.ops.closeHandle(inputRead), factory.ops.closeHandle(inputWrite),
+			factory.ops.closeHandle(outputRead), factory.ops.closeHandle(outputWrite))
+	}
 	console, err := factory.createPseudoConsole(windows.Coord{X: int16(config.Columns), Y: int16(config.Lines)}, inputRead, outputWrite)
 	if err != nil {
 		return nil, "", errors.Join(fmt.Errorf("create pseudoconsole: %w", err), factory.ops.closeHandle(inputRead),
-			factory.ops.closeHandle(inputWrite), factory.ops.closeHandle(outputRead), factory.ops.closeHandle(outputWrite))
+			factory.ops.closeHandle(inputWrite), factory.ops.closeHandle(outputRead), factory.ops.closeHandle(outputWrite),
+			factory.ops.closeHandle(resultRead), factory.ops.closeHandle(resultWrite))
 	}
 	session := &windowsTerminalSession{ops: factory.ops, console: console, input: inputWrite, output: outputRead,
-		changed: make(chan struct{}), waitDone: make(chan struct{}), drainDone: make(chan struct{}), traceDone: make(chan struct{}),
+		result: resultRead, resultWrite: resultWrite, changed: make(chan struct{}), waitDone: make(chan struct{}),
+		drainDone: make(chan struct{}), resultDone: make(chan struct{}), traceDone: make(chan struct{}),
 		outputChanged: make(chan struct{})}
 	if closeErr := errors.Join(factory.ops.closeHandle(inputRead), factory.ops.closeHandle(outputWrite)); closeErr != nil {
 		close(session.drainDone)
@@ -150,7 +175,7 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		}
 	}
 	session.outputStarted, session.traceStarted = true, true
-	go session.drainOutput(session.output)
+	go session.drainOutput(session.output, session.drainDone)
 	traceReady := make(chan struct{})
 	go session.drainTrace(session.trace, traceReady)
 	<-traceReady
@@ -165,6 +190,12 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		session.Close()
 		t.Fatal(err)
 	}
+	standardInput, err := createWindowsInheritableNullInput()
+	if err != nil {
+		session.Close()
+		t.Fatalf("create picker standard input: %v", err)
+	}
+	session.standardInput = standardInput
 	args := append(append([]string{config.Path}, config.Args...), "--trace", tracePath)
 	commandLine, err := windows.UTF16FromString(windows.ComposeCommandLine(args))
 	if err != nil {
@@ -187,13 +218,31 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	}
 	startup := windows.StartupInfoEx{ProcThreadAttributeList: attributes.List()}
 	startup.Cb = uint32(unsafe.Sizeof(startup))
+	startup.Flags = windows.STARTF_USESTDHANDLES
+	startup.StdInput, startup.StdOutput, startup.StdErr = session.standardInput, session.resultWrite, session.resultWrite
 	var information windows.ProcessInformation
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
-	if err := windows.CreateProcess(application, &commandLine[0], nil, nil, false, flags, &environment[0], directory,
+	if err := windows.CreateProcess(application, &commandLine[0], nil, nil, true, flags, &environment[0], directory,
 		(*windows.StartupInfo)(unsafe.Pointer(&startup)), &information); err != nil {
 		session.Close()
 		t.Fatalf("start picker in ConPTY: %v", err)
 	}
+	if err := session.ops.closeHandle(session.resultWrite); err != nil {
+		_ = session.ops.terminateProcess(information.Process, 1)
+		_ = session.ops.closeHandle(information.Process)
+		session.resultWrite = 0
+		session.Close()
+		t.Fatalf("close picker result write handle: %v", err)
+	}
+	session.resultWrite = 0
+	if err := session.ops.closeHandle(session.standardInput); err != nil {
+		_ = session.ops.terminateProcess(information.Process, 1)
+		_ = session.ops.closeHandle(information.Process)
+		session.standardInput = 0
+		session.Close()
+		t.Fatalf("close picker standard input handle: %v", err)
+	}
+	session.standardInput = 0
 	if err := session.ops.closeHandle(information.Thread); err != nil {
 		_ = session.ops.terminateProcess(information.Process, 1)
 		_ = session.ops.closeHandle(information.Process)
@@ -210,7 +259,9 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	}
 	session.process, session.pid = information.Process, int(information.ProcessId)
 	session.waitStarted = true
+	session.resultStarted = true
 	go session.waitProcess(waitHandle)
+	go session.drainResult(session.result, session.resultDone)
 	return session
 }
 
@@ -262,6 +313,29 @@ func createWindowsOverlappedReadPipe() (windows.Handle, windows.Handle, error) {
 		return 0, 0, err
 	}
 	return server, client, nil
+}
+
+func createWindowsResultPipe() (windows.Handle, windows.Handle, error) {
+	read, write, err := createWindowsOverlappedReadPipe()
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := windows.SetHandleInformation(write, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		_ = windows.CloseHandle(read)
+		_ = windows.CloseHandle(write)
+		return 0, 0, err
+	}
+	return read, write, nil
+}
+
+func createWindowsInheritableNullInput() (windows.Handle, error) {
+	name, err := windows.UTF16PtrFromString("NUL")
+	if err != nil {
+		return 0, err
+	}
+	security := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), InheritHandle: 1}
+	return windows.CreateFile(name, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		security, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
 }
 
 func createWindowsTracePipe() (string, windows.Handle, error) {

@@ -20,6 +20,8 @@ var ErrKey = errors.New("callback: unexpected fzf key")
 
 type IPCClient interface {
 	Event(context.Context, sessionipc.EventRequest) (sessionipc.EventResponse, error)
+	FinalizeEvent(context.Context, sessionipc.EventFinalizeRequest) error
+	FinalizeLoad(context.Context, sessionipc.LoadFinalizeRequest) error
 	Load(context.Context, sessionipc.LoadRequest) ([]byte, error)
 	ResolvePreview(context.Context, sessionipc.PreviewRequest) (sessionipc.PreviewResponse, error)
 	RecordPreview(context.Context, sessionipc.PreviewRequest) error
@@ -81,7 +83,7 @@ func ValidateLocal(command Command, lookupEnv func(string) string) error {
 	return nil
 }
 
-func dispatchEvent(ctx context.Context, command Command, dependencies Dependencies) error {
+func dispatchEvent(ctx context.Context, command Command, dependencies Dependencies) (err error) {
 	key := dependencies.LookupEnv("FZF_KEY")
 	response, err := dependencies.Client.Event(ctx, sessionipc.EventRequest{
 		Opcode: command.Opcode, Key: key,
@@ -91,6 +93,25 @@ func dispatchEvent(ctx context.Context, command Command, dependencies Dependenci
 	if err != nil {
 		return err
 	}
+	if response.EventID == 0 {
+		return dispatchEventAction(response, dependencies)
+	}
+	applied := false
+	defer func() {
+		if finalizeErr := dependencies.Client.FinalizeEvent(context.WithoutCancel(ctx), sessionipc.EventFinalizeRequest{
+			EventID: response.EventID, Applied: applied,
+		}); err == nil && finalizeErr != nil {
+			err = finalizeErr
+		}
+	}()
+	if err := dispatchEventAction(response, dependencies); err != nil {
+		return err
+	}
+	applied = true
+	return nil
+}
+
+func dispatchEventAction(response sessionipc.EventResponse, dependencies Dependencies) error {
 	if response.Effect.Cursor != "" {
 		SetCursor(response.Effect.Cursor)
 	}
@@ -102,7 +123,7 @@ func dispatchEvent(ctx context.Context, command Command, dependencies Dependenci
 			response.Effect.Header = ""
 		}
 	}
-	action, err := fzf.RenderEffect(response.Effect)
+	action, err := fzf.RenderEffectForEvent(response.Effect, response.EventID)
 	if err != nil {
 		return err
 	}
@@ -125,12 +146,24 @@ func dispatchDisplay(ctx context.Context, dependencies Dependencies) error {
 	return writeAll(dependencies.Stdout, []byte(action))
 }
 
-func dispatchLoad(ctx context.Context, command Command, dependencies Dependencies) error {
-	data, err := dependencies.Client.Load(ctx, sessionipc.LoadRequest{Generation: command.Generation})
+func dispatchLoad(ctx context.Context, command Command, dependencies Dependencies) (err error) {
+	applied := false
+	if command.EventID != 0 {
+		defer func() {
+			if finalizeErr := dependencies.Client.FinalizeLoad(context.WithoutCancel(ctx), sessionipc.LoadFinalizeRequest{EventID: command.EventID, Applied: applied}); err == nil && finalizeErr != nil {
+				err = finalizeErr
+			}
+		}()
+	}
+	data, err := dependencies.Client.Load(ctx, sessionipc.LoadRequest{Generation: command.Generation, EventID: command.EventID})
 	if err != nil {
 		return err
 	}
-	return writeAll(dependencies.Stdout, data)
+	if err := writeAll(dependencies.Stdout, data); err != nil {
+		return err
+	}
+	applied = true
+	return nil
 }
 
 func writeAll(destination io.Writer, data []byte) error {
@@ -154,10 +187,22 @@ func dispatchPreview(ctx context.Context, dependencies Dependencies) error {
 	if dependencies.Preview == nil {
 		return errors.New("callback: preview renderer unavailable")
 	}
-	current := base64.StdEncoding.EncodeToString([]byte(dependencies.LookupEnv("FZF_CURRENT_ITEM")))
+	rawCurrent := dependencies.LookupEnv("FZF_CURRENT_ITEM")
+	if rawCurrent == "" {
+		// fzf can request a preview while a reload is replacing the candidate
+		// list. There is no candidate to resolve during that transient state.
+		return nil
+	}
+	current := base64.StdEncoding.EncodeToString([]byte(rawCurrent))
 	request := sessionipc.PreviewRequest{Phase: "resolve", CurrentItemBase64: current}
 	response, err := dependencies.Client.ResolvePreview(ctx, request)
 	if err != nil {
+		if errors.Is(err, sessionipc.ErrNotFound) {
+			// fzf can ask for a preview of the item being replaced by a reload.
+			// The item is no longer resolvable, so leave the preview unchanged
+			// instead of reporting a transient callback failure to fzf.
+			return nil
+		}
 		return err
 	}
 	path, err := decodeCanonical(response.PathBase64)

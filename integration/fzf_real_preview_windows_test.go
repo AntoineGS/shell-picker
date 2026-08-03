@@ -22,12 +22,31 @@ type previewController struct {
 	mu          sync.Mutex
 	events      []controlEvent
 	changed     chan struct{}
-	clients     map[int]*os.File
+	clients     map[int]*previewClient
 	listening   windows.Handle
 	closing     bool
 	ready       chan struct{}
 	closed      chan struct{}
 	readers     sync.WaitGroup
+}
+
+type previewClient struct {
+	reader, writer *os.File
+	writeMu        sync.Mutex
+	closeOnce      sync.Once
+}
+
+func (client *previewClient) write(event controlEvent) error {
+	client.writeMu.Lock()
+	defer client.writeMu.Unlock()
+	return writeControlFrame(client.writer, event)
+}
+
+func (client *previewClient) close() {
+	client.closeOnce.Do(func() {
+		_ = client.reader.Close()
+		_ = client.writer.Close()
+	})
 }
 
 func newPreviewController(t *testing.T) *previewController {
@@ -41,7 +60,7 @@ func newPreviewController(t *testing.T) *previewController {
 		t.Fatalf("controller security descriptor: %v", err)
 	}
 	c := &previewController{t: t, name: `\\.\pipe\shell-picker-controller-` + hex.EncodeToString(raw[:16]),
-		nonce: hex.EncodeToString(raw[16:]), security: security, changed: make(chan struct{}), clients: make(map[int]*os.File),
+		nonce: hex.EncodeToString(raw[16:]), security: security, changed: make(chan struct{}), clients: make(map[int]*previewClient),
 		ready: make(chan struct{}), closed: make(chan struct{})}
 	go c.accept()
 	select {
@@ -117,30 +136,37 @@ func (c *previewController) accept() {
 			c.fail(err)
 			return
 		}
-		connection := os.NewFile(uintptr(handle), c.name)
+		var writeHandle windows.Handle
+		if err := windows.DuplicateHandle(windows.CurrentProcess(), handle, windows.CurrentProcess(), &writeHandle,
+			0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
+			_ = windows.CloseHandle(handle)
+			c.fail(err)
+			return
+		}
+		client := &previewClient{reader: os.NewFile(uintptr(handle), c.name), writer: os.NewFile(uintptr(writeHandle), c.name)}
 		c.mu.Lock()
-		c.clients[int(clientPID)] = connection
+		c.clients[int(clientPID)] = client
 		c.mu.Unlock()
 		nextReady := make(chan struct{})
 		c.readers.Add(1)
-		go c.read(connection, int(clientPID), nextReady)
+		go c.read(client, int(clientPID), nextReady)
 		signalReady = nextReady
 	}
 }
 
-func (c *previewController) read(connection *os.File, clientPID int, nextReady <-chan struct{}) {
+func (c *previewController) read(client *previewClient, clientPID int, nextReady <-chan struct{}) {
 	defer c.readers.Done()
 	defer func() {
 		c.mu.Lock()
-		if c.clients[clientPID] == connection {
+		if c.clients[clientPID] == client {
 			delete(c.clients, clientPID)
 		}
 		c.mu.Unlock()
-		_ = connection.Close()
+		client.close()
 	}()
 	for {
 		var event controlEvent
-		if err := readControlFrame(connection, &event); err != nil {
+		if err := readControlFrame(client.reader, &event); err != nil {
 			return
 		}
 		if event.Nonce != c.nonce || event.PID != clientPID {
@@ -153,7 +179,7 @@ func (c *previewController) read(connection *os.File, clientPID int, nextReady <
 			case <-c.closed:
 				return
 			}
-			if err := writeControlFrame(connection, controlEvent{Event: "controller-ready", Nonce: c.nonce}); err != nil {
+			if err := client.write(controlEvent{Event: "controller-ready", Nonce: c.nonce}); err != nil {
 				c.fail(err)
 				return
 			}
@@ -204,12 +230,22 @@ func (c *previewController) wait(ctx context.Context, event string, count int) c
 
 func (c *previewController) release(pid int) error {
 	c.mu.Lock()
-	connection := c.clients[pid]
+	client := c.clients[pid]
 	c.mu.Unlock()
-	if connection == nil {
+	if client == nil {
 		return errors.New("renderer connection unavailable")
 	}
-	return writeControlFrame(connection, controlEvent{Event: "release", Nonce: c.nonce})
+	return client.write(controlEvent{Event: "release", Nonce: c.nonce})
+}
+
+func (c *previewController) startOverflow(pid int) error {
+	c.mu.Lock()
+	client := c.clients[pid]
+	c.mu.Unlock()
+	if client == nil {
+		return errors.New("renderer connection unavailable")
+	}
+	return client.write(controlEvent{Event: "start-overflow", Nonce: c.nonce})
 }
 
 func (c *previewController) snapshot() []controlEvent {
@@ -228,7 +264,8 @@ func (c *previewController) close() {
 	c.closing = true
 	listening := c.listening
 	for _, client := range c.clients {
-		_ = windows.CancelIoEx(windows.Handle(client.Fd()), nil)
+		_ = windows.CancelIoEx(windows.Handle(client.reader.Fd()), nil)
+		_ = windows.CancelIoEx(windows.Handle(client.writer.Fd()), nil)
 	}
 	c.mu.Unlock()
 	if listening != 0 {

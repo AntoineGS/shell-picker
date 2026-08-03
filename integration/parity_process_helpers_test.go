@@ -27,6 +27,8 @@ func runParityHelper() int {
 		root := os.Getenv("PARITY_TEST_ROOT")
 		_, _ = fmt.Fprintf(os.Stdout, "%s\n%s\n%s\n", filepath.Join(root, "visible"), filepath.Join(root, "zoxide-one"), filepath.Join(root, "zoxide-two"))
 		return 0
+	case realZoxideHelperMode:
+		return runRealZoxideHelper()
 	case "zoxide-fail":
 		_, _ = io.WriteString(os.Stdout, "partial")
 		return 7

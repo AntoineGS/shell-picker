@@ -146,6 +146,53 @@ func TestDocumentationStatesLaunchOnlyZoxideContract(t *testing.T) {
 	}
 }
 
+func TestDocumentationStatesAsyncInitialZoxideContract(t *testing.T) {
+	documents := map[string]string{}
+	for _, path := range []string{"README.md", "docs/protocol.md", "docs/architecture.md", "docs/performance.md", "docs/security.md", "docs/adapters.md"} {
+		documents[path] = readDoc(t, path)
+	}
+	all := strings.Join([]string{documents["README.md"], documents["docs/protocol.md"], documents["docs/architecture.md"], documents["docs/performance.md"], documents["docs/security.md"], documents["docs/adapters.md"]}, "\n")
+	for _, required := range []string{
+		"local-first streaming startup",
+		"live fzf query filtering",
+		"initial CD view",
+		"one asynchronous zoxide source",
+		"initial-view-only discard",
+		"shutdown and join",
+		"fresh and cached",
+		"performance split",
+		"StartupDuration",
+		"EnrichmentDuration",
+		"SourceDuration",
+		"ceil(p*n)",
+		"CP never invokes zoxide",
+		"zoxide.enrichment",
+	} {
+		if !strings.Contains(all, required) {
+			t.Errorf("documentation missing async enrichment contract %q", required)
+		}
+	}
+	for _, stale := range []string{
+		"initial publication waits for zoxide",
+		"synchronously merges zoxide",
+		"waits for and merges zoxide",
+	} {
+		if strings.Contains(strings.ToLower(all), strings.ToLower(stale)) {
+			t.Errorf("documentation contains stale synchronous enrichment claim %q", stale)
+		}
+	}
+}
+
+func TestDocumentationUsesImmutableInitialGenerationForNonpublishedEnrichment(t *testing.T) {
+	document := readDoc(t, "docs/protocol.md")
+	if !strings.Contains(document, "immutable initial generation") {
+		t.Error("protocol does not identify the immutable initial generation for discarded/failed enrichment")
+	}
+	if strings.Contains(document, "active/base generation") {
+		t.Error("protocol still identifies discarded/failed enrichment with the mutable active/base generation")
+	}
+}
+
 func TestDocumentationStatesCurrentRuntimeContracts(t *testing.T) {
 	requirements := map[string][]string{
 		"README.md": {
@@ -154,6 +201,13 @@ func TestDocumentationStatesCurrentRuntimeContracts(t *testing.T) {
 		},
 		"docs/protocol.md": {
 			"display is exactly `d`; info is exactly `i:cd` or `i:cp`",
+			"/v1/event/finalize",
+			"/v1/load/finalize",
+			"l:<positive decimal generation>:<positive decimal eventID>",
+			"opaque nonzero `event_id`",
+			"matching /v1/load has cloned and framed",
+			"launch-view-only restore",
+			"Ordinary mode transitions may carry a same-generation restore generation",
 			"the display request is `{}` and its response is `{\"header\":\"...\"}`",
 		},
 		"docs/architecture.md": {
@@ -161,6 +215,8 @@ func TestDocumentationStatesCurrentRuntimeContracts(t *testing.T) {
 		},
 		"docs/security.md": {
 			"The bootstrap header crosses the terminal boundary as a discrete `--header=` argv value; dynamic arbitrary escaped location updates remain final validated colon-delimited `change-header` actions.",
+			"Event finalization is authenticated at `POST /v1/event/finalize`",
+			"unknown, stale, duplicate, and replayed IDs",
 		},
 	}
 	for path, requiredValues := range requirements {

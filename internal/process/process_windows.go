@@ -7,12 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"sort"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
-	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -74,7 +71,7 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 		return nil, errors.New("process: ExtraFiles unsupported on Windows")
 	}
 	observe(r.Observe, "attempt", spec.Path, 0)
-	path, err := exec.LookPath(spec.Path)
+	path, err := lookPathInEnvironment(spec.Path, spec.Env)
 	if err != nil {
 		if errors.Is(err, syscall.ENOENT) || errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 			return nil, fmt.Errorf("%w: %v", exec.ErrNotFound, err)
@@ -108,7 +105,6 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 		_ = winCloseHandle(job)
 		return nil, err
 	}
-	observe(r.Observe, "start", spec.Path, int(info.ProcessId))
 	cleanupCreated := func() {
 		_ = winTerminateProcess(info.Process, 1)
 		_, _ = winWaitForSingleObject(info.Process, 5000)
@@ -125,6 +121,7 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 		cleanupCreated()
 		return nil, err
 	}
+	observe(r.Observe, "start", spec.Path, int(info.ProcessId))
 	_ = winCloseHandle(info.Thread)
 	streams.closeChildren()
 	child := &Child{process: info.Process, job: job, containment: spec.Containment, pid: int(info.ProcessId), ctx: ctx, path: spec.Path,
@@ -147,7 +144,7 @@ func createSuspendedProcess(path string, spec Spec, streams *preparedStreams,
 	if err != nil {
 		return windows.ProcessInformation{}, err
 	}
-	environment := environmentBlock(spec.Env)
+	environment := buildEnvironmentBlock(spec.Env)
 	var directory *uint16
 	if spec.Dir != "" {
 		directory, err = windows.UTF16PtrFromString(spec.Dir)
@@ -295,6 +292,7 @@ func (c *Child) reap() {
 	c.processExited = true
 	close(c.observedExit)
 	c.lifeMu.Unlock()
+	c.streams.closeStdin()
 	c.result <- processResult{code: code, err: err}
 }
 
@@ -313,27 +311,4 @@ func (c *Child) watchCancellation() {
 		c.lifeMu.Unlock()
 		c.streams.emergencyClose()
 	}
-}
-
-func joinCommandLine(path string, args []string) string {
-	parts := make([]string, 1, len(args)+1)
-	parts[0] = windows.EscapeArg(path)
-	for _, arg := range args {
-		parts = append(parts, windows.EscapeArg(arg))
-	}
-	return strings.Join(parts, " ")
-}
-
-func environmentBlock(environment []string) []uint16 {
-	environment = append([]string(nil), environment...)
-	sort.SliceStable(environment, func(i, j int) bool { return strings.ToUpper(environment[i]) < strings.ToUpper(environment[j]) })
-	block := make([]uint16, 0)
-	for _, entry := range environment {
-		block = append(block, utf16.Encode([]rune(entry))...)
-		block = append(block, 0)
-	}
-	if len(block) == 0 {
-		return []uint16{0, 0}
-	}
-	return append(block, 0)
 }

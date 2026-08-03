@@ -17,6 +17,15 @@ func TestRenderNavigationEffectEndsWithHeader(t *testing.T) {
 	}
 }
 
+func TestRenderReloadCarriesExactLoadEventID(t *testing.T) {
+	effect := protocol.Effect{ReloadGeneration: 7}
+	got, err := RenderEffectForEvent(effect, 9)
+	want := "reload-sync(l:7:9)+wait+first+change-preview(p)+unbind(change,result-final)"
+	if err != nil || got != want {
+		t.Fatalf("got=%q want=%q err=%v", got, want, err)
+	}
+}
+
 func TestRenderInvalidPathAndRestoreEffects(t *testing.T) {
 	invalid, err := RenderEffect(protocol.Effect{Put: "/", InvalidPath: true})
 	if err != nil || invalid != "put(/)+reload-sync(l:empty)+change-preview(p:invalid)+rebind(result-final)" {
@@ -30,8 +39,8 @@ func TestRenderInvalidPathAndRestoreEffects(t *testing.T) {
 
 func TestRenderAbortEffect(t *testing.T) {
 	got, err := RenderEffect(protocol.Effect{Abort: true})
-	if err != nil || got != "abort" {
-		t.Fatalf("got=%q err=%v", got, err)
+	if err != nil || got != "cancel+abort" {
+		t.Fatalf("got=%q err=%v, want fzf's default interrupt for the abort exit", got, err)
 	}
 }
 

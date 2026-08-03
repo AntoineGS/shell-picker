@@ -162,10 +162,10 @@ type task20BlockingBackend struct {
 	once              sync.Once
 }
 
-func (backend *task20BlockingBackend) HandleEvent(context.Context, protocol.Event) (protocol.Effect, error) {
-	return protocol.Effect{}, nil
+func (backend *task20BlockingBackend) HandleEvent(context.Context, protocol.Event) (sessionipc.EventResult, error) {
+	return sessionipc.EventResult{}, nil
 }
-func (backend *task20BlockingBackend) LoadGeneration(context.Context, uint64) ([]byte, error) {
+func (backend *task20BlockingBackend) LoadGeneration(context.Context, sessionipc.LoadRequest) ([]byte, error) {
 	return nil, nil
 }
 func (backend *task20BlockingBackend) CurrentHeader(context.Context) (string, error) {

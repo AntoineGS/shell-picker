@@ -27,6 +27,7 @@ type Command struct {
 	Kind       Kind
 	Opcode     protocol.Opcode
 	Generation uint64
+	EventID    uint64
 	Picker     protocol.Picker
 }
 
@@ -65,17 +66,33 @@ func Parse(raw string) (Command, error) {
 		return Command{}, ErrGrammar
 	}
 	digits := strings.TrimPrefix(raw, "l:")
-	if digits == "" || digits == "0" || digits[0] == '0' {
+	parts := strings.Split(digits, ":")
+	if len(parts) > 2 || parts[0] == "" || parts[0] == "0" || parts[0][0] == '0' {
 		return Command{}, ErrGrammar
 	}
-	for _, digit := range []byte(digits) {
+	for _, digit := range []byte(parts[0]) {
 		if digit < '0' || digit > '9' {
 			return Command{}, ErrGrammar
 		}
 	}
-	generation, err := strconv.ParseUint(digits, 10, 64)
+	generation, err := strconv.ParseUint(parts[0], 10, 64)
 	if err != nil || generation == 0 || generation > math.MaxUint64 {
 		return Command{}, ErrGrammar
 	}
-	return Command{Kind: KindLoad, Generation: generation}, nil
+	var eventID uint64
+	if len(parts) == 2 {
+		if parts[1] == "" || parts[1] == "0" || parts[1][0] == '0' {
+			return Command{}, ErrGrammar
+		}
+		for _, digit := range []byte(parts[1]) {
+			if digit < '0' || digit > '9' {
+				return Command{}, ErrGrammar
+			}
+		}
+		eventID, err = strconv.ParseUint(parts[1], 10, 64)
+		if err != nil || eventID == 0 || eventID > math.MaxUint64 {
+			return Command{}, ErrGrammar
+		}
+	}
+	return Command{Kind: KindLoad, Generation: generation, EventID: eventID}, nil
 }

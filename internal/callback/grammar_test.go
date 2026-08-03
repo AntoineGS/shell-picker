@@ -19,6 +19,7 @@ func TestParseAcceptsOnlyStaticGrammar(t *testing.T) {
 		"e:en":                   {Kind: KindEvent, Opcode: protocol.OpEnter},
 		"e:rs":                   {Kind: KindEvent, Opcode: protocol.OpRestoreView},
 		"l:1":                    {Kind: KindLoad, Generation: 1},
+		"l:7:9":                  {Kind: KindLoad, Generation: 7, EventID: 9},
 		"l:empty":                {Kind: KindEmptySource},
 		"l:18446744073709551615": {Kind: KindLoad, Generation: ^uint64(0)},
 		"p":                      {Kind: KindPreview},
@@ -27,7 +28,7 @@ func TestParseAcceptsOnlyStaticGrammar(t *testing.T) {
 		"i:cd":                   {Kind: KindInfo, Picker: protocol.PickerCD},
 		"i:cp":                   {Kind: KindInfo, Picker: protocol.PickerCP},
 	}
-	rejected := []string{"", "e:q", "l:0", "l:-1", "l:01", "l:18446744073709551616", "l:empty:1", "l: empty",
+	rejected := []string{"", "e:q", "l:0", "l:-1", "l:01", "l:18446744073709551616", "l:empty:1", "l: empty", "l:7:0", "l:7:01", "l:07:9", "l:7:9:1",
 		"p x", "p:invalid:extra", "p:invalid;id", "e:en;id", "e:rs;id", "$(id)", "sh -c id", "p\x00x", "i", "i:CD",
 		"i:other", "d:x", " d", "d ", "i:cp;id"}
 	for raw, want := range accepted {

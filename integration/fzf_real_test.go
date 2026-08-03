@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
 	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
@@ -26,27 +27,10 @@ var (
 	keyDown  = []byte{0x1b, '[', 'B'}
 )
 
-type traceEvent struct {
-	Schema          int    `json:"schema"`
-	Time            string `json:"time"`
-	Session         string `json:"session"`
-	Event           string `json:"event"`
-	Generation      uint64 `json:"generation,omitempty"`
-	CandidateCount  int    `json:"candidate_count,omitempty"`
-	Renderer        string `json:"renderer,omitempty"`
-	Outcome         string `json:"outcome,omitempty"`
-	Path            string `json:"path,omitempty"`
-	ZoxidePolicy    string `json:"zoxide_policy,omitempty"`
-	ZoxideOutcome   string `json:"zoxide_outcome,omitempty"`
-	ZoxideAttempts  int    `json:"zoxide_attempts,omitempty"`
-	ZoxideStarts    int    `json:"zoxide_starts,omitempty"`
-	ZoxideExits     int    `json:"zoxide_exits,omitempty"`
-	ZoxideProcesses int    `json:"zoxide_processes,omitempty"`
-	ZoxideLive      int    `json:"zoxide_live,omitempty"`
-	ZoxideMaxLive   int    `json:"zoxide_max_live,omitempty"`
-	CallbackIPCUS   int64  `json:"callback_ipc_us,omitempty"`
-	ChildStarts     int    `json:"child_starts,omitempty"`
-	MaxLiveChildren int    `json:"max_live_children,omitempty"`
+type traceEvent = integrationpkg.TraceRecord
+
+func decodeTraceEvent(data []byte) (traceEvent, error) {
+	return integrationpkg.DecodeTraceRecordAt(data, time.Time{})
 }
 
 type barrier struct {
@@ -63,12 +47,44 @@ type terminalSession interface {
 	WaitBarrier(context.Context, barrier) traceEvent
 	TraceEvents() []traceEvent
 	AssertProcessTopology(*testing.T)
+	TrackLiveDescendants(*testing.T) []trackedProcess
+	AssertTrackedProcessesGone(*testing.T, []trackedProcess)
 	PID() int
 	Output() []byte
+	ResultBytes() []byte
 	WaitOutputAfter(context.Context, int)
 	CloseInput() error
 	Wait(context.Context) error
 	Close() error
+}
+
+type trackedProcess struct {
+	role     string
+	identity ownedProcessIdentity
+}
+
+func registerTrackedProcesses(t *testing.T, tracked []trackedProcess) []trackedProcess {
+	t.Helper()
+	if len(tracked) == 0 {
+		t.Fatal("picker had no live descendants to track")
+	}
+	t.Cleanup(func() {
+		for _, process := range tracked {
+			if err := process.identity.Close(); err != nil {
+				t.Errorf("close tracked %s process %d: %v", process.role, process.identity.PID(), err)
+			}
+		}
+	})
+	return tracked
+}
+
+func assertTrackedProcessesGone(t *testing.T, tracked []trackedProcess) {
+	t.Helper()
+	for _, process := range tracked {
+		if err := process.identity.WaitGone(testContext(t)); err != nil {
+			t.Fatalf("tracked %s process %d remained live: %v", process.role, process.identity.PID(), err)
+		}
+	}
 }
 
 type terminalConfig struct {
@@ -117,20 +133,14 @@ func newRealFZFFixture(t *testing.T, fzfPath, executableDirectory string) *realF
 			t.Fatal(err)
 		}
 	}
-	picker := filepath.Join(bin, "shell-picker")
-	if runtime.GOOS == "windows" {
-		picker += ".exe"
+	cachedPicker, _ := cachedRealBinaries(t)
+	picker := filepath.Join(bin, binaryName("shell-picker"))
+	if err := os.Link(cachedPicker, picker); err != nil {
+		if err := copyExecutable(cachedPicker, picker); err != nil {
+			t.Fatalf("link cached public picker: %v", err)
+		}
 	}
-	repository, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command("go", "build", "-o", picker, "./cmd/shell-picker")
-	command.Dir = repository
-	command.Env = append(os.Environ(), "TMPDIR="+os.Getenv("TMPDIR"))
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build public picker: %v\n%s", err, output)
-	}
+	_ = os.Chmod(picker, 0o500)
 	return &realFZFFixture{root: root, cwd: cwd, home: home, picker: picker, fzf: fzfPath}
 }
 
@@ -151,7 +161,7 @@ func (fixture *realFZFFixture) AssertAccepted(t *testing.T, term terminalSession
 		want = append(want, path...)
 		want = append(want, 0)
 	}
-	output := term.Output()
+	output := term.ResultBytes()
 	if bytes.Count(output, []byte{0}) != len(paths) || !bytes.HasSuffix(output, want) {
 		t.Fatalf("picker output does not contain exactly %d accepted NUL records ending with %q: %q", len(paths), want, output)
 	}
@@ -177,6 +187,7 @@ func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	term.AssertProcessTopology(t)
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
@@ -186,9 +197,13 @@ func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
 	sendAndWait(t, term, keyEnter, barrier{Event: "generation.publish", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: 2})
+	waitForTerminalText(t, term, "created-dir"+string(os.PathSeparator))
+	beforeParent := len(term.Output())
 	sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 3})
+	waitForTerminalTextAfter(t, term, beforeParent, filepath.Base(fixture.cwd)+string(os.PathSeparator))
 	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
 	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("visiblex")); err != nil {
@@ -231,8 +246,8 @@ func TestRealFZFInteractiveAbort(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := term.WaitBarrier(testContext(t), barrier{Event: "session.close", Operation: "aborted", Count: 1})
-	if event.Outcome != "aborted" || bytes.Contains(term.Output(), []byte{0}) {
-		t.Fatalf("abort event/output=%+v/%q", event, term.Output())
+	if event.Outcome != "aborted" || len(term.ResultBytes()) != 0 {
+		t.Fatalf("abort event/result=%+v/%q", event, term.ResultBytes())
 	}
 }
 
@@ -249,11 +264,8 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	sentinel := filepath.Join(fixture.root, "injected")
-	helper := filepath.Join(fixture.root, "sentinel-helper")
 	fakeBin := filepath.Join(fixture.root, "sentinel tools")
-	if runtime.GOOS == "windows" {
-		helper += ".exe"
-	}
+	_, helper := cachedRealBinaries(t)
 	if err := os.MkdirAll(fakeBin, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -261,17 +273,12 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	build := exec.Command("go", "build", "-o", helper, "./integration/testhelper")
-	build.Dir, build.Env = repository, append(os.Environ(), "TMPDIR="+os.Getenv("TMPDIR"))
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build sentinel helper: %v\n%s", err, output)
-	}
 	echo := filepath.Join(fakeBin, "echo")
 	if runtime.GOOS == "windows" {
 		echo += ".exe"
 	}
 	ldflags := "-X=main.helperPath=" + helper + " -X=main.controller=" + sentinel + " -X=main.nonce=sentinel -X=main.subcommand=sentinel"
-	build = exec.Command("go", "build", "-o", echo, "-ldflags", ldflags, "./integration/testhelper/delegate")
+	build := exec.Command("go", "build", "-o", echo, "-ldflags", ldflags, "./integration/testhelper/delegate")
 	build.Dir, build.Env = repository, append(os.Environ(), "TMPDIR="+os.Getenv("TMPDIR"))
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build injection sentinel: %v\n%s", err, output)
@@ -280,6 +287,7 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	term := fixture.start(t, protocol.PickerCP, []string{"PATH=" + path})
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	term.AssertProcessTopology(t)
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
@@ -288,8 +296,12 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	}
 	sendAndWait(t, term, keyEnter, barrier{Event: "generation.publish", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: 2})
+	waitForTerminalText(t, term, "created"+string(os.PathSeparator))
+	beforeParent := len(term.Output())
 	sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 3})
+	waitForTerminalTextAfter(t, term, beforeParent, filepath.Base(fixture.cwd)+string(os.PathSeparator))
 	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
 	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("visiblex")); err != nil {

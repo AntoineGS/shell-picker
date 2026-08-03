@@ -42,7 +42,11 @@ type Dependencies struct {
 	TTYOut           io.Writer
 	TTYErr           io.Writer
 
-	launchFZF func(context.Context, fzf.Config) (fzf.Result, error)
+	launchFZF                 func(context.Context, fzf.Config) (fzf.Result, error)
+	listenIPC                 func(context.Context, sessionipc.Token, sessionipc.Backend) (*sessionipc.Server, error)
+	buildLocal                func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error)
+	loadInitialZoxide         func(context.Context) (candidate.InitialZoxideResult, error)
+	beforeInitialInputPublish func(*fzf.InputStream)
 }
 
 func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependencies) (outcome protocol.Outcome, err error) {
@@ -76,9 +80,13 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
+	buildLocal := dependencies.buildLocal
+	if buildLocal == nil {
+		buildLocal = builder.BuildLocal
+	}
 	generate := func(generateCtx context.Context, request candidate.BuildRequest) (candidate.BuildResult, error) {
 		trace.event(integrationpkg.TraceEvent{Name: "generation.start", Generation: request.Generation, Outcome: "ok"})
-		result, buildErr := builder.Build(generateCtx, request)
+		result, buildErr := buildLocal(generateCtx, request)
 		if buildErr == nil {
 			candidate.CompactHomeDisplays(result.Records, options.Home)
 		}
@@ -91,15 +99,45 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	actorCtx, cancelActor := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer cancelActor(nil)
 	actor := session.New(actorCtx, generate)
-	actorOpen := true
-	defer func() {
-		if actorOpen {
-			if cause := context.Cause(ctx); cause != nil {
-				cancelActor(cause)
-			}
-			_ = actor.Close()
+	input := fzf.NewInputStream(nil)
+	metrics := &pickerMetrics{traceID: traceID, policy: options.ZoxidePolicy,
+		sources: candidate.SourceMetrics{ZoxideOutcome: "not-run"}}
+	var coordinator *initialEnrichment
+	var server *sessionipc.Server
+	cleaned := false
+	cleanup := func() {
+		if cleaned {
+			return
 		}
-	}()
+		cleaned = true
+
+		stopCause := context.Cause(ctx)
+		if stopCause == nil && err != nil {
+			stopCause = err
+		}
+
+		var coordinatorErr, serverErr, actorErr error
+		if coordinator != nil {
+			coordinatorErr = coordinator.Stop(stopCause)
+			coordinatorErr = joinLifecycleErrors(coordinatorErr, coordinator.Wait())
+		} else if input != nil {
+			_ = input.Close()
+		}
+		if server != nil {
+			serverErr = server.Close(context.Background())
+		}
+		cancelActor(stopCause)
+		actorErr = actor.Close()
+
+		if err == nil {
+			err = coordinatorErr
+			if err == nil {
+				err = serverErr
+			}
+		}
+		err = selectLifecycleError(err, actorErr, context.Cause(ctx))
+	}
+	defer cleanup()
 
 	initialLocation := pathutil.Filesystem(options.CWD)
 	initialPrompt := "[I] "
@@ -108,6 +146,16 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		Location: initialLocation, Home: pathutil.Filesystem(options.Home), Prompt: initialPrompt,
 	}
 	initialHeader := pathutil.PromptDisplayHome(initialLocation, initialState.Home)
+	if options.Picker == protocol.PickerCD {
+		var source initialZoxideLoader = builder
+		if dependencies.loadInitialZoxide != nil {
+			source = initialZoxideLoaderFunc(dependencies.loadInitialZoxide)
+		}
+		coordinator, err = newInitialEnrichment(ctx, actor, source, input, metrics, trace, options.ZoxidePolicy, options.Home)
+		if err != nil {
+			return protocol.Outcome{}, err
+		}
+	}
 	initial, err := actor.Apply(ctx, session.ProposedTransition{
 		State: initialState,
 		Build: &candidate.BuildRequest{Picker: options.Picker, Location: initialState.Location, Initial: true},
@@ -117,27 +165,43 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, fmt.Errorf("build initial candidates: %w", err)
 	}
-	traceTransition(trace, options.ZoxidePolicy, initial, initialState.Location.Path)
+	traceInitialTransition(trace, options.ZoxidePolicy, options.Picker, initial, initialState.Location.Path)
+	metrics.recordTransition(initial)
+	if dependencies.beforeInitialInputPublish != nil {
+		dependencies.beforeInitialInputPublish(input)
+	}
+	if err := input.Append(frameCandidateRecords(initial.Snapshot.Records())); err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			return protocol.Outcome{}, cause
+		}
+		return protocol.Outcome{}, fmt.Errorf("publish initial candidates: %w", err)
+	}
+	if coordinator != nil {
+		if err := coordinator.Activate(initial.Snapshot.Generation()); err != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				return protocol.Outcome{}, cause
+			}
+			return protocol.Outcome{}, fmt.Errorf("activate initial candidates: %w", err)
+		}
+	} else if err := input.Close(); err != nil {
+		return protocol.Outcome{}, fmt.Errorf("close picker input: %w", err)
+	}
 
 	token, err := sessionipc.NewToken()
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
-	metrics := &pickerMetrics{}
-	metrics.traceID = traceID
-	metrics.policy = options.ZoxidePolicy
-	metrics.recordTransition(initial)
-	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace}
-	server, err := sessionipc.Listen(ctx, token, backend)
+	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace, enrichment: coordinator}
+	var listenedServer *sessionipc.Server
+	listenIPC := dependencies.listenIPC
+	if listenIPC == nil {
+		listenIPC = sessionipc.Listen
+	}
+	listenedServer, err = listenIPC(ctx, token, backend)
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
-	serverOpen := true
-	defer func() {
-		if serverOpen {
-			_ = server.Close(context.Background())
-		}
-	}()
+	server = listenedServer
 
 	callback.SetCursor(protocol.CursorLine)
 	launch := dependencies.launchFZF
@@ -158,7 +222,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		Picker: options.Picker, FZFPath: options.FZFPath, ExecutablePath: options.ExecutablePath,
 		Environment: process.SanitizeEnv(dependencies.Environment, nil), CallbackAddress: server.Address(),
 		CallbackToken: token.String(), Options: fzf.Options(options.Picker, initialPrompt, initialHeader),
-		Input: frameCandidateRecords(initial.Snapshot.Records()), Runner: fzfRunner,
+		Input: input, Runner: fzfRunner,
 		ForegroundTTY: terminal, TTYOut: dependencies.TTYOut, TTYErr: dependencies.TTYErr,
 	})
 	fzfOutcome := "ok"
@@ -169,12 +233,8 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	}
 	trace.event(integrationpkg.TraceEvent{Name: "fzf.exit", Outcome: fzfOutcome})
 	callback.SetCursor(protocol.CursorLine)
-	closeServerErr := server.Close(context.Background())
-	serverOpen = false
 	if launchErr != nil {
 		err = fmt.Errorf("run picker: %w", launchErr)
-	} else if closeServerErr != nil {
-		err = closeServerErr
 	}
 	parentCause := context.Cause(ctx)
 
@@ -195,19 +255,19 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if latest := context.Cause(ctx); latest != nil {
 		parentCause = latest
 	}
-	if parentCause != nil {
-		cancelActor(parentCause)
+	if err == nil && parentCause != nil {
+		return protocol.Outcome{}, parentCause
 	}
-	actorErr := actor.Close()
-	actorOpen = false
-	if latest := context.Cause(ctx); latest != nil {
-		parentCause = latest
-	}
-	err = selectLifecycleError(err, actorErr, parentCause)
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
 	return outcome, nil
+}
+
+type initialZoxideLoaderFunc func(context.Context) (candidate.InitialZoxideResult, error)
+
+func (load initialZoxideLoaderFunc) LoadInitialZoxide(ctx context.Context) (candidate.InitialZoxideResult, error) {
+	return load(ctx)
 }
 
 func selectLifecycleError(selected, actorClose, parentCause error) error {
@@ -231,18 +291,6 @@ func traceDiscardOutcome(err error) string {
 	default:
 		return "error"
 	}
-}
-
-func traceTransition(trace *pickerTrace, policy candidate.ZoxidePolicy, result session.TransitionResult, path []byte) {
-	metrics := result.Metrics
-	trace.event(integrationpkg.TraceEvent{Name: "generation.publish", Generation: result.Snapshot.Generation(),
-		CandidateCount: len(result.Snapshot.Records()), Outcome: "ok", Path: path, ZoxidePolicy: policy.String(),
-		ZoxideAttempts: metrics.Sources.ZoxideAttempts, ZoxideStarts: metrics.Sources.ZoxideStarts,
-		ZoxideExits: metrics.Sources.ZoxideExits, ZoxideProcesses: metrics.Sources.ZoxideProcesses,
-		ZoxideLive:    metrics.Sources.ZoxideLive,
-		ZoxideMaxLive: metrics.Sources.ZoxideMaxLive, ActorQueueWait: metrics.QueueWait,
-		LocalDuration: metrics.Sources.LocalDuration, ZoxideDuration: metrics.Sources.ZoxideDuration,
-		ZoxideOutcome: metrics.Sources.ZoxideOutcome, TransformDuration: metrics.TransformDuration})
 }
 
 func validatePickerOptions(ctx context.Context, options PickerOptions) error {
@@ -295,12 +343,4 @@ func sessionBuilder(options PickerOptions, dependencies *Dependencies) (*candida
 		dependencies.CandidateBuilder.ConfigureFresh(newCache)
 	}
 	return &dependencies.CandidateBuilder, nil
-}
-
-func frameCandidateRecords(records []candidate.Record) []byte {
-	wire := make([]protocol.WireRecord, len(records))
-	for index, record := range records {
-		wire[index] = record.Wire()
-	}
-	return protocol.FrameRecords(wire)
 }

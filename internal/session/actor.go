@@ -29,6 +29,7 @@ type Actor struct {
 	closeErr  error
 	finalErr  error
 	cleanup   cleanupFunc
+	nextID    uint64
 }
 
 func New(ctx context.Context, generate GenerateFunc) *Actor {
@@ -49,108 +50,6 @@ func newActor(ctx context.Context, generate GenerateFunc, cleanup cleanupFunc) *
 	return actor
 }
 
-func (actor *Actor) Apply(ctx context.Context, proposal ProposedTransition) (TransitionResult, error) {
-	if ctx == nil {
-		return TransitionResult{}, errNilContext
-	}
-	command := &applyCommand{
-		ctx: ctx, proposal: cloneProposal(proposal), submitted: time.Now(), reply: make(chan applyReply, 1),
-	}
-	if err := actor.enqueue(ctx, command); err != nil {
-		return TransitionResult{}, errors.Join(err, rollback(command.proposal.Created))
-	}
-	reply := <-command.reply
-	return reply.result, reply.err
-}
-
-func (actor *Actor) Current(ctx context.Context) (Snapshot, error) {
-	if ctx == nil {
-		return Snapshot{}, errNilContext
-	}
-	command := currentCommand{ctx: ctx, reply: make(chan snapshotReply, 1)}
-	if err := actor.enqueue(ctx, command); err != nil {
-		return Snapshot{}, err
-	}
-	reply := <-command.reply
-	return reply.snapshot, reply.err
-}
-
-func (actor *Actor) CurrentState(ctx context.Context) (State, error) {
-	if ctx == nil {
-		return State{}, errNilContext
-	}
-	command := currentStateCommand{ctx: ctx, reply: make(chan stateReply, 1)}
-	if err := actor.enqueue(ctx, command); err != nil {
-		return State{}, err
-	}
-	reply := <-command.reply
-	return reply.state, reply.err
-}
-
-func (actor *Actor) Snapshot(ctx context.Context, generation uint64) (Snapshot, error) {
-	if ctx == nil {
-		return Snapshot{}, errNilContext
-	}
-	command := snapshotCommand{ctx: ctx, generation: generation, reply: make(chan snapshotReply, 1)}
-	if err := actor.enqueue(ctx, command); err != nil {
-		return Snapshot{}, err
-	}
-	reply := <-command.reply
-	return reply.snapshot, reply.err
-}
-
-func (actor *Actor) ResolveCurrent(ctx context.Context, raw []byte) (candidate.Record, error) {
-	if ctx == nil {
-		return candidate.Record{}, errNilContext
-	}
-	command := resolveCommand{ctx: ctx, key: string(raw), reply: make(chan resolveReply, 1)}
-	if err := actor.enqueue(ctx, command); err != nil {
-		return candidate.Record{}, err
-	}
-	reply := <-command.reply
-	return reply.record, reply.err
-}
-
-func (actor *Actor) Close() error {
-	actor.closeOnce.Do(func() {
-		reply := make(chan error, 1)
-		select {
-		case actor.commands <- closeCommand{reply: reply}:
-			actor.closeErr = <-reply
-		case <-actor.done:
-		}
-		close(actor.closeWait)
-	})
-	<-actor.closeWait
-	return actor.closeErr
-}
-
-func (actor *Actor) enqueue(ctx context.Context, command any) error {
-	if cause := context.Cause(ctx); cause != nil {
-		return cause
-	}
-	select {
-	case <-actor.done:
-		return actor.terminalError()
-	default:
-	}
-	select {
-	case actor.commands <- command:
-		return nil
-	case <-ctx.Done():
-		return context.Cause(ctx)
-	case <-actor.done:
-		return actor.terminalError()
-	}
-}
-
-func (actor *Actor) terminalError() error {
-	if actor.finalErr != nil {
-		return actor.finalErr
-	}
-	return ErrClosed
-}
-
 func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 	defer close(actor.done)
 	current := Snapshot{byFullRecord: make(map[string][]int)}
@@ -158,11 +57,20 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 	var replacement *applyCommand
 	var closeReply chan error
 	var shutdownErr error
-	var nextID uint64
 	sessionDone := sessionCtx.Done()
 	replyApplyError := func(command *applyCommand, err error) {
 		err = errors.Join(err, actor.cleanup(command.proposal.Created))
 		command.reply <- applyReply{err: err}
+	}
+	replyEnrichError := func(command *enrichCommand, err error) {
+		command.reply <- enrichReply{err: err}
+	}
+	nextGeneration := func() (uint64, bool) {
+		if actor.nextID == math.MaxUint64 {
+			return 0, false
+		}
+		actor.nextID++
+		return actor.nextID, true
 	}
 
 	start := func(command *applyCommand) *pendingTransition {
@@ -185,13 +93,13 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 			replyApplyError(command, errNilGenerator)
 			return nil
 		}
-		if nextID == math.MaxUint64 {
+		generation, ok := nextGeneration()
+		if !ok {
 			replyApplyError(command, errGenerationLimit)
 			return nil
 		}
-		nextID++
 		buildCtx, cancel := context.WithCancelCause(sessionCtx)
-		transition := &pendingTransition{id: nextID, command: command, accepted: accepted, cancel: cancel}
+		transition := &pendingTransition{id: generation, command: command, accepted: accepted, cancel: cancel}
 		request := *command.proposal.Build
 		request.Generation = transition.id
 		go func(id uint64) {
@@ -247,6 +155,34 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 				pending.replyErr = ErrSuperseded
 				pending.cancel(ErrSuperseded)
 				replacement = command
+			case *enrichCommand:
+				accepted := time.Now()
+				if shutdownErr != nil {
+					replyEnrichError(command, shutdownErr)
+				} else if cause := context.Cause(command.ctx); cause != nil {
+					replyEnrichError(command, cause)
+				} else if cause := context.Cause(sessionCtx); cause != nil {
+					replyEnrichError(command, cause)
+				} else if command.baseGeneration != current.generation {
+					replyEnrichError(command, ErrStaleGeneration)
+				} else if pending != nil {
+					replyEnrichError(command, ErrTransitionPending)
+				} else {
+					generation, ok := nextGeneration()
+					if !ok {
+						replyEnrichError(command, errGenerationLimit)
+						continue
+					}
+					records := cloneRecords(command.records)
+					current = Snapshot{
+						generation:   generation,
+						state:        cloneState(current.state),
+						records:      records,
+						byFullRecord: buildIndex(records),
+					}
+					result := enrichTransitionResult(current, command, accepted)
+					command.reply <- enrichReply{result: result}
+				}
 			case currentCommand:
 				if shutdownErr != nil {
 					command.reply <- snapshotReply{err: shutdownErr}

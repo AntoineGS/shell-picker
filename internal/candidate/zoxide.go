@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -22,6 +23,18 @@ var (
 	errZoxideNotReady = errors.New("zoxide cache is not ready")
 	errZoxideTimeout  = fmt.Errorf("zoxide private timeout: %w", context.DeadlineExceeded)
 )
+
+type zoxideWaiterCancellationError struct {
+	cause error
+}
+
+func (err *zoxideWaiterCancellationError) Error() string {
+	return fmt.Sprintf("zoxide cache waiter canceled: %v", err.cause)
+}
+
+func (err *zoxideWaiterCancellationError) Unwrap() error {
+	return err.cause
+}
 
 type ZoxidePolicy uint8
 
@@ -96,13 +109,31 @@ func DefaultZoxideTimeout() time.Duration {
 	return 75 * time.Millisecond
 }
 
+// Load starts one shared load. The caller that starts it waits for the terminal
+// result; later callers can stop waiting without interrupting that load.
 func (cache *ZoxideCache) Load(ctx context.Context) error {
+	started := false
 	cache.once.Do(func() {
-		defer close(cache.ready)
-		cache.load(ctx)
+		started = true
+		go func() {
+			defer close(cache.ready)
+			cache.load(ctx)
+		}()
 	})
-	<-cache.ready
-	return cache.err
+	if started || ctx == nil {
+		<-cache.ready
+		return cache.err
+	}
+	select {
+	case <-cache.ready:
+		return cache.err
+	case <-ctx.Done():
+		cause := context.Cause(ctx)
+		if cause == nil {
+			cause = ctx.Err()
+		}
+		return &zoxideWaiterCancellationError{cause: cause}
+	}
 }
 
 func (cache *ZoxideCache) Records() ([]Record, SourceMetrics, error) {
@@ -124,29 +155,36 @@ func (cache *ZoxideCache) load(ctx context.Context) {
 	}
 
 	runCtx := ctx
-	cancel := func() {}
+	timeoutCancel := func() {}
 	if cache.timeout > 0 {
-		runCtx, cancel = context.WithTimeoutCause(ctx, cache.timeout, errZoxideTimeout)
+		runCtx, timeoutCancel = context.WithTimeoutCause(ctx, cache.timeout, errZoxideTimeout)
 	}
-	defer cancel()
+	defer timeoutCancel()
+	runCtx, outputCancel := context.WithCancelCause(runCtx)
+	defer outputCancel(nil)
 
 	tracker := newZoxideTracker(cache.runner.Observe)
 	runner := cache.runner
 	runner.Observe = tracker.observe
 	var stdout bytes.Buffer
+	limitedStdout := newZoxideLimitWriter(&stdout, MaxZoxideOutputBytes, MaxZoxideRows, MaxZoxideRowBytes, outputCancel)
 	runErr := runner.Run(runCtx, process.Spec{
 		Path:        cache.path,
 		Args:        []string{"query", "--list"},
 		Env:         process.SanitizeEnv(cache.environment, nil),
-		Stdout:      &stdout,
+		Stdout:      limitedStdout,
 		Containment: process.ContainmentOwnTree,
 		WaitDelay:   zoxideWaitDelay,
 	})
 	cache.metrics.ZoxideDuration = time.Since(started)
 	cache.metrics.ZoxideAttempts, cache.metrics.ZoxideStarts, cache.metrics.ZoxideExits,
 		cache.metrics.ZoxideProcesses, cache.metrics.ZoxideLive, cache.metrics.ZoxideMaxLive = tracker.metrics()
+	outputErr := limitedStdout.finalize()
 
 	switch {
+	case errors.Is(outputErr, errZoxideOutputLimit):
+		cache.metrics.ZoxideOutcome = "malformed"
+		cache.err = errZoxideOutputLimit
 	case errors.Is(runErr, errZoxideTimeout):
 		cache.metrics.ZoxideOutcome = "timeout"
 		cache.err = runErr
@@ -172,6 +210,9 @@ func (cache *ZoxideCache) load(ctx context.Context) {
 }
 
 func parseZoxideRecords(output []byte) ([]Record, error) {
+	if err := validateZoxideOutputBounds(output); err != nil {
+		return nil, err
+	}
 	if len(output) == 0 {
 		return []Record{}, nil
 	}
@@ -181,9 +222,13 @@ func parseZoxideRecords(output []byte) ([]Record, error) {
 	if len(output) == 0 {
 		return nil, errors.New("zoxide output contains an empty row")
 	}
-	rows := bytes.Split(output, []byte{'\n'})
-	records := make([]Record, 0, len(rows))
-	for _, row := range rows {
+	records := make([]Record, 0)
+	for start := 0; start < len(output); {
+		end := bytes.IndexByte(output[start:], '\n')
+		if end < 0 {
+			end = len(output) - start
+		}
+		row := output[start : start+end]
 		if len(row) == 0 {
 			return nil, errors.New("zoxide output contains an empty row")
 		}
@@ -194,8 +239,20 @@ func parseZoxideRecords(output []byte) ([]Record, error) {
 			return nil, fmt.Errorf("zoxide path %q is not absolute", row)
 		}
 		records = append(records, newRecord(protocol.KindZoxide, protocol.EscapeDisplay(row), row))
+		start += end
+		if start < len(output) && output[start] == '\n' {
+			start++
+		}
 	}
 	return records, nil
+}
+
+func validateZoxideOutputBounds(output []byte) error {
+	writer := newZoxideLimitWriter(io.Discard, MaxZoxideOutputBytes, MaxZoxideRows, MaxZoxideRowBytes, nil)
+	if _, err := writer.Write(output); err != nil {
+		return err
+	}
+	return writer.finalize()
 }
 
 type zoxideTracker struct {

@@ -24,7 +24,7 @@ func TestDocumentedProtocolMatchesConstants(t *testing.T) {
 	for _, opcode := range []protocol.Opcode{protocol.OpModeInsert, protocol.OpModeAdd, protocol.OpEscape, protocol.OpForward, protocol.OpParent, protocol.OpSlash, protocol.OpHome, protocol.OpEnter, protocol.OpRestoreView} {
 		requireDocumented(t, doc, "e:"+string(opcode))
 	}
-	for _, value := range []string{protocol.VirtualDrivesTarget, protocol.EncodePath([]byte(protocol.VirtualDrivesTarget)), "p", "l:<positive decimal generation>", "l:empty", "p:invalid", "64 KiB", "64 MiB", "1 KiB"} {
+	for _, value := range []string{protocol.VirtualDrivesTarget, protocol.EncodePath([]byte(protocol.VirtualDrivesTarget)), "p", "l:<positive decimal generation>", "l:<positive decimal generation>:<positive decimal eventID>", "l:empty", "p:invalid", "/v1/event/finalize", "/v1/load/finalize", "event_id", "applied", "idempotent", "callback application failed", "64 KiB", "64 MiB", "1 KiB", "4 MiB total output", "1,000,000 rows", "128 KiB per row"} {
 		requireDocumented(t, doc, value)
 	}
 	for _, source := range []string{"internal/sessionipc/server.go", "internal/sessionipc/client.go"} {
@@ -41,7 +41,7 @@ func TestDocumentedProtocolMatchesConstants(t *testing.T) {
 	if got := candidate.DefaultZoxideTimeout().String(); !strings.Contains(readDoc(t, "README.md"), got) {
 		t.Fatalf("README does not document default zoxide timeout %s", got)
 	}
-	if integration.TraceSchema != 1 || !strings.Contains(doc, "schema 1") {
+	if integration.TraceSchema != 2 || !strings.Contains(doc, "schema 2") {
 		t.Fatal("trace schema documentation is not synchronized")
 	}
 }

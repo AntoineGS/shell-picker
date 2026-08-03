@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -21,6 +22,7 @@ import (
 func TestTransitionTraceGenerationsAreUniqueAndTerminal(t *testing.T) {
 	fixture := newPickerFixture(t, protocol.PickerCD)
 	fixture.options.ZoxidePolicy = candidate.ZoxideFresh
+	fixture.options.ZoxideTimeout = 0
 	fixture.options.TracePath = filepath.Join(t.TempDir(), "generation.trace.jsonl")
 	counter := filepath.Join(t.TempDir(), "count")
 	fixture.dependencies.ZoxidePath = filepath.Join(t.TempDir(), "delayed-zoxide")
@@ -35,19 +37,35 @@ func TestTransitionTraceGenerationsAreUniqueAndTerminal(t *testing.T) {
 		"GO_TEST_COUNTER="+counter, "GO_TEST_PATH="+fixture.cwd)
 
 	var starts atomic.Int32
+	zoxideStarted := make(chan struct{})
+	releaseZoxide := make(chan struct{})
+	var zoxideStartedOnce, releaseZoxideOnce sync.Once
 	fixture.dependencies.ProcessRunner.Observe = func(event process.ProcessEvent) {
-		if event.Phase == "start" {
+		if event.Phase == "start" && event.Path == fixture.dependencies.ZoxidePath {
 			starts.Add(1)
+			zoxideStartedOnce.Do(func() { close(zoxideStarted) })
+			<-releaseZoxide
 		}
 	}
 	fixture.dependencies.launchFZF = func(ctx context.Context, config fzf.Config) (fzf.Result, error) {
+		defer releaseZoxideOnce.Do(func() { close(releaseZoxide) })
 		client := callbackClient(t, config)
 		defer client.CloseIdleConnections()
+		select {
+		case <-zoxideStarted:
+		case <-ctx.Done():
+			return fzf.Result{}, context.Cause(ctx)
+		}
 		for generation := uint64(2); generation <= 3; generation++ {
 			response, err := client.Event(ctx, sessionipc.EventRequest{Opcode: protocol.OpParent, Key: "left"})
 			if err != nil || response.Effect.ReloadGeneration != generation {
 				t.Fatalf("generation %d response=%+v err=%v", generation, response, err)
 			}
+			finalizeTestEvent(t, ctx, client, response, true)
+			if _, err := client.Load(ctx, sessionipc.LoadRequest{Generation: response.Effect.ReloadGeneration, EventID: response.EventID}); err != nil {
+				t.Fatalf("generation %d load: %v", generation, err)
+			}
+			finalizeTestLoad(t, ctx, client, response.EventID, true)
 		}
 		return fzf.Result{Aborted: true, ExitCode: 130}, nil
 	}
@@ -63,6 +81,9 @@ func TestTransitionTraceGenerationsAreUniqueAndTerminal(t *testing.T) {
 	startsByGeneration := make(map[uint64]int)
 	terminalsByGeneration := make(map[uint64]int)
 	publicationsByGeneration := make(map[uint64]integrationpkg.TraceRecord)
+	enrichmentTerminals := 0
+	var enrichmentTerminal integrationpkg.TraceRecord
+	var initialPublication integrationpkg.TraceRecord
 	var orderedStarts []uint64
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -79,6 +100,15 @@ func TestTransitionTraceGenerationsAreUniqueAndTerminal(t *testing.T) {
 			terminalsByGeneration[record.Generation]++
 		case "generation.discard":
 			terminalsByGeneration[record.Generation]++
+		case "zoxide.enrichment":
+			enrichmentTerminals++
+			enrichmentTerminal = record
+			if record.Generation == 0 {
+				t.Fatalf("zoxide enrichment has zero generation: %+v", record)
+			}
+		}
+		if record.Event == "generation.publish" && record.Generation == 1 {
+			initialPublication = record
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -98,6 +128,17 @@ func TestTransitionTraceGenerationsAreUniqueAndTerminal(t *testing.T) {
 			publication.ZoxideStarts != 0 || publication.ZoxideProcesses != 0 {
 			t.Fatalf("generation %d publication=%+v present=%v", generation, publication, ok)
 		}
+	}
+	if initialPublication.ZoxidePolicy != "fresh" || initialPublication.ZoxideOutcome != "pending" ||
+		initialPublication.ZoxideAttempts != 0 || initialPublication.ZoxideStarts != 0 ||
+		initialPublication.ZoxideExits != 0 || initialPublication.ZoxideProcesses != 0 || initialPublication.ZoxideUS != 0 {
+		t.Fatalf("initial publication=%+v", initialPublication)
+	}
+	if enrichmentTerminals != 1 {
+		t.Fatalf("zoxide enrichment terminals=%d", enrichmentTerminals)
+	}
+	if enrichmentTerminal.Outcome != "discarded" || enrichmentTerminal.Generation != 1 || enrichmentTerminal.CandidateCount != 0 {
+		t.Fatalf("enrichment terminal=%+v", enrichmentTerminal)
 	}
 	if got := starts.Load(); got != 1 {
 		t.Fatalf("helper process starts=%d want 1", got)

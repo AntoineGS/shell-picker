@@ -25,9 +25,9 @@ import (
 func TestServerRejectsNoncanonicalRouteTargetsBeforeBackend(t *testing.T) {
 	var calls atomic.Int32
 	backend := benignBackend()
-	backend.handleEvent = func(context.Context, protocol.Event) (protocol.Effect, error) {
+	backend.handleEvent = func(context.Context, protocol.Event) (EventResult, error) {
 		calls.Add(1)
-		return protocol.Effect{}, nil
+		return EventResult{}, nil
 	}
 	server, _ := startServer(t, backend)
 	body, err := json.Marshal(eventRequest())
@@ -100,9 +100,9 @@ func TestDisplayRejectsInvalidRequestsBeforeBackend(t *testing.T) {
 func TestServerAcceptsOnlyOneExactRawAuthorizationValue(t *testing.T) {
 	var calls atomic.Int32
 	backend := benignBackend()
-	backend.handleEvent = func(context.Context, protocol.Event) (protocol.Effect, error) {
+	backend.handleEvent = func(context.Context, protocol.Event) (EventResult, error) {
 		calls.Add(1)
-		return protocol.Effect{}, nil
+		return EventResult{}, nil
 	}
 	server, _ := startServer(t, backend)
 	token := fixedToken(7).String()
@@ -141,9 +141,9 @@ func TestServerAcceptsOnlyOneExactRawAuthorizationValue(t *testing.T) {
 func TestServerRejectsChunkedRequestAt64KiBPlusOne(t *testing.T) {
 	var calls atomic.Int32
 	backend := benignBackend()
-	backend.handleEvent = func(context.Context, protocol.Event) (protocol.Effect, error) {
+	backend.handleEvent = func(context.Context, protocol.Event) (EventResult, error) {
 		calls.Add(1)
-		return protocol.Effect{}, nil
+		return EventResult{}, nil
 	}
 	server, _ := startServer(t, backend)
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.Address()+"/v1/event", bytes.NewReader(bytes.Repeat([]byte{'x'}, (64<<10)+1)))
@@ -227,12 +227,12 @@ func TestServerCloseCancelsCooperativeBackend(t *testing.T) {
 	cancellationReached := make(chan struct{})
 	backendReturned := make(chan struct{})
 	backend := benignBackend()
-	backend.handleEvent = func(ctx context.Context, _ protocol.Event) (protocol.Effect, error) {
+	backend.handleEvent = func(ctx context.Context, _ protocol.Event) (EventResult, error) {
 		close(called)
 		<-ctx.Done()
 		close(cancellationReached)
 		close(backendReturned)
-		return protocol.Effect{}, context.Cause(ctx)
+		return EventResult{}, context.Cause(ctx)
 	}
 	server, client := startServer(t, backend)
 	requestCtx, cancelRequest := context.WithCancel(context.Background())

@@ -65,7 +65,7 @@ func (r Runner) Start(ctx context.Context, spec Spec) (*Child, error) {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedPlatform, runtime.GOOS)
 	}
 	observe(r.Observe, "attempt", spec.Path, 0)
-	path, err := exec.LookPath(spec.Path)
+	path, err := lookPathInEnvironment(spec.Path, spec.Env)
 	if err != nil {
 		if os.IsNotExist(err) || errors.Is(err, syscall.ENOENT) {
 			return nil, fmt.Errorf("%w: %v", exec.ErrNotFound, err)
@@ -218,6 +218,7 @@ func (c *Child) reap() {
 	c.processExited = true
 	close(c.observedExit)
 	c.lifeMu.Unlock()
+	c.streams.closeStdin()
 	if err != nil {
 		c.streams.emergencyClose()
 	}

@@ -159,5 +159,7 @@ func measureDedicatedCandidateSample(t *testing.T, scenario dedicatedCandidateSc
 	if live != 0 {
 		return integrationpkg.BenchmarkSample{}, errors.New("candidate scenario retained a live zoxide process")
 	}
-	return integrationpkg.BenchmarkSample{Duration: duration, BenchmarkCounters: counters}, nil
+	// Candidate harness timings are source-cost measurements, not end-user
+	// startup. Keep them out of StartupDuration so reports remain explicit.
+	return integrationpkg.BenchmarkSample{SourceDuration: &duration, BenchmarkCounters: counters}, nil
 }

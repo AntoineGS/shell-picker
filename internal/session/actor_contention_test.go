@@ -208,6 +208,7 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 	var blockedCall *generatorCall
 	var commandCancels []context.CancelFunc
 	var applyCollectors []*replyCollector[applyReply]
+	var enrichCollectors []*replyCollector[enrichReply]
 	var currentCollector *replyCollector[snapshotReply]
 	var snapshotCollector *replyCollector[snapshotReply]
 	var resolveCollector *replyCollector[resolveReply]
@@ -243,6 +244,9 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 		}
 		for _, collector := range applyCollectors {
 			joins = append(joins, cleanupJoin{name: "Apply reply collector", done: collector.done, before: collector.stop.Open})
+		}
+		for _, collector := range enrichCollectors {
+			joins = append(joins, cleanupJoin{name: "Enrich reply collector", done: collector.done, before: collector.stop.Open})
 		}
 		if currentCollector != nil {
 			joins = append(joins, cleanupJoin{name: "Current reply collector", done: currentCollector.done, before: currentCollector.stop.Open})
@@ -287,6 +291,18 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 			ctx: ctx, proposal: cloneProposal(proposal), submitted: time.Now(), reply: collector.input,
 		}
 	}
+	newEnrich := func(ctx context.Context, baseGeneration uint64) *enrichCommand {
+		collector := newReplyCollector[enrichReply]()
+		enrichCollectors = append(enrichCollectors, collector)
+		return &enrichCommand{
+			ctx:            ctx,
+			baseGeneration: baseGeneration,
+			records:        cloneRecords([]candidate.Record{testRecord("enriched", "/enriched")}),
+			sources:        candidate.SourceMetrics{ZoxideOutcome: "cached"},
+			submitted:      time.Now(),
+			reply:          collector.input,
+		}
+	}
 	blocked := newApply(context.Background(), testProposal(
 		0, testState("/blocked", protocol.ModeNormal, "blocked"), true, protocol.Effect{Accept: true},
 	))
@@ -300,6 +316,13 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 	case <-blockedCall.ctx.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("replacement did not retire blocked generation")
+	}
+	enrichment := newEnrich(context.Background(), 0)
+	submit(enrichment)
+	select {
+	case call := <-generator.started:
+		t.Fatalf("enrichment bypassed the pending transition and started %q", call.request.Location.Path)
+	default:
 	}
 
 	const excess = 64
@@ -365,6 +388,11 @@ func TestActorPrivateCommandsReplyExactlyOnceUnderContentionAndClose(t *testing.
 	replacementReply := exactlyOneCollectedReply(t, "replacement Apply", applyCollectors[1])
 	if !errors.Is(replacementReply.err, ErrClosed) {
 		t.Fatalf("replacement Apply = %v", replacementReply.err)
+	}
+	enrichmentReply := exactlyOneCollectedReply(t, "Enrich", enrichCollectors[0])
+	if !errors.Is(enrichmentReply.err, ErrTransitionPending) ||
+		enrichmentReply.result.Snapshot.Generation() != 0 || enrichmentReply.result.Effect != (protocol.Effect{}) {
+		t.Fatalf("Enrich = %+v, want one pending-transition error with zero result", enrichmentReply)
 	}
 	for id := range commands {
 		reply := exactlyOneCollectedReply(t, "excess Apply", applyCollectors[id+2])

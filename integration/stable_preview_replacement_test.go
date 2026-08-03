@@ -24,11 +24,11 @@ type stablePreviewBackend struct {
 	seen []sessionipc.PreviewRequest
 }
 
-func (backend *stablePreviewBackend) HandleEvent(context.Context, protocol.Event) (protocol.Effect, error) {
-	return protocol.Effect{}, nil
+func (backend *stablePreviewBackend) HandleEvent(context.Context, protocol.Event) (sessionipc.EventResult, error) {
+	return sessionipc.EventResult{}, nil
 }
 
-func (backend *stablePreviewBackend) LoadGeneration(context.Context, uint64) ([]byte, error) {
+func (backend *stablePreviewBackend) LoadGeneration(context.Context, sessionipc.LoadRequest) ([]byte, error) {
 	return nil, nil
 }
 

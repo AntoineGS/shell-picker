@@ -6,19 +6,18 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
+	"github.com/AntoineGS/shell-picker/internal/process"
 	"golang.org/x/sys/unix"
 )
 
@@ -38,126 +37,27 @@ type linuxTerminalSession struct {
 	events        []traceEvent
 	changed       chan struct{}
 
-	waitMu    sync.Mutex
-	waitErr   error
-	waitDone  chan struct{}
-	drainDone chan struct{}
-	traceDone chan struct{}
-	closeOnce sync.Once
-	closeErr  error
+	waitMu       sync.Mutex
+	waitErr      error
+	waitDone     chan struct{}
+	drainDone    chan struct{}
+	traceDone    chan struct{}
+	closeMu      sync.Mutex
+	closeAttempt chan struct{}
+	closeRunning bool
+	closed       bool
+	closeErr     error
+	stopMu       sync.Mutex
+	stop         chan struct{}
+	stopOnce     sync.Once
+
+	cleanupTimeout       time.Duration
+	masterCloseOnce      sync.Once
+	traceReaderCloseOnce sync.Once
+	dummyWriterCloseOnce sync.Once
 }
 
 func (session *linuxTerminalSession) TraceEvents() []traceEvent { return session.traceEvents() }
-
-func (session *linuxTerminalSession) AssertProcessTopology(t *testing.T) {
-	t.Helper()
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	nodes := make(map[int]linuxProcessNode)
-	for _, entry := range entries {
-		pid, parseErr := strconv.Atoi(entry.Name())
-		if parseErr != nil {
-			continue
-		}
-		ppid, parentErr := linuxParentPID(pid)
-		exe, exeErr := os.Readlink("/proc/" + entry.Name() + "/exe")
-		if parentErr != nil || exeErr != nil {
-			continue
-		}
-		raw, _ := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
-		nodes[pid] = linuxProcessNode{pid: pid, ppid: ppid, exe: exe,
-			args: strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")}
-	}
-	descendants := map[int]bool{session.PID(): true}
-	for changed := true; changed; {
-		changed = false
-		for pid, node := range nodes {
-			if !descendants[pid] && descendants[node.ppid] {
-				descendants[pid], changed = true, true
-			}
-		}
-	}
-	wantFZF, err := filepath.EvalSymlinks(session.fzfPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fzfPIDs []int
-	for pid := range descendants {
-		if pid != session.PID() && nodes[pid].exe == wantFZF {
-			fzfPIDs = append(fzfPIDs, pid)
-		}
-	}
-	if len(fzfPIDs) != 1 {
-		t.Fatalf("fzf child count=%d want 1", len(fzfPIDs))
-	}
-	rawEnvironment, err := os.ReadFile("/proc/" + strconv.Itoa(fzfPIDs[0]) + "/environ")
-	if err != nil {
-		t.Fatalf("read owned fzf environment for pid %d: %v", fzfPIDs[0], err)
-	}
-	actualCredentials, err := parseControlledFZFEnvironment(rawEnvironment)
-	if err != nil {
-		t.Fatalf("validate owned fzf controlled environment for pid %d: %v", fzfPIDs[0], err)
-	}
-	for pid := range descendants {
-		if pid == session.PID() {
-			continue
-		}
-		node := nodes[pid]
-		if node.exe == wantFZF {
-			if node.ppid != session.PID() {
-				t.Fatalf("fzf pid %d parent=%d want picker %d", pid, node.ppid, session.PID())
-			}
-		}
-		base := strings.ToLower(filepath.Base(node.exe))
-		if map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "cmd.exe": true, "powershell.exe": true}[base] {
-			t.Fatalf("interpreter role in picker tree pid=%d", pid)
-		}
-		for _, argument := range node.args {
-			if argument == "--listen" || strings.HasPrefix(argument, "--listen=") || strings.Contains(argument, "SHELL_PICKER_TOKEN") {
-				t.Fatalf("listener or credential name in process argv pid=%d", pid)
-			}
-			for _, canary := range session.argvCanaries {
-				if canary != "" && strings.Contains(argument, canary) {
-					t.Fatalf("stale callback credential canary in process argv pid=%d", pid)
-				}
-			}
-			for _, credential := range actualCredentials {
-				if strings.Contains(argument, credential) {
-					t.Fatalf("actual controlled callback credential in process argv pid=%d", pid)
-				}
-			}
-		}
-	}
-}
-
-func parseControlledFZFEnvironment(raw []byte) ([]string, error) {
-	values := make(map[string]string, 2)
-	for _, entry := range bytes.Split(raw, []byte{0}) {
-		key, value, ok := bytes.Cut(entry, []byte{'='})
-		if !ok {
-			continue
-		}
-		name := string(key)
-		if name != "SHELL_PICKER_ADDR" && name != "SHELL_PICKER_TOKEN" {
-			continue
-		}
-		if len(value) == 0 {
-			return nil, fmt.Errorf("empty %s", name)
-		}
-		if _, exists := values[name]; exists {
-			return nil, fmt.Errorf("duplicate %s", name)
-		}
-		values[name] = string(value)
-	}
-	address, addressOK := values["SHELL_PICKER_ADDR"]
-	token, tokenOK := values["SHELL_PICKER_TOKEN"]
-	if !addressOK || !tokenOK {
-		return nil, errors.New("missing controlled callback environment")
-	}
-	return []string{address, token}, nil
-}
 
 func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	t.Helper()
@@ -220,17 +120,17 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 func startLinuxTerminalCommand(session *linuxTerminalSession, command *exec.Cmd, slave *os.File) error {
 	if err := command.Start(); err != nil {
 		_ = slave.Close()
-		if session.master != nil {
-			_ = session.master.Close()
+		session.closeMaster()
+		session.closeDummyWriter()
+		session.closeTraceReader()
+		cleanupTimeout := session.cleanupTimeout
+		if cleanupTimeout <= 0 {
+			cleanupTimeout = 5 * time.Second
 		}
-		if session.dummyWriter != nil {
-			_ = session.dummyWriter.Close()
+		deadline := time.Now().Add(cleanupTimeout)
+		if !waitLinuxDoneUntil(session.drainDone, deadline) || !waitLinuxDoneUntil(session.traceDone, deadline) {
+			return errors.Join(err, process.ErrWaitDelay)
 		}
-		if session.traceReader != nil {
-			_ = session.traceReader.Close()
-		}
-		<-session.drainDone
-		<-session.traceDone
 		return err
 	}
 	session.cmd = command
@@ -287,6 +187,9 @@ func (session *linuxTerminalSession) drainPTY() {
 	defer close(session.drainDone)
 	buffer := make([]byte, 32<<10)
 	for {
+		if session.stopRequested() {
+			return
+		}
 		n, err := session.master.Read(buffer)
 		if n > 0 {
 			session.outputMu.Lock()
@@ -305,10 +208,16 @@ func (session *linuxTerminalSession) drainPTY() {
 
 func (session *linuxTerminalSession) drainTrace() {
 	defer close(session.traceDone)
+	if session.stopRequested() {
+		return
+	}
 	scanner := bufio.NewScanner(session.traceReader)
 	for scanner.Scan() {
-		var event traceEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+		if session.stopRequested() {
+			return
+		}
+		event, err := decodeTraceEvent(scanner.Bytes())
+		if err != nil {
 			session.publishTraceError(err)
 			return
 		}
@@ -323,15 +232,28 @@ func (session *linuxTerminalSession) drainTrace() {
 	}
 }
 
-func (session *linuxTerminalSession) waitCommand() {
-	err := session.cmd.Wait()
-	session.waitMu.Lock()
-	session.waitErr = err
-	session.waitMu.Unlock()
-	if session.dummyWriter != nil {
-		_ = session.dummyWriter.Close()
-	}
-	close(session.waitDone)
+func (session *linuxTerminalSession) closeMaster() {
+	session.masterCloseOnce.Do(func() {
+		if session.master != nil {
+			_ = session.master.Close()
+		}
+	})
+}
+
+func (session *linuxTerminalSession) closeTraceReader() {
+	session.traceReaderCloseOnce.Do(func() {
+		if session.traceReader != nil {
+			_ = session.traceReader.Close()
+		}
+	})
+}
+
+func (session *linuxTerminalSession) closeDummyWriter() {
+	session.dummyWriterCloseOnce.Do(func() {
+		if session.dummyWriter != nil {
+			_ = session.dummyWriter.Close()
+		}
+	})
 }
 
 func (session *linuxTerminalSession) publishTraceError(err error) {
@@ -412,6 +334,8 @@ func (session *linuxTerminalSession) Output() []byte {
 	return bytes.Clone(session.output.Bytes())
 }
 
+func (session *linuxTerminalSession) ResultBytes() []byte { return session.Output() }
+
 func (session *linuxTerminalSession) WaitOutputAfter(ctx context.Context, before int) {
 	session.t.Helper()
 	for {
@@ -434,53 +358,3 @@ func (session *linuxTerminalSession) WaitOutputAfter(ctx context.Context, before
 }
 
 func (session *linuxTerminalSession) CloseInput() error { return session.Send([]byte{0x04}) }
-
-func (session *linuxTerminalSession) Wait(ctx context.Context) error {
-	select {
-	case <-session.waitDone:
-		select {
-		case <-session.drainDone:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		select {
-		case <-session.traceDone:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		session.waitMu.Lock()
-		err := session.waitErr
-		session.waitMu.Unlock()
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (session *linuxTerminalSession) Close() error {
-	session.closeOnce.Do(func() {
-		if session.cmd != nil && session.cmd.Process != nil {
-			select {
-			case <-session.waitDone:
-			default:
-				_ = syscall.Kill(-session.cmd.Process.Pid, syscall.SIGKILL)
-				_ = session.cmd.Process.Kill()
-			}
-		}
-		if session.master != nil {
-			_ = session.master.Close()
-		}
-		if session.dummyWriter != nil {
-			_ = session.dummyWriter.Close()
-		}
-		if session.cmd != nil {
-			<-session.waitDone
-		}
-		<-session.drainDone
-		<-session.traceDone
-		if session.traceReader != nil {
-			_ = session.traceReader.Close()
-		}
-	})
-	return session.closeErr
-}

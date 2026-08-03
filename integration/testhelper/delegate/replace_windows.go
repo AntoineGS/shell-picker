@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -77,6 +78,20 @@ func runRenderer(helper, address, nonce string, arguments, environment []string,
 	grandchild := exec.Command(helper, "grandchild", address, nonce)
 	grandchild.Env = environment
 	grandchild.Stdin, grandchild.Stdout, grandchild.Stderr = nil, io.Discard, io.Discard
+	readyFile, err := os.CreateTemp("", "shell-picker-grandchild-ready-*")
+	if err != nil {
+		return err
+	}
+	readyPath := readyFile.Name()
+	if err := readyFile.Close(); err != nil {
+		_ = os.Remove(readyPath)
+		return err
+	}
+	if err := os.Remove(readyPath); err != nil {
+		return err
+	}
+	grandchild.Env = append(grandchild.Env, "SHELL_PICKER_GRANDCHILD_READY="+readyPath)
+	defer os.Remove(readyPath)
 	if err := grandchild.Start(); err != nil {
 		return err
 	}
@@ -87,7 +102,17 @@ func runRenderer(helper, address, nonce string, arguments, environment []string,
 			_ = grandchild.Wait()
 		}
 	}()
+	if err := waitGrandchildReady(readyPath); err != nil {
+		return err
+	}
 	if overflow {
+		var command controlMessage
+		if err := readFrame(connection, &command); err != nil {
+			return err
+		}
+		if command.Event != "start-overflow" || command.Nonce != nonce {
+			return errors.New("invalid overflow start")
+		}
 		chunk := make([]byte, 64<<10)
 		for range 80 {
 			if _, err := os.Stdout.Write(chunk); err != nil {
@@ -108,6 +133,24 @@ func runRenderer(helper, address, nonce string, arguments, environment []string,
 	_ = grandchild.Wait()
 	reaped = true
 	return writeFrame(connection, controlMessage{Event: "renderer-exit", Nonce: nonce, PID: os.Getpid()})
+}
+
+func waitGrandchildReady(path string) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil && len(data) != 0 {
+			return nil
+		}
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			return errors.New("grandchild readiness timeout")
+		}
+	}
 }
 
 func dialController(address string) (*os.File, error) {

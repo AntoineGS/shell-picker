@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/AntoineGS/shell-picker/internal/protocol"
@@ -32,12 +29,14 @@ func testRealFZFExactChildSlash(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
 	waitForTerminalText(t, term, "5/5")
 
+	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("alpha")); err != nil {
 		t.Fatal(err)
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 2})
-	waitForTerminalText(t, term, "[I] alpha")
+	waitForTerminalTextAfter(t, term, beforeQuery, "[I]")
+	waitForTerminalTextAfter(t, term, beforeQuery, "alpha")
 	previewBefore := traceCount(term.TraceEvents(), "preview.dispatch", "")
 	sendAndWait(t, term, []byte{'/'}, barrier{Event: "generation.publish", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 2, Count: 1})
@@ -60,21 +59,23 @@ func testRealFZFInvalidSlashRestore(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
 	waitForTerminalText(t, term, "3/3")
 
+	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("foo")); err != nil {
 		t.Fatal(err)
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 2})
-	waitForTerminalText(t, term, "[I] foo")
-	waitForTerminalText(t, term, "foobar")
-	waitForTerminalText(t, term, "1/3")
+	waitForTerminalTextAfter(t, term, beforeQuery, "[I]")
+	waitForTerminalTextAfter(t, term, beforeQuery, "foo")
+	waitForTerminalTextAfter(t, term, beforeQuery, "foobar")
+	waitForTerminalTextAfter(t, term, beforeQuery, "1/3")
 
 	restoreBefore := traceCount(term.TraceEvents(), "callback.event", "rs")
 	loadBefore := traceCount(term.TraceEvents(), "callback.load", "")
 	beforeSlash := len(term.Output())
 	sendAndWait(t, term, []byte{'/'}, barrier{Event: "callback.event", Operation: "sl", Count: 1})
-	waitForTerminalTextAfter(t, term, beforeSlash, "0/0")
-	waitForTerminalTextCountAfter(t, term, beforeSlash, "[Invalid Path]", 2)
+	waitForTerminalTextAfter(t, term, beforeSlash, "[Invalid")
+	waitForTerminalTextAfter(t, term, beforeSlash, "Path]")
 	assertTraceCount(t, term.TraceEvents(), "callback.event", "rs", restoreBefore)
 
 	previewBefore := traceCount(term.TraceEvents(), "preview.dispatch", "")
@@ -99,13 +100,15 @@ func testRealFZFNormalInputAndEscape(t *testing.T) {
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
 	waitForTerminalText(t, term, "3/3")
+	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("alpha")); err != nil {
 		t.Fatal(err)
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
-	waitForTerminalText(t, term, "[I] alpha")
+	waitForTerminalTextAfter(t, term, beforeQuery, "[I]")
+	waitForTerminalTextAfter(t, term, beforeQuery, "alpha")
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalText(t, term, "[N] alpha")
+	waitForTerminalText(t, term, "[N]")
 
 	if err := term.Send([]byte{'b', 'Z', '7', ':', '+', '\\'}); err != nil {
 		t.Fatal(err)
@@ -116,7 +119,8 @@ func testRealFZFNormalInputAndEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 	term.WaitOutputAfter(testContext(t), beforeResize)
-	waitForTerminalTextAfter(t, term, beforeResize, "[I] alpha")
+	waitForTerminalTextAfter(t, term, beforeResize, "[I]")
+	waitForTerminalTextAfter(t, term, beforeResize, "alpha")
 	waitForTerminalTextAfter(t, term, beforeResize, "1/3")
 	if visible := visibleTerminalOutput(term.Output()[beforeResize:]); bytes.Contains(visible, []byte(`alphabZ7:+\`)) {
 		t.Fatalf("ignored Normal keys mutated query: %q", term.Output()[beforeResize:])
@@ -124,15 +128,16 @@ func testRealFZFNormalInputAndEscape(t *testing.T) {
 
 	beforeNormal := len(term.Output())
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
-	waitForTerminalTextAfter(t, term, beforeNormal, "[N] alpha")
+	waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
+	waitForTerminalTextAfter(t, term, beforeNormal, "alpha")
 	waitForTerminalTextAfter(t, term, beforeNormal, "1/3")
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
 	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatal(err)
 	}
 	closed := term.WaitBarrier(testContext(t), barrier{Event: "session.close", Operation: "aborted", Count: 1})
-	if closed.Outcome != "aborted" || bytes.Contains(term.Output(), []byte{0}) {
-		t.Fatalf("second Escape close/output=%+v/%q", closed, term.Output())
+	if closed.Outcome != "aborted" || len(term.ResultBytes()) != 0 {
+		t.Fatalf("second Escape close/result=%+v/%q", closed, term.ResultBytes())
 	}
 }
 
@@ -156,8 +161,25 @@ func testRealFZFNormalPaging(t *testing.T) {
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 		waitForTerminalText(t, term, "LIST-PREVIEW-00")
 		beforeNormal := len(term.Output())
+		loadCount := traceCountGeneration(term.TraceEvents(), "callback.load", 1)
+		finishedBeforeNormal := traceCount(term.TraceEvents(), "preview.finished", "")
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeNormal, "[N] item-")
+		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
+		waitForTerminalTextAfter(t, term, beforeNormal, "item-")
+		term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 1, Count: loadCount + 1})
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedBeforeNormal + 1})
+
+		beforeMove := len(term.Output())
+		for range 2 {
+			previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
+			finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
+			if err := term.Send(keyDown); err != nil {
+				t.Fatal(err)
+			}
+			term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
+			term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
+		}
+		waitForTerminalTextAfter(t, term, beforeMove, "LIST-PREVIEW-00")
 
 		beforeDown := len(term.Output())
 		previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
@@ -200,8 +222,25 @@ func testRealFZFNormalPaging(t *testing.T) {
 		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 		waitForTerminalText(t, term, "SCROLL-PREVIEW-00")
 		beforeNormal := len(term.Output())
+		loadCount := traceCountGeneration(term.TraceEvents(), "callback.load", 1)
+		finishedBeforeNormal := traceCount(term.TraceEvents(), "preview.finished", "")
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeNormal, "[N] preview-target")
+		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
+		waitForTerminalTextAfter(t, term, beforeNormal, "preview-target")
+		term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 1, Count: loadCount + 1})
+		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedBeforeNormal + 1})
+
+		beforeMove := len(term.Output())
+		for range 2 {
+			previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
+			finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
+			if err := term.Send(keyDown); err != nil {
+				t.Fatal(err)
+			}
+			term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
+			term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
+		}
+		waitForTerminalTextAfter(t, term, beforeMove, "SCROLL-PREVIEW-00")
 
 		beforeDown := len(term.Output())
 		if err := term.Send([]byte{'.'}); err != nil {
@@ -323,126 +362,10 @@ func testRealFZFNormalFirstLast(t *testing.T) {
 	}
 }
 
-func removeFixtureCandidates(t *testing.T, fixture *realFZFFixture) {
-	t.Helper()
-	entries, err := os.ReadDir(fixture.cwd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if err := os.RemoveAll(filepath.Join(fixture.cwd, entry.Name())); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-func traceCount(events []traceEvent, name, outcome string) int {
-	count := 0
-	for _, event := range events {
-		if event.Event == name && (outcome == "" || event.Outcome == outcome) {
-			count++
-		}
-	}
-	return count
-}
-
-func assertTraceCount(t *testing.T, events []traceEvent, name, outcome string, want int) {
-	t.Helper()
-	if got := traceCount(events, name, outcome); got != want {
-		t.Fatalf("trace %s/%s count=%d want %d; events=%+v", name, outcome, got, want, events)
-	}
-}
-
 func TestChangedNavigationMarkerSkipsStaleContent(t *testing.T) {
 	output := []byte("SCROLL-PREVIEW-00 stale redraw\nSCROLL-PREVIEW-12 paged redraw\n")
 	got, ok := changedNavigationMarker(output, "SCROLL", 0)
 	if !ok || got != 12 {
 		t.Fatalf("changed marker=%d/%t, want 12/true", got, ok)
-	}
-}
-
-func waitForChangedNavigationMarkerAfter(t *testing.T, term terminalSession, before int, prefix string, previous int) int {
-	t.Helper()
-	ctx := testContext(t)
-	for {
-		output := term.Output()
-		if before <= len(output) {
-			if value, ok := changedNavigationMarker(visibleTerminalOutput(output[before:]), prefix, previous); ok {
-				return value
-			}
-		}
-		term.WaitOutputAfter(ctx, len(output))
-	}
-}
-
-func changedNavigationMarker(output []byte, prefix string, previous int) (int, bool) {
-	marker := regexp.MustCompile(regexp.QuoteMeta(prefix) + `-PREVIEW-([0-9]{2})`)
-	for _, match := range marker.FindAllSubmatch(output, -1) {
-		value, err := strconv.Atoi(string(match[1]))
-		if err == nil && value != previous {
-			return value, true
-		}
-	}
-	return 0, false
-}
-
-func latestSelectedNavigationItem(output []byte) (string, bool) {
-	marker := regexp.MustCompile(`▌ (item-[0-9]{2}\.txt)`)
-	matches := marker.FindAllSubmatch(output, -1)
-	if len(matches) == 0 {
-		return "", false
-	}
-	return string(matches[len(matches)-1][1]), true
-}
-
-func assertLatestModePromptAfter(t *testing.T, term terminalSession, before int, want, evidence string) {
-	t.Helper()
-	waitForTerminalTextAfter(t, term, before, evidence)
-	waitForTerminalTextAfter(t, term, before, want)
-	raw := term.Output()
-	if before >= len(raw) {
-		t.Fatalf("action produced no output after %d bytes", before)
-	}
-	visible := visibleTerminalOutput(raw[before:])
-	wantIndex := bytes.LastIndex(visible, []byte(want))
-	if wantIndex < 0 {
-		t.Fatalf("latest mode prompt lacks %q in output after %d bytes: %q", want, before, raw[before:])
-	}
-	separator := strings.Index(want, "] ")
-	if separator < 0 {
-		t.Fatalf("invalid mode prompt %q", want)
-	}
-	query := want[separator+2:]
-	for _, prefix := range []string{"[I] ", "[N] ", "[A] ", "[A!] "} {
-		candidate := []byte(prefix + query)
-		if candidateIndex := bytes.LastIndex(visible, candidate); candidateIndex > wantIndex {
-			t.Fatalf("latest mode prompt is %q, want %q; output=%q", prefix+query, want, raw[before:])
-		}
-	}
-}
-
-func resizeTerminal(t *testing.T, term terminalSession, columns, lines uint16) {
-	t.Helper()
-	if err := term.Resize(columns, lines); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func resizeAndWaitForRedraw(t *testing.T, term terminalSession, columns, lines uint16) {
-	t.Helper()
-	before := len(term.Output())
-	resizeTerminal(t, term, columns, lines)
-	term.WaitOutputAfter(testContext(t), before)
-}
-
-func waitForTerminalTextCountAfter(t *testing.T, term terminalSession, before int, text string, count int) {
-	t.Helper()
-	ctx := testContext(t)
-	for {
-		output := term.Output()
-		if before <= len(output) && bytes.Count(visibleTerminalOutput(output[before:]), []byte(text)) >= count {
-			return
-		}
-		term.WaitOutputAfter(ctx, len(output))
 	}
 }

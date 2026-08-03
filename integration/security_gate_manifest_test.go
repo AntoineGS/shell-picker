@@ -28,7 +28,7 @@ type task20GatePackage struct {
 }
 
 var task20GateManifest = []task20GatePackage{
-	{path: "./internal/session", selectedUnix: 32, selectedWindows: 34, tests: []string{
+	{path: "./internal/session", selectedUnix: 45, selectedWindows: 45, tests: []string{
 		"TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically",
 		"TestActorAssignsMonotonicGenerationOwnershipAcrossQueuedReplacement",
 		"TestActorCreatedTreeDiscardOrdering",
@@ -42,7 +42,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestValidateCDRequiresOneExactFilesystemDirectoryRecord",
 		"TestValidateCPRejectsMalformedUnknownResidualAndVirtual",
 	}},
-	{path: "./internal/sessionipc", selectedUnix: 16, selectedWindows: 16, tests: []string{
+	{path: "./internal/sessionipc", selectedUnix: 19, selectedWindows: 19, tests: []string{
 		"TestServerRejectsNoncanonicalRouteTargetsBeforeBackend",
 		"TestServerAcceptsOnlyOneExactRawAuthorizationValue",
 		"TestServerRejectsChunkedRequestAt64KiBPlusOne",
@@ -53,7 +53,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestServerRejectsBackendReturnedVirtualPreview",
 		"TestFinishedTelemetryExactChildBounds",
 	}},
-	{path: "./internal/candidate", selectedUnix: 17, selectedWindows: 18, tests: []string{
+	{path: "./internal/candidate", selectedUnix: 24, selectedWindows: 23, tests: []string{
 		"TestCachedPolicyNoninitialBuildIsLocalOnlyWithoutReadyCache",
 		"TestFreshPolicyNoninitialBuildSkipsFactoryPermitAndProcess",
 		"TestFreshZeroTimeoutIsAuthoritativeForInitialBuild",
@@ -64,9 +64,10 @@ var task20GateManifest = []task20GatePackage{
 		"TestBuilderZoxideTimeoutIsSoftAndDiscardsPartialOutput",
 		"TestZoxideMalformedAndProcessFailuresDiscardCompleteBuffer",
 		"TestZoxideMissingAndSpawnFailureAttemptWithoutStart",
+	}, unix: []string{
 		"TestEnumerateReadDirErrorPublishesNothing",
 	}},
-	{path: "./internal/process", selectedUnix: 23, selectedWindows: 24, tests: []string{
+	{path: "./internal/process", selectedUnix: 40, selectedWindows: 32, tests: []string{
 		"TestKqueueEventValidation",
 		"TestKqueueRegistrationValidatedBeforeWait",
 		"TestRejectsNonIdentifiableValueCloserBeforeAttempt",
@@ -76,9 +77,6 @@ var task20GateManifest = []task20GatePackage{
 		"TestOrdinaryCompletionDoesNotClosePumpedCloser",
 		"TestWaitDelayClosesSharedPointerOnce",
 		"TestWaitIsSingleUseAndWaitDelayBoundsInheritedPipe",
-		"TestForegroundTreeOwnsTTYAndRestoresPreviousGroup",
-		"TestRestoreForegroundPGRRestoresMaskOnIoctlError",
-		"TestRetainedInheritedTreeKillsGroupAfterChildWait",
 		"TestRunnerBeforeStartInspectsValidatedSpecAndCannotSynthesizeSuccess",
 		"TestRunnerBeforeStartRunsOnlyAfterSpecValidation",
 		"TestRunnerNilBeforeStartExecutesRealStart",
@@ -95,49 +93,62 @@ var task20GateManifest = []task20GatePackage{
 	}, unix: []string{
 		"TestCancelKillsOwnedProcessTreeEventually",
 		"TestInheritedTreeCancellationKillsCallbackGroup",
+		"TestForegroundTreeOwnsTTYAndRestoresPreviousGroup",
+		"TestRestoreForegroundPGRRestoresMaskOnIoctlError",
+		"TestRetainedInheritedTreeKillsGroupAfterChildWait",
 	}},
-	{path: "./internal/callback", selectedUnix: 6, selectedWindows: 6, tests: []string{
+	{path: "./internal/callback", selectedUnix: 8, selectedWindows: 8, tests: []string{
 		"TestPreviewRejectsVirtualAndRelativeBeforeRenderer",
 		"TestPreviewTerminalResourceSkipsFinishedTelemetry",
 		"TestPreviewAggregatesSequentialChildTelemetry",
 	}},
-	{path: "./internal/preview", selectedUnix: 32, selectedWindows: 36, tests: []string{
+	{path: "./internal/preview", selectedUnix: 43, selectedWindows: 38, tests: []string{
 		"TestArchiveLimitsEntriesBytesAndDeadline",
 		"TestZipPreflightRejectsCentralDirectoryBombBeforeArchiveOpen",
 		"TestCachePutAnchorsRootAcrossSwap",
 		"TestCacheConcurrentProductionPutHasImmutableSingleLinkWinner",
 		"TestConverterFinalValidationRejectsOversizedArtifact",
 		"TestRendererReadsValidatedStageWhenPathIsReplaced",
+		"TestRendererFailuresAreWaitedSequentiallyBeforeNativeFallback",
+		"TestTerminalRetriesBlockedCleanupAfterTreeKill",
+	}, unix: []string{
 		"TestExternalRendererOutputLimitKillsInheritedGroupWithoutFallback",
 		"TestExternalRendererDeadlineKillsInheritedGroupWithoutFallback",
 		"TestExternalRendererWaitDelayKillsInheritedGroupWithoutFallback",
-		"TestRendererFailuresAreWaitedSequentiallyBeforeNativeFallback",
-		"TestTerminalRetriesBlockedCleanupAfterTreeKill",
 	}},
-	{path: "./internal/fzf", selectedUnix: 12, selectedWindows: 12, tests: []string{
+	{path: "./internal/fzf", selectedUnix: 14, selectedWindows: 14, tests: []string{
 		"TestSessionSpecSeparatesCallbackCredentialsFromInheritedEnvironment",
 		"TestRunRejectsUnsafeConfigurationBeforeProcessStart",
 		"TestRunDoesNotProbeVersion",
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 23, selectedWindows: 21, tests: []string{
+	{path: "./internal/app", selectedUnix: 37, selectedWindows: 29, tests: []string{
 		"TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks",
 		"TestPickerBackendRejectsAuthorizedVirtualBeforeFilesystemAndOutput",
 		"TestRunPickerClosesCallbackEndpointBeforeReturning",
 		"TestRunPickerAppliesZoxidePolicyProcessBudgets",
-		"TestRunPickerParentCancellationStopsInitialZoxideBeforeFZFLaunch",
+		"TestRunPickerReturnsHardErrorWhenLoadRequestFailsBeforeBegin",
 		"TestRunPickerNavigationRemovesZoxideCandidates",
 		"TestRunPickerCompactsZoxideHomeDisplay",
+	}, unix: []string{
+		"TestRunPickerLaunchesFZFBeforeInitialZoxideCompletes",
+		"TestRunPickerParentCancellationStopsLiveZoxideAfterFZFLaunch",
+		"TestRunPickerStopsLiveZoxideWhenFZFReturns",
+		"TestRunPickerInitialLocalCancellationJoinsStartedZoxide",
+		"TestRunPickerInitialPublicationCancellationPrefersParentCause",
+		"TestRunPickerWaitsForEnrichmentBeforeClosingServer",
+		"TestRunPickerListenFailureJoinsStartedZoxide",
+		"TestRunPickerFZFChildExitClosesInputWithoutOverridingResult",
 	}},
-	{path: "./internal/pathutil", selectedUnix: 3, selectedWindows: 7, tests: []string{
-		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",
-		"TestCreateDirectoryTreeErrorsAndPreservesExistingParents",
-	}, windows: []string{
+	{path: "./internal/pathutil", selectedUnix: 10, selectedWindows: 7, tests: []string{}, windows: []string{
 		"TestCreateDirectoryTreeRejectsJunctionInBaseAncestry",
 		"TestCreateDirectoryTreeRejectsJunctionInQueryComponent",
+	}, unix: []string{
+		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",
+		"TestCreateDirectoryTreeErrorsAndPreservesExistingParents",
 	}},
-	{path: "./integration", selectedUnix: 29, selectedWindows: 30, tests: []string{
+	{path: "./integration", selectedUnix: 60, selectedWindows: 52, tests: []string{
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
 		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",
@@ -145,8 +156,6 @@ var task20GateManifest = []task20GatePackage{
 		"TestResourceSnapshotFingerprintsArtifactReplacement",
 		"TestResourceSnapshotDetectsDescriptorFreeBlockedGoroutine",
 		"TestResourceSnapshotDetectsSameSignatureGoroutineReplacement",
-		"TestPreviewCategoryMatrix",
-		"TestParityPreviewResourceProcess",
 		"TestRealFZFPreviewReplacementKillsWholeTree",
 		"TestRealFZFPreviewTerminalFailuresKillWholeTree",
 		"TestRealFZFAdversarialPromptCannotInjectAction",
@@ -157,6 +166,9 @@ var task20GateManifest = []task20GatePackage{
 		"TestWindowsResourceSnapshotFingerprintsDirectoryReplacement",
 		"TestWindowsHandleIdentityIncludesObjectForReusedSlot",
 		"TestWindowsTask20HandleScopeLifecycleOrdering",
+	}, unix: []string{
+		"TestPreviewCategoryMatrix",
+		"TestParityPreviewResourceProcess",
 	}},
 }
 

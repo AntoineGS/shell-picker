@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const TraceSchema = 1
+const TraceSchema = 2
 
 type TraceEvent struct {
 	Name              string
@@ -125,15 +125,51 @@ func (trace *Trace) Event(event TraceEvent) error {
 		trace.disabled = true
 		return errors.New("trace: nil writer")
 	}
-	written, err := trace.writer.Write(line)
-	if err == nil && written != len(line) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
-		trace.disabled = true
-		return fmt.Errorf("trace: write event: %w", err)
+	for len(line) > 0 {
+		written, err := trace.writer.Write(line)
+		if written < 0 || written > len(line) {
+			trace.disabled = true
+			return fmt.Errorf("trace: write event: invalid byte count %d", written)
+		}
+		if written > 0 {
+			line = line[written:]
+		}
+		if err != nil {
+			// os.File.Write reports io.ErrShortWrite when the underlying
+			// writer accepted a prefix. Keep the JSONL record atomic by
+			// retrying the unwritten suffix while the trace lock is held.
+			if errors.Is(err, io.ErrShortWrite) && written > 0 && len(line) > 0 {
+				continue
+			}
+			trace.disabled = true
+			return fmt.Errorf("trace: write event: %w", err)
+		}
+		if written == 0 {
+			trace.disabled = true
+			return fmt.Errorf("trace: write event: %w", io.ErrShortWrite)
+		}
 	}
 	return nil
+}
+
+// Close serializes sink closure with Event so an in-flight JSONL record cannot
+// be truncated by teardown.
+func (trace *Trace) Close() error {
+	if trace == nil {
+		return nil
+	}
+	trace.mu.Lock()
+	defer trace.mu.Unlock()
+	if trace.writer == nil {
+		return nil
+	}
+	closer, ok := trace.writer.(io.Closer)
+	trace.disabled = true
+	trace.writer = nil
+	if !ok {
+		return nil
+	}
+	return closer.Close()
 }
 
 func redact(value []byte) string {
@@ -146,18 +182,22 @@ func validateTraceEvent(event TraceEvent) error {
 }
 
 func validateTraceEventWithSchema(event TraceEvent, schema traceSchemaRules, now time.Time) error {
-	if !event.Timestamp.IsZero() {
+	if !event.Timestamp.IsZero() && !now.IsZero() {
 		if event.Timestamp.After(now.Add(schema.TimestampFutureLimit)) ||
 			event.Timestamp.Before(now.Add(-schema.TimestampPastLimit)) {
 			return errors.New("trace: invalid timestamp")
 		}
 	}
+	if event.Name == "zoxide.enrichment" && event.Generation == 0 {
+		return errors.New("trace: enrichment generation is required")
+	}
 	if event.Generation > 0 && event.Name != "generation.start" && event.Name != "generation.publish" &&
-		event.Name != "generation.discard" && event.Name != "callback.load" {
+		event.Name != "generation.discard" && event.Name != "zoxide.enrichment" && event.Name != "callback.load" {
 		return errors.New("trace: generation is not valid for event")
 	}
 	if event.CandidateCount < schema.CandidateCountMin || event.CandidateCount > schema.CandidateCountMax ||
-		event.CandidateCount != 0 && event.Name != "generation.publish" {
+		event.CandidateCount != 0 && event.Name != "generation.publish" &&
+			!(event.Name == "zoxide.enrichment" && event.Outcome == "published") {
 		return errors.New("trace: invalid candidate count")
 	}
 	if event.Path != nil && event.Name != "generation.publish" {
@@ -213,17 +253,30 @@ func validateZoxideFields(event TraceEvent, schema traceSchemaRules) error {
 	hasFields := event.ZoxidePolicy != "" || event.ZoxideAttempts != 0 || event.ZoxideStarts != 0 || event.ZoxideExits != 0 ||
 		event.ZoxideProcesses != 0 || event.ZoxideLive != 0 ||
 		event.ZoxideMaxLive != 0 || event.ZoxideDuration != 0 || event.ZoxideOutcome != ""
-	if hasFields && event.Name != "generation.publish" && event.Name != "generation.discard" {
+	if hasFields && event.Name != "generation.publish" && event.Name != "generation.discard" && event.Name != "zoxide.enrichment" {
 		return errors.New("trace: zoxide fields are not valid for event")
 	}
 	if hasFields && (event.ZoxidePolicy == "" || event.ZoxideOutcome == "") {
 		return errors.New("trace: incomplete zoxide fields")
+	}
+	if event.Name == "zoxide.enrichment" && (event.ZoxidePolicy == "" || event.ZoxideOutcome == "") {
+		return errors.New("trace: enrichment requires zoxide fields")
 	}
 	if event.ZoxidePolicy != "" && !schemaContains(schema.ZoxidePolicies, event.ZoxidePolicy) {
 		return errors.New("trace: invalid zoxide policy")
 	}
 	if event.ZoxideOutcome != "" && !schemaContains(schema.ZoxideOutcomes, event.ZoxideOutcome) {
 		return errors.New("trace: invalid zoxide outcome")
+	}
+	if event.ZoxideOutcome == "pending" {
+		if event.Name != "generation.publish" || event.ZoxideAttempts != 0 || event.ZoxideStarts != 0 ||
+			event.ZoxideExits != 0 || event.ZoxideProcesses != 0 || event.ZoxideLive != 0 ||
+			event.ZoxideMaxLive != 0 || event.ZoxideDuration != 0 {
+			return errors.New("trace: pending zoxide source has terminal fields")
+		}
+	}
+	if event.Name == "zoxide.enrichment" && (event.ZoxideOutcome == "pending" || event.ZoxideOutcome == "not-run") {
+		return errors.New("trace: enrichment requires terminal zoxide outcome")
 	}
 	return nil
 }
@@ -239,6 +292,9 @@ func validateTimingFields(event TraceEvent, schema traceSchemaRules) error {
 	if (event.ActorQueueWait != 0 || event.LocalDuration != 0 || event.TransformDuration != 0) &&
 		event.Name != "generation.publish" && event.Name != "generation.discard" {
 		return errors.New("trace: generation timing is not valid for event")
+	}
+	if event.ZoxideDuration != 0 && event.Name != "generation.publish" && event.Name != "generation.discard" && event.Name != "zoxide.enrichment" {
+		return errors.New("trace: zoxide timing is not valid for event")
 	}
 	if event.CallbackIPC != 0 && event.Name != "callback.event" {
 		return errors.New("trace: callback timing is not valid for event")
