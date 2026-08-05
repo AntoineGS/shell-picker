@@ -1,16 +1,15 @@
 package callback
 
 import (
-	"fmt"
 	"strconv"
 	"unicode/utf8"
 
+	"github.com/AntoineGS/shell-picker/internal/finderinfo"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
 
 const (
 	maxDisplayDimension = 1000
-	maxFinderCount      = 1_000_000_000
 )
 
 func visibleHeader(header string, lookupEnv func(string) string) (string, bool) {
@@ -58,24 +57,17 @@ func visibleHeader(header string, lookupEnv func(string) string) (string, bool) 
 }
 
 func finderInfo(picker protocol.Picker, lookupEnv func(string) string) string {
-	matched, matchedOK := parseCanonicalDecimal(lookupEnv("FZF_MATCH_COUNT"), maxFinderCount, 10, true)
-	total, totalOK := parseCanonicalDecimal(lookupEnv("FZF_TOTAL_COUNT"), maxFinderCount, 10, true)
-	selected, selectedOK := parseCanonicalDecimal(lookupEnv("FZF_SELECT_COUNT"), maxFinderCount, 10, true)
+	matched, matchedOK := parseCanonicalDecimal(lookupEnv("FZF_MATCH_COUNT"), finderinfo.MaxCount, 10, true)
+	total, totalOK := parseCanonicalDecimal(lookupEnv("FZF_TOTAL_COUNT"), finderinfo.MaxCount, 10, true)
+	selected, selectedOK := parseCanonicalDecimal(lookupEnv("FZF_SELECT_COUNT"), finderinfo.MaxCount, 10, true)
 	if !matchedOK || !totalOK || !selectedOK {
 		return ""
 	}
-	base := fmt.Sprintf("%d/%d", matched, total)
-	switch picker {
-	case protocol.PickerCD:
-		return base
-	case protocol.PickerCP:
-		if selected > 0 {
-			return fmt.Sprintf("%s (%d)", base, selected)
-		}
-		return base
-	default:
+	formatted, err := finderinfo.Format(picker, matched, total, selected)
+	if err != nil {
 		return ""
 	}
+	return formatted
 }
 
 func parseCanonicalDecimal(raw string, maximum, maxDigits int, allowZero bool) (int, bool) {

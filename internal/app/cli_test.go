@@ -21,7 +21,6 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
 	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
-	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
 )
@@ -83,7 +82,7 @@ func TestPreviewEnvironmentAllowsOnlyPathLocaleAndTerminalMetadata(t *testing.T)
 		"PATH=/usr/bin", "LANG=en_CA.UTF-8", "LC_ALL=C", "LC_CTYPE=C.UTF-8", "TERM=xterm-256color",
 		"COLORTERM=truecolor", "NO_COLOR=1", "GITHUB_TOKEN=secret", "AWS_SECRET_ACCESS_KEY=secret",
 		"SSH_AUTH_SOCK=/tmp/agent", "FZF_QUERY=event", "FZF_PREVIEW_COLUMNS=999", "FZF_PREVIEW_LINES=888",
-		"SHELL_PICKER_TOKEN=credential", "HOME=/home/user",
+		"SHELL_PICKER_TOKEN=credential", "FZF_API_KEY=sidecar-secret", "HOME=/home/user",
 	}
 	want := []string{"PATH=/usr/bin", "LANG=en_CA.UTF-8", "LC_ALL=C", "LC_CTYPE=C.UTF-8", "TERM=xterm-256color", "COLORTERM=truecolor", "NO_COLOR=1"}
 	if got := previewEnvironment(inherited); !reflect.DeepEqual(got, want) {
@@ -137,7 +136,7 @@ func TestPreviewCallbackPassesClampedDimensionsWithoutChildEnvLeak(t *testing.T)
 	}))
 	defer server.Close()
 	tools, log := t.TempDir(), filepath.Join(t.TempDir(), "glow.log")
-	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf 'dims=%%s,%%s\\n' \"$FZF_PREVIEW_COLUMNS\" \"$FZF_PREVIEW_LINES\" >> %q\nprintf rendered\n", log, log)
+	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf 'dims=%%s,%%s\\n' \"$FZF_PREVIEW_COLUMNS\" \"$FZF_PREVIEW_LINES\" >> %q\nprintf 'api=%%s\\n' \"$FZF_API_KEY\" >> %q\nprintf rendered\n", log, log, log)
 	if err := os.WriteFile(filepath.Join(tools, "glow"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -146,13 +145,14 @@ func TestPreviewCallbackPassesClampedDimensionsWithoutChildEnvLeak(t *testing.T)
 	t.Setenv("FZF_CURRENT_ITEM", "record")
 	t.Setenv("FZF_PREVIEW_COLUMNS", "5000")
 	t.Setenv("FZF_PREVIEW_LINES", "57")
+	t.Setenv("FZF_API_KEY", "sidecar-secret")
 	t.Setenv("PATH", tools)
 	var stdout, stderr bytes.Buffer
 	if code := callbackMain(context.Background(), []string{"--fzf-shell", "p"}, Streams{Out: &stdout, Err: &stderr}); code != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 	data, err := os.ReadFile(log)
-	if err != nil || string(data) != "--width\n999\n"+path+"\ndims=,\n" {
+	if err != nil || string(data) != "--width\n999\n"+path+"\ndims=,\napi=\n" {
 		t.Fatalf("log=%q err=%v", data, err)
 	}
 }
@@ -170,6 +170,17 @@ func TestFZFShellRejectsMissingOrExtraCommandText(t *testing.T) {
 	}
 }
 
+func TestFZFShellCallbackUnsetsListenAPIKeyBeforeValidation(t *testing.T) {
+	t.Setenv("FZF_API_KEY", "callback-secret")
+	var stdout, stderr bytes.Buffer
+	if code := callbackMain(context.Background(), []string{"--fzf-shell"}, Streams{Out: &stdout, Err: &stderr}); code != 2 {
+		t.Fatalf("code=%d, want invalid callback command", code)
+	}
+	if got := os.Getenv("FZF_API_KEY"); got != "" {
+		t.Fatalf("FZF_API_KEY after callback validation = %q, want unset", got)
+	}
+}
+
 func TestFZFShellInfoDoesNotRequireIPCCredentials(t *testing.T) {
 	t.Setenv("SHELL_PICKER_ADDR", "")
 	t.Setenv("SHELL_PICKER_TOKEN", "")
@@ -180,6 +191,39 @@ func TestFZFShellInfoDoesNotRequireIPCCredentials(t *testing.T) {
 	code := Main(context.Background(), []string{"--fzf-shell", "i:cp"}, Streams{Out: &stdout, Err: &stderr}, "dev")
 	if code != 0 || stdout.String() != "7/42 (1)" || stderr.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	t.Run("writes local trace start and completion", testFZFShellInfoWritesLocalTraceStartAndCompletion)
+}
+
+func testFZFShellInfoWritesLocalTraceStartAndCompletion(t *testing.T) {
+	tracePath := filepath.Join(t.TempDir(), "callback.trace.jsonl")
+	t.Setenv("SHELL_PICKER_ADDR", "")
+	t.Setenv("SHELL_PICKER_TOKEN", "")
+	t.Setenv("SHELL_PICKER_TRACE_PATH", tracePath)
+	t.Setenv("SHELL_PICKER_TRACE_SESSION", "sha256:0123456789abcdef")
+	t.Setenv("FZF_MATCH_COUNT", "7")
+	t.Setenv("FZF_TOTAL_COUNT", "42")
+	t.Setenv("FZF_SELECT_COUNT", "1")
+	var stdout, stderr bytes.Buffer
+	if code := Main(context.Background(), []string{"--fzf-shell", "i:cp"}, Streams{Out: &stdout, Err: &stderr}, "dev"); code != 0 {
+		t.Fatalf("callback code=%d stderr=%q", code, stderr.String())
+	}
+	raw, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	var records []integrationpkg.TraceRecord
+	for decoder.More() {
+		var record integrationpkg.TraceRecord
+		if err := decoder.Decode(&record); err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, record)
+	}
+	if len(records) != 2 || records[0].Event != "callback.info.start" || records[0].Outcome != "started" ||
+		records[1].Event != "callback.info" || records[1].Outcome != "ok" {
+		t.Fatalf("callback info trace=%+v; raw=%s", records, raw)
 	}
 }
 
@@ -206,10 +250,11 @@ func TestFixedCallbacksNeedNoIPCCredentials(t *testing.T) {
 func TestFZFShellTransportFailureReturnsOneWithoutCredentials(t *testing.T) {
 	t.Setenv("SHELL_PICKER_ADDR", "http://127.0.0.1:1")
 	t.Setenv("SHELL_PICKER_TOKEN", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Setenv("FZF_API_KEY", "sidecar-secret")
 	t.Setenv("FZF_CURRENT_ITEM", "item")
 	var stdout, stderr bytes.Buffer
 	code := Main(context.Background(), []string{"--fzf-shell", "p"}, Streams{Out: &stdout, Err: &stderr}, "dev")
-	if code != 1 || bytes.Contains(stderr.Bytes(), []byte("0123456789abcdef")) {
+	if code != 1 || bytes.Contains(stderr.Bytes(), []byte("0123456789abcdef")) || bytes.Contains(stderr.Bytes(), []byte("sidecar-secret")) {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
 }
@@ -243,137 +288,6 @@ func TestPickerCLIParsesDefaultsOverridesAndExplicitZero(t *testing.T) {
 		overrides.ZoxidePolicy != candidate.ZoxideFresh || overrides.ZoxideTimeout != 0 || overrides.TracePath != "/tmp/session.jsonl" {
 		t.Fatalf("overrides=%+v", overrides)
 	}
-}
-
-func TestPickerTraceCreatesPrivateFileAndRecordsLifecycle(t *testing.T) {
-	fixture := newPickerFixture(t, protocol.PickerCP)
-	fixture.options.TracePath = filepath.Join(t.TempDir(), "picker.trace.jsonl")
-	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
-		for _, value := range append(append([]string(nil), config.Environment...), config.Options...) {
-			if strings.Contains(value, fixture.options.TracePath) {
-				t.Fatalf("trace path inherited by fzf/callback: %q", value)
-			}
-		}
-		config.Runner.Observe(process.ProcessEvent{Phase: "start", PID: 42, Path: config.FZFPath})
-		return fzf.Result{Aborted: true, ExitCode: 130}, nil
-	}
-	if _, err := RunPicker(context.Background(), fixture.options, fixture.dependencies); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(fixture.options.TracePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("trace mode=%#o", info.Mode().Perm())
-	}
-	raw, err := os.ReadFile(fixture.options.TracePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	var names []string
-	for decoder.More() {
-		var event integrationpkg.TraceRecord
-		if err := decoder.Decode(&event); err != nil {
-			t.Fatal(err)
-		}
-		names = append(names, event.Event)
-	}
-	want := []string{"session.start", "generation.start", "generation.publish", "fzf.start", "fzf.exit", "session.close"}
-	if !reflect.DeepEqual(names, want) {
-		t.Fatalf("trace events=%q want %q; raw=%s", names, want, raw)
-	}
-	if bytes.Contains(raw, []byte(fixture.cwd)) || bytes.Contains(raw, []byte("SHELL_PICKER_TOKEN")) ||
-		bytes.Contains(raw, []byte("query")) || bytes.Contains(raw, []byte("record")) {
-		t.Fatalf("trace leaked sensitive value: %s", raw)
-	}
-	var publication integrationpkg.TraceRecord
-	decoder = json.NewDecoder(bytes.NewReader(raw))
-	for decoder.More() {
-		var event integrationpkg.TraceRecord
-		if err := decoder.Decode(&event); err != nil {
-			t.Fatal(err)
-		}
-		if event.Event == "generation.publish" {
-			publication = event
-		}
-	}
-	if publication.ZoxidePolicy != "cached" || publication.ZoxideAttempts != 0 || publication.ZoxideStarts != 0 ||
-		publication.ZoxideMaxLive != 0 || publication.ZoxideOutcome != "not-run" || publication.LocalUS < 0 || publication.TransformUS < 0 {
-		t.Fatalf("publication=%+v", publication)
-	}
-}
-
-func TestPickerTraceWriteFailureReportsOnceThenRemainsSecondary(t *testing.T) {
-	var diagnostic bytes.Buffer
-	writer := &appFailingTraceWriter{}
-	sink := &pickerTrace{trace: integrationpkg.NewTrace(writer, [16]byte{1}), diagnostic: &diagnostic}
-	sink.event(integrationpkg.TraceEvent{Name: "session.start", Outcome: "cp"})
-	sink.event(integrationpkg.TraceEvent{Name: "session.close", Outcome: "error"})
-	if writer.calls != 1 || diagnostic.String() != "shell-picker: trace disabled\n" {
-		t.Fatalf("calls=%d diagnostic=%q", writer.calls, diagnostic.String())
-	}
-}
-
-func TestPickerTraceFinishKeepsOutcomeWhenCloseFails(t *testing.T) {
-	var diagnostic bytes.Buffer
-	sink := &failingTraceSink{closeErr: errors.New("close failed")}
-	trace := &pickerTrace{trace: integrationpkg.NewTrace(sink, [16]byte{1}), sink: sink, diagnostic: &diagnostic}
-	want := protocol.Outcome{Status: protocol.StatusAccepted, Paths: [][]byte{[]byte("accepted")}}
-
-	got, err := trace.finish(want, nil)
-	if err != nil || !reflect.DeepEqual(got, want) {
-		t.Fatalf("finish outcome=%+v err=%v want=%+v", got, err, want)
-	}
-	if diagnostic.String() != "shell-picker: trace disabled\n" {
-		t.Fatalf("diagnostic=%q", diagnostic.String())
-	}
-	if !bytes.Contains(sink.Bytes(), []byte(`"event":"session.close"`)) ||
-		!bytes.Contains(sink.Bytes(), []byte(`"outcome":"accepted"`)) {
-		t.Fatalf("trace=%s", sink.Bytes())
-	}
-}
-
-func TestPickerTraceFinishKeepsPrimaryErrorWhenSessionCloseWriteFails(t *testing.T) {
-	var diagnostic bytes.Buffer
-	sink := &failingTraceSink{writeErr: errors.New("write failed")}
-	trace := &pickerTrace{trace: integrationpkg.NewTrace(sink, [16]byte{1}), sink: sink, diagnostic: &diagnostic}
-	primary := errors.New("picker failed")
-
-	got, err := trace.finish(protocol.Outcome{}, primary)
-	if !reflect.DeepEqual(got, protocol.Outcome{}) || !errors.Is(err, primary) {
-		t.Fatalf("finish outcome=%+v err=%v", got, err)
-	}
-	if sink.closeCalls != 1 || diagnostic.String() != "shell-picker: trace disabled\n" {
-		t.Fatalf("close calls=%d diagnostic=%q", sink.closeCalls, diagnostic.String())
-	}
-}
-
-type failingTraceSink struct {
-	bytes.Buffer
-	writeErr   error
-	closeErr   error
-	closeCalls int
-}
-
-func (sink *failingTraceSink) Write(data []byte) (int, error) {
-	if sink.writeErr != nil {
-		return 0, sink.writeErr
-	}
-	return sink.Buffer.Write(data)
-}
-
-func (sink *failingTraceSink) Close() error {
-	sink.closeCalls++
-	return sink.closeErr
-}
-
-type appFailingTraceWriter struct{ calls int }
-
-func (writer *appFailingTraceWriter) Write([]byte) (int, error) {
-	writer.calls++
-	return 0, errors.New("fixture write failure")
 }
 
 func TestPickerCLIRejectsInvalidAndDuplicateFlags(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,101 @@ const (
 )
 
 var keyRight = []byte{0x1b, '[', 'C'}
+
+type realZoxideToolCache struct {
+	mu     sync.Mutex
+	root   string
+	source string
+}
+
+var realZoxideTools realZoxideToolCache
+
+func (cache *realZoxideToolCache) copyTo(rebuildSource, destination string) error {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	source, err := cache.ensureLocked(rebuildSource)
+	if err != nil {
+		return err
+	}
+	return copyExecutable(source, destination)
+}
+
+func (cache *realZoxideToolCache) ensureLocked(rebuildSource string) (string, error) {
+	if cache.root == "" {
+		root, err := os.MkdirTemp("", "shell-picker-real-zoxide-tools-")
+		if err != nil {
+			return "", err
+		}
+		cache.root = root
+	}
+	if err := os.MkdirAll(cache.root, 0o700); err != nil {
+		return "", err
+	}
+	if cache.source == "" {
+		cache.source = filepath.Join(cache.root, binaryName("zoxide"))
+	}
+	if err := validateRealZoxideExecutable(cache.source); err == nil {
+		return cache.source, nil
+	}
+	if err := validateRealZoxideExecutable(rebuildSource); err != nil {
+		return "", fmt.Errorf("zoxide helper source unavailable (test binary may be quarantined): %w", err)
+	}
+	if err := rebuildRealZoxideExecutable(rebuildSource, cache.root, cache.source); err != nil {
+		return "", fmt.Errorf("rebuild zoxide helper source: %w", err)
+	}
+	if err := validateRealZoxideExecutable(cache.source); err != nil {
+		return "", fmt.Errorf("validate rebuilt zoxide helper source: %w", err)
+	}
+	return cache.source, nil
+}
+
+func validateRealZoxideExecutable(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
+	if info.Size() == 0 {
+		return fmt.Errorf("empty file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("file is not executable")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return file.Close()
+}
+
+func rebuildRealZoxideExecutable(source, directory, destination string) error {
+	temporary, err := os.CreateTemp(directory, "."+filepath.Base(destination)+".rebuild-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = os.Remove(temporaryName)
+		}
+	}()
+	if err := copyExecutableInto(source, temporary); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryName, destination); err != nil {
+		if removeErr := os.Remove(destination); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return errors.Join(err, removeErr)
+		}
+		if err := os.Rename(temporaryName, destination); err != nil {
+			return err
+		}
+	}
+	removeTemporary = false
+	return nil
+}
 
 func waitForRealZoxideRelease(ctx context.Context, releasePath string) error {
 	if ctx == nil {
@@ -69,21 +165,18 @@ func newRealZoxideFixture(t *testing.T, fzfPath string) *realZoxideFixture {
 	if err := os.MkdirAll(fixture.tools, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{fixture.lateTarget, fixture.otherTarget} {
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
+	toolTarget := filepath.Join(fixture.tools, binaryName("zoxide"))
 	harness, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	zoxide := filepath.Join(fixture.tools, "zoxide")
-	if runtime.GOOS == "windows" {
-		zoxide += ".exe"
+	if err := realZoxideTools.copyTo(harness, toolTarget); err != nil {
+		t.Fatalf("prepare zoxide helper (test binary may be quarantined): %v", err)
 	}
-	if err := copyExecutable(harness, zoxide); err != nil {
-		t.Fatalf("copy zoxide helper: %v", err)
+	for _, path := range []string{fixture.lateTarget, fixture.otherTarget} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fixture.ReplaceLocalCandidates(t, "local-visible")
 	return fixture

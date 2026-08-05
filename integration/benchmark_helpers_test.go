@@ -11,18 +11,28 @@ import (
 )
 
 func copyExecutable(source, destination string) error {
-	input, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer input.Close()
 	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(output, input)
+	if err := copyExecutableInto(source, output); err != nil {
+		_ = os.Remove(destination)
+		return err
+	}
+	return nil
+}
+
+func copyExecutableInto(source string, output *os.File) error {
+	input, inputErr := os.Open(source)
+	var copyErr, inputCloseErr error
+	if inputErr == nil {
+		_, copyErr = io.Copy(output, input)
+		inputCloseErr = input.Close()
+	}
+	syncErr := output.Sync()
+	chmodErr := output.Chmod(0o700)
 	closeErr := output.Close()
-	return errors.Join(copyErr, closeErr)
+	return errors.Join(inputErr, copyErr, inputCloseErr, syncErr, chmodErr, closeErr)
 }
 
 func buildPerformanceZoxideHelper(t *testing.T) string {
@@ -33,7 +43,9 @@ func buildPerformanceZoxideHelper(t *testing.T) string {
 	}
 	repository := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), ".."))
 	output := filepath.Join(t.TempDir(), binaryName("performance-zoxide"))
-	command := exec.Command("go", "build", "-trimpath", "-o", output, "./integration/testhelper/performance")
+	arguments := append([]string{"build"}, firstFrameReproducibleBuildFlags...)
+	arguments = append(arguments, "-o", output, "./integration/testhelper/performance")
+	command := exec.Command("go", arguments...)
 	command.Dir = repository
 	if data, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build performance zoxide helper: %v\n%s", err, data)

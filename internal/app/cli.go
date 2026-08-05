@@ -145,6 +145,7 @@ func parsePickerArgs(args []string, executable string) (PickerOptions, error) {
 }
 
 func callbackMain(ctx context.Context, args []string, streams Streams) int {
+	_ = os.Unsetenv("FZF_API_KEY")
 	if len(args) != 2 {
 		fmt.Fprintln(streams.Err, "invalid callback command")
 		return 2
@@ -159,7 +160,14 @@ func callbackMain(ctx context.Context, args []string, streams Streams) int {
 		return 2
 	}
 	if command.Local() {
+		localTrace, _ := openCallbackTrace(os.Getenv)
+		if localTrace != nil {
+			defer localTrace.close()
+		}
 		dependencies := callback.Dependencies{LookupEnv: os.Getenv, Stdout: streams.Out, Stderr: streams.Err}
+		if localTrace != nil {
+			dependencies.Trace = localTrace.event
+		}
 		if err := callback.Dispatch(ctx, command, dependencies); err != nil {
 			fmt.Fprintln(streams.Err, "callback failed")
 			return 1

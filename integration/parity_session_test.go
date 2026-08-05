@@ -282,7 +282,8 @@ func runSlashSemantic(t *testing.T, row parityRow) {
 		picker = protocol.PickerCP
 	}
 	if row.Case == "invalid-picker" {
-		invalid := fzf.Options(protocol.Picker("invalid"), "", "") == nil
+		options, err := fzf.Options(fzf.OptionsConfig{Picker: protocol.Picker("invalid")})
+		invalid := err == nil && options == nil
 		if row.Check == "candidates-unchanged" {
 			assertParityText(t, row, boolText(invalid))
 		} else {

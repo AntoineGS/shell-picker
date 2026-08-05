@@ -49,6 +49,32 @@ func TestFinderInfoAcceptsMaximumCounters(t *testing.T) {
 	}
 }
 
+func TestFinderInfoAcceptsBoundedCountersWithoutRelationalValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		matched  string
+		total    string
+		selected string
+		want     string
+	}{
+		{name: "matched exceeds total", matched: "8", total: "7", selected: "0", want: "8/7"},
+		{name: "selected exceeds total", matched: "7", total: "7", selected: "8", want: "7/7 (8)"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			env := map[string]string{
+				"FZF_MATCH_COUNT":  test.matched,
+				"FZF_TOTAL_COUNT":  test.total,
+				"FZF_SELECT_COUNT": test.selected,
+			}
+			if got := finderInfo(protocol.PickerCP, func(key string) string { return env[key] }); got != test.want {
+				t.Fatalf("finderInfo() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestVisibleHeaderWidthAndTruncation(t *testing.T) {
 	tests := []struct {
 		name    string

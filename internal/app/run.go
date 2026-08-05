@@ -13,6 +13,7 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/callback"
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	"github.com/AntoineGS/shell-picker/internal/fzfsidecar"
 	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
 	"github.com/AntoineGS/shell-picker/internal/pathutil"
 	"github.com/AntoineGS/shell-picker/internal/process"
@@ -43,6 +44,7 @@ type Dependencies struct {
 	TTYErr           io.Writer
 
 	launchFZF                 func(context.Context, fzf.Config) (fzf.Result, error)
+	newFZFSidecar             fzfSidecarFactory
 	listenIPC                 func(context.Context, sessionipc.Token, sessionipc.Backend) (*sessionipc.Server, error)
 	buildLocal                func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error)
 	loadInitialZoxide         func(context.Context) (candidate.InitialZoxideResult, error)
@@ -53,6 +55,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err := validatePickerOptions(ctx, options); err != nil {
 		return protocol.Outcome{}, err
 	}
+	sidecarEnabled := fzfsidecar.Enabled(dependencies.Environment)
 	var traceID [16]byte
 	if _, err := rand.Read(traceID[:]); err != nil {
 		return protocol.Outcome{}, errors.New("generate trace session ID")
@@ -104,6 +107,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		sources: candidate.SourceMetrics{ZoxideOutcome: "not-run"}}
 	var coordinator *initialEnrichment
 	var server *sessionipc.Server
+	var sidecar fzfSidecarLifecycle
 	cleaned := false
 	cleanup := func() {
 		if cleaned {
@@ -116,7 +120,8 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 			stopCause = err
 		}
 
-		var coordinatorErr, serverErr, actorErr error
+		var sidecarErr, coordinatorErr, serverErr, actorErr error
+		sidecarErr = sidecar.stopAndWait()
 		if coordinator != nil {
 			coordinatorErr = coordinator.Stop(stopCause)
 			coordinatorErr = joinLifecycleErrors(coordinatorErr, coordinator.Wait())
@@ -130,7 +135,10 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		actorErr = actor.Close()
 
 		if err == nil {
-			err = coordinatorErr
+			err = sidecarErr
+			if err == nil {
+				err = coordinatorErr
+			}
 			if err == nil {
 				err = serverErr
 			}
@@ -203,6 +211,10 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	}
 	server = listenedServer
 
+	if err := sidecar.create(sidecarEnabled, options.Picker, dependencies.newFZFSidecar, newSidecarTraceObserver(trace)); err != nil {
+		return protocol.Outcome{}, err
+	}
+
 	callback.SetCursor(protocol.CursorLine)
 	launch := dependencies.launchFZF
 	if launch == nil {
@@ -218,10 +230,19 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 			trace.event(integrationpkg.TraceEvent{Name: "fzf.start", Outcome: "ok"})
 		}
 	}
+	listenAddress, listenAPIKey := sidecar.credentials()
+	fzfOptions, err := fzf.Options(fzf.OptionsConfig{
+		Picker: options.Picker, Prompt: initialPrompt, Header: initialHeader, ListenAddress: listenAddress,
+	})
+	if err != nil {
+		return protocol.Outcome{}, fmt.Errorf("build fzf options: %w", err)
+	}
+	sidecar.start(ctx)
 	result, launchErr := launch(ctx, fzf.Config{
 		Picker: options.Picker, FZFPath: options.FZFPath, ExecutablePath: options.ExecutablePath,
-		Environment: process.SanitizeEnv(dependencies.Environment, nil), CallbackAddress: server.Address(),
-		CallbackToken: token.String(), Options: fzf.Options(options.Picker, initialPrompt, initialHeader),
+		Environment: process.SanitizeEnv(dependencies.Environment, nil), TracePath: options.TracePath,
+		TraceSession: integrationpkg.RedactedSessionID(traceID), CallbackAddress: server.Address(),
+		CallbackToken: token.String(), ListenAPIKey: listenAPIKey, Options: fzfOptions,
 		Input: input, Runner: fzfRunner,
 		ForegroundTTY: terminal, TTYOut: dependencies.TTYOut, TTYErr: dependencies.TTYErr,
 	})
@@ -322,25 +343,4 @@ func validatePickerOptions(ctx context.Context, options PickerOptions) error {
 		}
 	}
 	return context.Cause(ctx)
-}
-
-func sessionBuilder(options PickerOptions, dependencies *Dependencies) (*candidate.Builder, error) {
-	path := dependencies.ZoxidePath
-	if path == "" {
-		path = "zoxide"
-	}
-	environment := process.SanitizeEnv(dependencies.Environment, nil)
-	newCache := func() (*candidate.ZoxideCache, error) {
-		return candidate.NewZoxideCache(dependencies.ProcessRunner, path, environment, options.ZoxideTimeout)
-	}
-	if options.ZoxidePolicy == candidate.ZoxideCached {
-		cache, err := newCache()
-		if err != nil {
-			return nil, err
-		}
-		dependencies.CandidateBuilder.ConfigureCached(cache)
-	} else {
-		dependencies.CandidateBuilder.ConfigureFresh(newCache)
-	}
-	return &dependencies.CandidateBuilder, nil
 }

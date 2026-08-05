@@ -79,8 +79,15 @@ func TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		baseEnvironment := []string{"PATH=" + toolDirectory, "TERM=xterm-256color"}
-		baseEnvironment = append(baseEnvironment, fixture.dependencies.Environment...)
+		baseEnvironment := make([]string, 0, len(fixture.dependencies.Environment)+4)
+		for _, entry := range fixture.dependencies.Environment {
+			key, _, ok := strings.Cut(entry, "=")
+			if ok && (strings.EqualFold(key, "PATH") || strings.EqualFold(key, "TERM")) {
+				continue
+			}
+			baseEnvironment = append(baseEnvironment, entry)
+		}
+		baseEnvironment = append(baseEnvironment, "PATH="+toolDirectory, "TERM=xterm-256color")
 		baseEnvironment = append(baseEnvironment, "SHELL_PICKER_ADDR="+address, "SHELL_PICKER_TOKEN="+credential)
 		err = preview.Render(context.Background(), protocol.ResolvedCandidate{Kind: protocol.KindFile,
 			Path: []byte(fixturePath), Size: info.Size(), ModTimeUnixNano: info.ModTime().UnixNano(), Mode: uint32(info.Mode())},

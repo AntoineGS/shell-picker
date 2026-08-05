@@ -115,6 +115,7 @@ func TestWindowsNativeManifestContainsExactCurrentAuthorities(t *testing.T) {
 				"TestClassifyWindowsTracePath",
 				"TestOpenWindowsTraceSinkUsesPipeAndFileDispositions",
 				"TestOpenWindowsTraceSinkValidatesBeforeTruncatingAndClosesOnFailure",
+				"TestWindowsTraceWriterMultiProcessAtomicRecords",
 			},
 		},
 		{

@@ -107,6 +107,7 @@ func ValidateTraceRecordAt(record TraceRecord, now time.Time) error {
 		LocalDuration:     localDuration,
 		ZoxideDuration:    zoxideDuration,
 		ZoxideOutcome:     record.ZoxideOutcome,
+		SidecarAttempt:    record.SidecarAttempt,
 		TransformDuration: transformDuration,
 		LoadDuration:      loadDuration,
 		Timestamp:         timestamp,

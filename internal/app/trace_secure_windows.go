@@ -3,15 +3,21 @@
 package app
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"unsafe"
 
+	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
 	"golang.org/x/sys/windows"
 )
+
+const traceInitializationReadLimit = 4 << 10
 
 type windowsTraceCreateCall struct {
 	Path     string
@@ -29,44 +35,43 @@ type windowsTraceOps struct {
 	closeHandle  func(windows.Handle) error
 }
 
-type windowsTraceSink struct {
-	file  *os.File
-	flush func(*os.File) error
-	close func(*os.File) error
-}
-
-func (sink *windowsTraceSink) Write(data []byte) (int, error) {
-	if sink == nil || sink.file == nil {
-		return 0, os.ErrClosed
-	}
-	return sink.file.Write(data)
-}
-
-func (sink *windowsTraceSink) Close() error {
-	if sink == nil || sink.file == nil {
-		return nil
-	}
-	file := sink.file
-	sink.file = nil
-	flush := sink.flush
-	if flush == nil {
-		flush = func(file *os.File) error {
-			return windows.FlushFileBuffers(windows.Handle(file.Fd()))
-		}
-	}
-	closeFile := sink.close
-	if closeFile == nil {
-		closeFile = func(file *os.File) error { return file.Close() }
-	}
-	return errors.Join(flush(file), closeFile(file))
-}
-
 func isCanonicalNamedPipePath(path string) bool {
 	const prefix = `\\.\pipe\`
 	return len(path) > len(prefix) && strings.EqualFold(path[:len(prefix)], prefix)
 }
 
-func openTraceSink(path string) (io.WriteCloser, error) {
+func openTraceSink(path string, sessionID [16]byte) (io.WriteCloser, error) {
+	return openTraceSinkWithExpectedSession(path, integrationpkg.RedactedSessionID(sessionID))
+}
+
+func openTraceSinkWithExpectedSession(path, expectedSession string) (io.WriteCloser, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	lock, err := newWindowsTraceRecordLock(path)
+	if err != nil {
+		return nil, err
+	}
+	owned := lock.created
+	releaseInitialization := func() error {
+		if !owned {
+			return nil
+		}
+		owned = false
+		return lock.releaseOwner()
+	}
+	cleanup := func(primary error) error {
+		return errors.Join(primary, releaseInitialization(), lock.closeHandle())
+	}
+	if !owned {
+		status, waitErr := lock.waitForOwner()
+		if waitErr != nil {
+			return nil, cleanup(waitErr)
+		}
+		if status != windows.WAIT_OBJECT_0 && status != windows.WAIT_ABANDONED {
+			return nil, cleanup(fmt.Errorf("wait for trace record lock: unexpected wait status 0x%x", status))
+		}
+		owned = true
+	}
 	ops := windowsTraceOps{
 		createFile: func(call windowsTraceCreateCall) (windows.Handle, error) {
 			wide, err := windows.UTF16PtrFromString(call.Path)
@@ -88,7 +93,7 @@ func openTraceSink(path string) (io.WriteCloser, error) {
 	if !isCanonicalNamedPipePath(path) {
 		security, err := currentUserTraceSecurity()
 		if err != nil {
-			return nil, fmt.Errorf("create trace security descriptor: %w", err)
+			return nil, cleanup(fmt.Errorf("create trace security descriptor: %w", err))
 		}
 		attributes = security.attributes
 		ops.validateFile = func(handle windows.Handle) error {
@@ -103,18 +108,32 @@ func openTraceSink(path string) (io.WriteCloser, error) {
 				windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil)
 		}
 	}
-	handle, err := openWindowsTraceHandleWithSecurity(path, ops, attributes)
+	handle, err := openWindowsTraceHandleWithSecurityAndTruncate(path, ops, attributes, false)
 	if err != nil {
-		return nil, err
+		return nil, cleanup(err)
 	}
 	file := os.NewFile(uintptr(handle), path)
 	if file == nil {
-		return nil, errors.Join(errors.New("wrap trace handle"), windows.CloseHandle(handle))
+		return nil, cleanup(errors.Join(errors.New("wrap trace handle"), windows.CloseHandle(handle)))
+	}
+	if !isCanonicalNamedPipePath(path) {
+		needsTruncate, err := traceFileNeedsTruncation(file, expectedSession)
+		if err != nil {
+			return nil, cleanup(errors.Join(err, file.Close()))
+		}
+		if needsTruncate {
+			if err := ops.truncateFile(handle); err != nil {
+				return nil, cleanup(errors.Join(err, file.Close()))
+			}
+		}
+	}
+	if err := releaseInitialization(); err != nil {
+		return nil, errors.Join(errors.New("release trace initialization lock"), file.Close(), lock.closeHandle(), err)
 	}
 	// The caller authorizes every ancestor and the target; elevated wrappers
 	// must not accept an untrusted trace path. Final-handle DACL, type, and
 	// no-follow checks are defense in depth, not anchored traversal.
-	return &windowsTraceSink{file: file}, nil
+	return &windowsTraceSink{file: file, lock: lock, disk: !isCanonicalNamedPipePath(path)}, nil
 }
 
 type windowsTraceSecurity struct {
@@ -141,14 +160,18 @@ func openWindowsTraceHandle(path string, ops windowsTraceOps) (windows.Handle, e
 }
 
 func openWindowsTraceHandleWithSecurity(path string, ops windowsTraceOps, security *windows.SecurityAttributes) (windows.Handle, error) {
-	call := windowsTraceCreateCall{Path: path, Access: windows.GENERIC_WRITE, Share: windows.FILE_SHARE_READ,
+	return openWindowsTraceHandleWithSecurityAndTruncate(path, ops, security, true)
+}
+
+func openWindowsTraceHandleWithSecurityAndTruncate(path string, ops windowsTraceOps, security *windows.SecurityAttributes, truncate bool) (windows.Handle, error) {
+	call := windowsTraceCreateCall{Path: path, Access: windows.GENERIC_WRITE, Share: windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE,
 		Creation: windows.OPEN_ALWAYS, Flags: windows.FILE_ATTRIBUTE_NORMAL | windows.FILE_FLAG_OPEN_REPARSE_POINT,
 		Security: security}
 	if isCanonicalNamedPipePath(path) {
 		call.Share, call.Creation, call.Flags, call.Security = 0, windows.OPEN_EXISTING,
 			windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_WRITE_THROUGH, nil
 	} else {
-		call.Access |= windows.WRITE_DAC
+		call.Access |= windows.GENERIC_READ | windows.WRITE_DAC
 	}
 	handle, err := ops.createFile(call)
 	if err != nil {
@@ -161,10 +184,34 @@ func openWindowsTraceHandleWithSecurity(path string, ops windowsTraceOps, securi
 	if err := ops.validateFile(handle); err != nil {
 		return fail(err)
 	}
-	if err := ops.truncateFile(handle); err != nil {
-		return fail(err)
+	if truncate {
+		if err := ops.truncateFile(handle); err != nil {
+			return fail(err)
+		}
 	}
 	return handle, nil
+}
+
+func traceFileNeedsTruncation(file *os.File, expectedSession string) (bool, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	buffer := make([]byte, traceInitializationReadLimit)
+	read, err := file.Read(buffer)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	lineEnd := bytes.IndexByte(buffer[:read], '\n')
+	if lineEnd < 0 {
+		return true, nil
+	}
+	var record struct {
+		Session string `json:"session"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(buffer[:lineEnd]), &record); err != nil {
+		return true, nil
+	}
+	return record.Session != expectedSession, nil
 }
 
 func validateWindowsTraceFile(handle windows.Handle) error {

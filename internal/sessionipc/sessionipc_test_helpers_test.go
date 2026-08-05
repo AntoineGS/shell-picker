@@ -97,6 +97,16 @@ func TestLoadFinalizeRouteRejectsZeroAndMissingFields(t *testing.T) {
 	}
 }
 
+func TestCallbackInvocationRouteIsRemoved(t *testing.T) {
+	server, _ := startServer(t, benignBackend())
+	response := rawRequest(t, server.Address()+"/v1/callback/invocation", fixedToken(7), http.MethodPost,
+		"application/json", []byte(`{"kind":"info","outcome":"cd"}`))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d want=%d", response.StatusCode, http.StatusNotFound)
+	}
+}
+
 func TestLoadResponseWriteFailureFinalizesExactRequest(t *testing.T) {
 	finalized := make(chan LoadFinalizeRequest, 1)
 	backend := benignBackend()

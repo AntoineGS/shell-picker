@@ -176,6 +176,7 @@ func (session *linuxTerminalSession) Wait(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		session.stopDescendantRecorder()
 		session.waitMu.Lock()
 		err := session.waitErr
 		session.waitMu.Unlock()
@@ -247,6 +248,7 @@ func (session *linuxTerminalSession) closeAttemptRun() error {
 	if !waitLinuxDoneUntil(session.traceDone, deadline) {
 		err = errors.Join(err, process.ErrWaitDelay)
 	}
+	session.stopDescendantRecorder()
 	return err
 }
 

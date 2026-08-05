@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	"github.com/AntoineGS/shell-picker/internal/fzfsidecar"
 	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
 	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
@@ -41,12 +42,58 @@ type barrier struct {
 	Count      int
 }
 
+func TestCallbackCompletionBarriersRequireSuccessfulCompletion(t *testing.T) {
+	tests := []struct {
+		name  string
+		event traceEvent
+		want  bool
+	}{
+		{name: "load error is not completion barrier", event: traceEvent{Event: "callback.load", Outcome: "error"}, want: false},
+		{name: "load ok is completion barrier", event: traceEvent{Event: "callback.load", Outcome: "ok"}, want: true},
+		{name: "start requires started", event: traceEvent{Event: "callback.load.start", Outcome: "started"}, want: true},
+		{name: "fzf start uses successful outcome", event: traceEvent{Event: "fzf.start", Outcome: "ok"}, want: true},
+		{name: "event operation remains explicit", event: traceEvent{Event: "callback.event", Outcome: "es"}, want: false},
+		{name: "event operation matches", event: traceEvent{Event: "callback.event", Outcome: "es"}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			wanted := barrier{Event: test.event.Event}
+			if test.name == "event operation matches" {
+				wanted.Operation = "es"
+			}
+			if got := matchesTraceBarrier(test.event, wanted); got != test.want {
+				t.Fatalf("matchesTraceBarrier(%+v,%+v)=%v want %v", test.event, wanted, got, test.want)
+			}
+		})
+	}
+}
+
+func matchesTraceBarrier(event traceEvent, wanted barrier) bool {
+	if event.Event != wanted.Event || wanted.Renderer != "" && event.Renderer != wanted.Renderer ||
+		wanted.Generation != 0 && event.Generation != wanted.Generation {
+		return false
+	}
+	if wanted.Operation != "" {
+		return event.Outcome == wanted.Operation
+	}
+	if strings.HasPrefix(event.Event, "callback.") && strings.HasSuffix(event.Event, ".start") {
+		return event.Outcome == "started"
+	}
+	if strings.HasPrefix(event.Event, "callback.") {
+		return event.Outcome == "ok"
+	}
+	return true
+}
+
 type terminalSession interface {
 	Send([]byte) error
 	Resize(columns, lines uint16) error
 	WaitBarrier(context.Context, barrier) traceEvent
 	TraceEvents() []traceEvent
 	AssertProcessTopology(*testing.T)
+	FZFCommandLine(*testing.T) string
+	DescendantProcessRecords(*testing.T) []descendantProcessRecord
+	DescendantCommandLines(*testing.T) []string
 	TrackLiveDescendants(*testing.T) []trackedProcess
 	AssertTrackedProcessesGone(*testing.T, []trackedProcess)
 	PID() int
@@ -112,12 +159,22 @@ func requireRealFZF(t *testing.T) string {
 	return absolute
 }
 
+func realFZFSidecarEnabled(environment []string) bool {
+	return fzfsidecar.Enabled(environment)
+}
+
 type realFZFFixture struct {
 	root, cwd, home, picker, fzf string
 	wantOutput                   []byte
 }
 
 func newRealFZFFixture(t *testing.T, fzfPath, executableDirectory string) *realFZFFixture {
+	t.Helper()
+	cachedPicker, _ := cachedRealBinaries(t)
+	return newRealFZFFixtureWithPicker(t, fzfPath, executableDirectory, cachedPicker)
+}
+
+func newRealFZFFixtureWithPicker(t *testing.T, fzfPath, executableDirectory, pickerSource string) *realFZFFixture {
 	t.Helper()
 	root := t.TempDir()
 	cwd := filepath.Join(root, "cwd")
@@ -133,10 +190,9 @@ func newRealFZFFixture(t *testing.T, fzfPath, executableDirectory string) *realF
 			t.Fatal(err)
 		}
 	}
-	cachedPicker, _ := cachedRealBinaries(t)
 	picker := filepath.Join(bin, binaryName("shell-picker"))
-	if err := os.Link(cachedPicker, picker); err != nil {
-		if err := copyExecutable(cachedPicker, picker); err != nil {
+	if err := os.Link(pickerSource, picker); err != nil {
+		if err := copyExecutable(pickerSource, picker); err != nil {
 			t.Fatalf("link cached public picker: %v", err)
 		}
 	}

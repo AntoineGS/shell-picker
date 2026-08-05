@@ -15,9 +15,9 @@ import (
 	"time"
 )
 
-const task20FocusedPattern = `^Test(Actor|Handle|Reduce|NormalEscape|Validate|Server|Client|FinishedTelemetry|CachedPolicy|Fresh|IndependentFresh|CPNever|CallerCancellation|BuilderZoxide|Zoxide|EnumerateReadDir|Kqueue|RejectsNonIdentifiable|WaitDelay|WaitIs|CancellationCloses|ExitErrorPrecedesBlocking|OrdinaryCompletion|Foreground|RestoreForeground|RetainedInherited|CancelKills|InheritedTree|Preview|Archive|Zip|Cache|Converter|Renderer|ExternalRenderer|Terminal|SessionSpec|Run|ParseOutput|ActionArgument|TokenCanary|PickerBackend|CreateDirectory|SecurityGate|Forged|CancelledNavigation|ResourceSnapshot|ParityPreview|RealFZF|Windows|CreateProcess|RunnerBeforeStart|RunnerNilBeforeStart)`
+const task20FocusedPattern = `^Test(Actor|Handle|Reduce|NormalEscape|Validate|Server|Client|FinishedTelemetry|CachedPolicy|Fresh|IndependentFresh|CPNever|CallerCancellation|BuilderZoxide|Zoxide|EnumerateReadDir|Kqueue|RejectsNonIdentifiable|WaitDelay|WaitIs|CancellationCloses|ExitErrorPrecedesBlocking|OrdinaryCompletion|Foreground|RestoreForeground|RetainedInherited|CancelKills|InheritedTree|Preview|Archive|Zip|Cache|Converter|Renderer|ExternalRenderer|Terminal|SessionSpec|PickerOptions|PrepareSession|Run|ParseOutput|ActionArgument|TokenCanary|PickerBackend|FZFShell|CreateDirectory|SecurityGate|Forged|CancelledNavigation|ResourceSnapshot|ParityPreview|RealFZF|Windows|CreateProcess|RunnerBeforeStart|RunnerNilBeforeStart|Enabled|NewProvides|DefaultTransport|ReadBody|Post|GetState|DecodeState|ActionBody|TypedState|Session|StopAndWait|Concurrent|ParentCancellation|Sidecar)`
 
-const task20ManifestPackages = `./internal/session ./internal/sessionipc ./internal/candidate ./internal/process ./internal/callback ./internal/preview ./internal/fzf ./internal/app ./internal/pathutil ./integration`
+const task20ManifestPackages = `./internal/session ./internal/sessionipc ./internal/candidate ./internal/process ./internal/callback ./internal/fzfsidecar ./internal/preview ./internal/fzf ./internal/app ./internal/pathutil ./integration`
 
 type task20GatePackage struct {
 	path                          string
@@ -28,7 +28,7 @@ type task20GatePackage struct {
 }
 
 var task20GateManifest = []task20GatePackage{
-	{path: "./internal/session", selectedUnix: 45, selectedWindows: 45, tests: []string{
+	{path: "./internal/session", selectedUnix: 42, selectedWindows: 45, tests: []string{
 		"TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically",
 		"TestActorAssignsMonotonicGenerationOwnershipAcrossQueuedReplacement",
 		"TestActorCreatedTreeDiscardOrdering",
@@ -53,7 +53,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestServerRejectsBackendReturnedVirtualPreview",
 		"TestFinishedTelemetryExactChildBounds",
 	}},
-	{path: "./internal/candidate", selectedUnix: 24, selectedWindows: 23, tests: []string{
+	{path: "./internal/candidate", selectedUnix: 22, selectedWindows: 23, tests: []string{
 		"TestCachedPolicyNoninitialBuildIsLocalOnlyWithoutReadyCache",
 		"TestFreshPolicyNoninitialBuildSkipsFactoryPermitAndProcess",
 		"TestFreshZeroTimeoutIsAuthoritativeForInitialBuild",
@@ -67,7 +67,7 @@ var task20GateManifest = []task20GatePackage{
 	}, unix: []string{
 		"TestEnumerateReadDirErrorPublishesNothing",
 	}},
-	{path: "./internal/process", selectedUnix: 40, selectedWindows: 32, tests: []string{
+	{path: "./internal/process", selectedUnix: 25, selectedWindows: 32, tests: []string{
 		"TestKqueueEventValidation",
 		"TestKqueueRegistrationValidatedBeforeWait",
 		"TestRejectsNonIdentifiableValueCloserBeforeAttempt",
@@ -102,7 +102,73 @@ var task20GateManifest = []task20GatePackage{
 		"TestPreviewTerminalResourceSkipsFinishedTelemetry",
 		"TestPreviewAggregatesSequentialChildTelemetry",
 	}},
-	{path: "./internal/preview", selectedUnix: 43, selectedWindows: 38, tests: []string{
+	{path: "./internal/fzfsidecar", selectedUnix: 64, selectedWindows: 64, tests: []string{
+		"TestEnabledRequiresExactValue",
+		"TestEnabledHandlesDuplicateActivationEntries",
+		"TestEnabledUsesPlatformSpecificNameMatching",
+		"TestEnabledRejectsMalformedEntriesAndDoesNotMutateInput",
+		"TestNewProvidesNumericLoopbackAddressAndIndependentKeys",
+		"TestReadBodyAcceptsLimitAndRejectsLimitPlusOneWhileClosing",
+		"TestClientRequestsUseExactURLKeyAndContentPolicy",
+		"TestDefaultTransportDisablesProxy",
+		"TestClientRejectsRedirectsWithoutFollowingThem",
+		"TestPostRejectsStatusAndClosesResponseBody",
+		"TestPostResponseUsesTheSameBoundedBodyPolicy",
+		"TestClientKeepsTypedPostTransportFailuresRawAndPost503Transient",
+		"TestClientKeepsUnauthorizedAndValidationFailuresTerminal",
+		"TestClientKeepsParentCancellationTerminal",
+		"TestGetStatePaginatesFZFSelectedDumpInFixedPages",
+		"TestGetStateCDUsesOnlyTheFirstSelectedPage",
+		"TestGetStateRejectsCountMutationBetweenSelectedPages",
+		"TestGetStateCancellationStopsSelectedPagination",
+		"TestGetStateAppliesBodyLimitToEverySelectedPage",
+		"TestGetStateRejectsMaxCountAndPageBoundViolations",
+		"TestGetStateBoundsSelectedPaginationAtTheCyclePageCap",
+		"TestGetStateStopsWhenTheAggregatePaginationContextExpires",
+		"TestDecodeStateAllowsUnknownFieldsAndFormatsPickerCounts",
+		"TestDecodeStateRequiresStrictIntegerCountsAndSelectedArray",
+		"TestActionBodyUsesOnlyTheValidatedFZFActionGrammar",
+		"TestPostStateConstructsActionFromTypedCountsNotCachedText",
+		"TestPostStateRejectsInconsistentTypedCountsBeforeHTTP",
+		"TestTypedStateValidationRejectsRelationalMismatches",
+		"TestClientKeepsTypedGetTransportFailuresRaw",
+		"TestSessionObserverIsDefaultDisabled",
+		"TestSessionObserverEmitsClosedEventsWithCountersAndDurations",
+		"TestSessionObserverIncludesSafeFailureMetadata",
+		"TestSessionWaitsForFreshTimerAfterSlowPollingCycle",
+		"TestSessionRepeatedStartOwnsOnePollingGoroutine",
+		"TestSessionRetriesReadinessTransportFailuresUntilAValidState",
+		"TestSessionRetriesStartupBusy503UntilStateIsStable",
+		"TestSessionPostsInitialStateAndOnlyChangedLabels",
+		"TestSessionDoesNotPostWhenRenderedLabelIsUnchanged",
+		"TestSessionAuthenticatedFakeServerFailsSoftOnMalformedUnauthorizedForbiddenAndOversizedState",
+		"TestStopAndWaitCloseTransportExactlyOnce",
+		"TestConcurrentRepeatedLifecycleCallsAreIdempotent",
+		"TestSessionCancellationUnblocksReadinessAndBlockedRequests",
+		"TestSessionObserverSuppressesCanceledOperationEvents",
+		"TestSessionRetriesRepeatedReadinessRefusalsUntilConfiguredDeadline",
+		"TestSessionRetriesReadinessRequestTimeoutsUntilValidState",
+		"TestSessionRetriesReadinessRequestTimeoutsUntilConfiguredDeadline",
+		"TestSessionStopClosesAnActiveResponseBody",
+		"TestParentCancellationClosesAnActiveResponseBody",
+		"TestSessionRetries79TransientBusyCyclesBeforeValidState",
+		"TestSessionSoftStopsWhenTransientBusyWindowExpires",
+		"TestSessionResetsTransientWindowAfterValidState",
+		"TestSessionStopReasonPreservesTheFirstCancellationCause",
+		"TestSessionRetriesChangedStateAfterTransientPostUntilSuccess",
+		"TestSessionRetriesReadyConnectionRefusalAsBoundedTransient",
+		"TestSessionStopsWhenTransientPostWindowExpires",
+		"TestSessionTransientWindowResetsAfterValidStateCycle",
+		"TestSessionReadinessExpiryIsSoft",
+		"TestSessionStopsSoftlyAfterAReadyStateFails",
+		"TestSessionUsesTheDefaultIntervalAndStopsTickerOnce",
+		"TestSessionWithPaginatedCPStatePostsOnlyChangedLabels",
+		"TestSessionRetriesInconsistentPaginatedSnapshotOnTheNextTick",
+		"TestSessionDoesNotPostWhenSelectedPaginationReachesThePageCap",
+		"TestSessionStopAndWaitAreSafeBeforeStartAndRepeated",
+		"TestConcurrentPreStartLifecycleCallsReachOneTerminalState",
+	}},
+	{path: "./internal/preview", selectedUnix: 32, selectedWindows: 39, tests: []string{
 		"TestArchiveLimitsEntriesBytesAndDeadline",
 		"TestZipPreflightRejectsCentralDirectoryBombBeforeArchiveOpen",
 		"TestCachePutAnchorsRootAcrossSwap",
@@ -116,21 +182,47 @@ var task20GateManifest = []task20GatePackage{
 		"TestExternalRendererDeadlineKillsInheritedGroupWithoutFallback",
 		"TestExternalRendererWaitDelayKillsInheritedGroupWithoutFallback",
 	}},
-	{path: "./internal/fzf", selectedUnix: 14, selectedWindows: 14, tests: []string{
+	{path: "./internal/fzf", selectedUnix: 24, selectedWindows: 24, tests: []string{
+		"TestPickerOptionsRejectListenAddressInjection",
+		"TestPickerOptionsAcceptCanonicalListenAddresses",
+		"TestPickerOptionsSidecarUsesTabForFZFSelectionAndKeepsForwardNavigationOnRight",
 		"TestSessionSpecSeparatesCallbackCredentialsFromInheritedEnvironment",
+		"TestSessionSpecDisabledPreservesInheritedFZFAPIKey",
+		"TestSessionSpecEnabledOverridesInheritedFZFAPIKey",
+		"TestPrepareSessionValidatesListenAPIKeyContract",
+		"TestSessionSpecKeyCanaryDoesNotReachArgumentsErrorsOrObserver",
 		"TestRunRejectsUnsafeConfigurationBeforeProcessStart",
 		"TestRunDoesNotProbeVersion",
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 37, selectedWindows: 29, tests: []string{
+	{path: "./internal/app", selectedUnix: 58, selectedWindows: 57, tests: []string{
+		"TestFZFShellRejectsMissingOrExtraCommandText",
+		"TestFZFShellCallbackUnsetsListenAPIKeyBeforeValidation",
+		"TestFZFShellTransportFailureReturnsOneWithoutCredentials",
+		"TestFZFShellRejectsEventKeyBeforeIPCClientConstruction",
+		"TestPreviewEnvironmentAllowsOnlyPathLocaleAndTerminalMetadata",
 		"TestTokenCanaryUsesActualCallbackCredentialAndExcludesNamedSinks",
 		"TestPickerBackendRejectsAuthorizedVirtualBeforeFilesystemAndOutput",
+		"TestPickerBackendCurrentHeaderEmitsDisplayTrace",
 		"TestRunPickerClosesCallbackEndpointBeforeReturning",
+		"TestRunPickerConcreteSidecarJoinsActivePostForAcceptedAndAborted",
+		"TestRunPickerConcreteSidecarDoesNotForwardUnknownStateOrAPIKey",
+		"TestSidecarObserverWritesOnlySchemaValidDiagnostics",
+		"TestSidecarTraceObserverSuppressesCanceledOperationRecords",
 		"TestRunPickerAppliesZoxidePolicyProcessBudgets",
 		"TestRunPickerReturnsHardErrorWhenLoadRequestFailsBeforeBegin",
 		"TestRunPickerNavigationRemovesZoxideCandidates",
 		"TestRunPickerCompactsZoxideHomeDisplay",
+		"TestRunPickerSidecarCredentialsStayOutOfTraceAndFZFArguments",
+	}, windows: []string{
+		"TestWindowsTraceMutexNameHashesCanonicalSinkIdentity",
+		"TestWindowsTraceSinkSessionInitialization",
+		"TestWindowsTraceRecordLockWaitIsBounded",
+		"TestWindowsTraceRecordWriterAcceptsAbandonedMutexAndRetriesPartialWrites",
+		"TestWindowsTraceRecordWriterReleasesMutexAfterWriteFailure",
+		"TestWindowsTraceSinkCloseClosesRecordMutexOnce",
+		"TestWindowsTraceWriterMultiProcessAtomicRecords",
 	}, unix: []string{
 		"TestRunPickerLaunchesFZFBeforeInitialZoxideCompletes",
 		"TestRunPickerParentCancellationStopsLiveZoxideAfterFZFLaunch",
@@ -141,14 +233,14 @@ var task20GateManifest = []task20GatePackage{
 		"TestRunPickerListenFailureJoinsStartedZoxide",
 		"TestRunPickerFZFChildExitClosesInputWithoutOverridingResult",
 	}},
-	{path: "./internal/pathutil", selectedUnix: 10, selectedWindows: 7, tests: []string{}, windows: []string{
+	{path: "./internal/pathutil", selectedUnix: 3, selectedWindows: 7, tests: []string{}, windows: []string{
 		"TestCreateDirectoryTreeRejectsJunctionInBaseAncestry",
 		"TestCreateDirectoryTreeRejectsJunctionInQueryComponent",
 	}, unix: []string{
 		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",
 		"TestCreateDirectoryTreeErrorsAndPreservesExistingParents",
 	}},
-	{path: "./integration", selectedUnix: 60, selectedWindows: 52, tests: []string{
+	{path: "./integration", selectedUnix: 47, selectedWindows: 79, tests: []string{
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
 		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",
@@ -160,7 +252,29 @@ var task20GateManifest = []task20GatePackage{
 		"TestRealFZFPreviewTerminalFailuresKillWholeTree",
 		"TestRealFZFAdversarialPromptCannotInjectAction",
 		"TestRealFZFPickerNavigationAndNormalMode",
+		"TestRealFZFListenSidecarUsesStaticHeaderAndNativeResize",
+		"TestRealFZFListenProtocol",
+		"TestRealFZFListenSidecarQueryCanaryDoesNotLeak",
+		"TestRealFZFListenSidecarProcessTopology",
+		"TestRealFZFListenSidecarCDLabelMatchesFZFState",
+		"TestRealFZFListenSidecarCDTabSelectionPersistsAcrossFilter",
+		"TestRealFZFListenSidecarDoesNotLeakCredentialToPreviewRenderer",
+		"TestRealFZFListenSidecarCPLabelTracksQueryFilteringAndAccept",
+		"TestRealFZFListenSidecarCPLabelTracksTabSelectionAndAccept",
+		"TestRealFZFListenSidecarCDTracksLateZoxideFiltering",
+		"TestRealFZFListenSidecarAbortPreservesPickerOutcome",
 	}, windows: []string{
+		"TestWindowsVerifiedProcessExitsRejectsLiveRecordedIdentity",
+		"TestWindowsVerifiedProcessExitsAcceptsAbsentAndReusedPIDs",
+		"TestWindowsVerifiedProcessExitsRejectsUnverifiableReusedPID",
+		"TestWindowsByteDrainCreatesOverlappedPerRead",
+		"TestWindowsTraceServerSignalsReadinessBeforeAnyClient",
+		"TestWindowsTraceRecordsSortGloballyByEventTimeAfterReaderDrain",
+		"TestWindowsTerminalGracefulTraceCloseDrainsJoinedConnectionsBeforeForceCancel",
+		"TestWindowsTracePipeAllowsSubsequentInstancesWithoutFirstInstanceFlag",
+		"TestWindowsTraceServerMergesConcurrentConnectionsWhileMainRemainsOpen",
+		"TestWindowsTraceServerAcceptsRealCallbacksSequentiallyAndConcurrently",
+		"TestWindowsTraceServerCloseCancelsAndClosesAllInstancesOnce",
 		"TestWindowsResourceSnapshotUsesExactHandleIdentities",
 		"TestWindowsOwnedProcessHandleRegistryReturnsToBaseline",
 		"TestWindowsResourceSnapshotFingerprintsDirectoryReplacement",

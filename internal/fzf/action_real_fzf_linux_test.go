@@ -34,7 +34,10 @@ func TestInstalledFZFFullOptionsDynamicKeyActionsAreParseable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	generated := Options(protocol.PickerCD, "[I] ", "/work/")
+	generated, err := Options(OptionsConfig{Picker: protocol.PickerCD, Prompt: "[I] ", Header: "/work/"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	args := make([]string, 0, len(generated)+1)
 	for _, option := range generated {
 		if strings.HasPrefix(option, "--bind=") {

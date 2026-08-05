@@ -19,6 +19,7 @@ type traceSchemaRules struct {
 	MaxLiveChildrenMax   int
 	ZoxideCounterMin     int
 	ZoxideAttemptsMax    int
+	SidecarAttemptMax    uint64
 	ZoxideLiveRequired   int
 	DurationMin          time.Duration
 	DurationMax          time.Duration
@@ -33,20 +34,31 @@ const traceTimestampRFC3339Nano = "rfc3339nano"
 
 var productionTraceSchema = traceSchemaRules{
 	EventOutcomes: map[string][]string{
-		"session.start":      {"cd", "cp"},
-		"generation.start":   {"ok"},
-		"generation.publish": {"ok"},
-		"generation.discard": {"cancelled", "error", "stale", "superseded"},
-		"zoxide.enrichment":  {"published", "discarded", "failed"},
-		"fzf.start":          {"ok"},
-		"fzf.exit":           {"ok", "aborted", "error"},
-		"callback.event":     {"mi", "ma", "es", "fw", "up", "sl", "hm", "en", "rs"},
-		"callback.load":      {"ok", "error"},
-		"preview.dispatch":   {"ok", "error"},
-		"preview.finished":   {"ok", "error"},
-		"preview.cancel":     {"cancelled"},
-		"preview.exit":       {"ok", "error"},
-		"session.close":      {"accepted", "aborted", "error"},
+		"session.start":          {"cd", "cp"},
+		"generation.start":       {"ok"},
+		"generation.publish":     {"ok"},
+		"generation.discard":     {"cancelled", "error", "stale", "superseded"},
+		"zoxide.enrichment":      {"published", "discarded", "failed"},
+		"fzf.start":              {"ok"},
+		"fzf.exit":               {"ok", "aborted", "error"},
+		"callback.info.start":    {"started"},
+		"callback.info":          {"error", "ok"},
+		"callback.event.start":   {"started"},
+		"callback.event":         {"mi", "ma", "es", "fw", "up", "sl", "hm", "en", "rs", "error"},
+		"callback.display.start": {"started"},
+		"callback.display":       {"ok", "error"},
+		"callback.preview.start": {"started"},
+		"callback.preview":       {"ok", "error"},
+		"callback.load.start":    {"started"},
+		"callback.load":          {"ok", "error"},
+		"preview.dispatch":       {"ok", "error"},
+		"preview.finished":       {"ok", "error"},
+		"preview.cancel":         {"cancelled"},
+		"preview.exit":           {"ok", "error"},
+		"session.close":          {"accepted", "aborted", "error"},
+		"sidecar.get":            {"success", "transient", "terminal"},
+		"sidecar.post":           {"success", "transient", "terminal"},
+		"sidecar.stop":           {"context-canceled", "readiness-timeout", "transient-window", "terminal", "requested"},
 	},
 	RendererBases:        []string{"native", "eza", "glow", "bat", "kitten", "chafa", "unzip", "gzip", "xz", "tar", "file", "pdftoppm", "ffmpegthumbnailer", "ffmpeg", "exiftool"},
 	ZoxidePolicies:       []string{"cached", "fresh"},
@@ -60,6 +72,7 @@ var productionTraceSchema = traceSchemaRules{
 	MaxLiveChildrenMax:   1,
 	ZoxideCounterMin:     0,
 	ZoxideAttemptsMax:    1_000_000,
+	SidecarAttemptMax:    1_000_000,
 	ZoxideLiveRequired:   0,
 	DurationMin:          0,
 	DurationMax:          24 * time.Hour,
