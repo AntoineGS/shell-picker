@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -21,6 +22,18 @@ type windowsProcessNode struct {
 	creationMarker uint64
 	identity       ownedProcessIdentity
 	queryErr       error
+}
+
+type remoteUnicodeString struct {
+	Length, MaximumLength uint16
+	Buffer                uintptr
+}
+
+type remoteProcessParameters struct {
+	Reserved1     [16]byte
+	Reserved2     [10]uintptr
+	ImagePathName remoteUnicodeString
+	CommandLine   remoteUnicodeString
 }
 
 func (session *windowsTerminalSession) TraceEvents() []traceEvent {
@@ -85,9 +98,12 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 			t.Fatalf("interpreter in picker process tree pid=%d", pid)
 		}
 		lowerCommand := strings.ToLower(node.command)
-		if strings.Contains(lowerCommand, "--listen") || strings.Contains(lowerCommand, "shell_picker_token") ||
+		if (!session.sidecar && strings.Contains(lowerCommand, "--listen")) || strings.Contains(lowerCommand, "shell_picker_token") ||
 			strings.Contains(lowerCommand, "http://127.0.0.1:") {
 			t.Fatalf("listener or callback loopback form in process command line pid=%d", pid)
+		}
+		if session.sidecar && strings.Contains(lowerCommand, "--listen=") && !strings.Contains(lowerCommand, "--listen=127.0.0.1:") {
+			t.Fatalf("sidecar listen address is not numeric IPv4 loopback pid=%d", pid)
 		}
 		for _, canary := range session.argvCanaries {
 			if canary != "" && strings.Contains(node.command, canary) {
@@ -100,16 +116,13 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 	}
 }
 
-func (session *windowsTerminalSession) AssertNoLiveDescendants(t *testing.T) {
+func (session *windowsTerminalSession) FZFCommandLine(t *testing.T) string {
 	t.Helper()
-	nodes, err := snapshotWindowsProcesses(false)
+	nodes, err := snapshotWindowsProcesses(true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	root := uint32(session.pid)
-	if _, exists := nodes[root]; !exists {
-		return
-	}
 	descendants := map[uint32]bool{root: true}
 	for changed := true; changed; {
 		changed = false
@@ -119,11 +132,101 @@ func (session *windowsTerminalSession) AssertNoLiveDescendants(t *testing.T) {
 			}
 		}
 	}
+	wantFZF, err := filepath.Abs(session.fzfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for pid := range descendants {
-		if pid != root {
-			t.Fatalf("picker retained live descendant %d after close", pid)
+		if pid == root {
+			continue
+		}
+		node := nodes[pid]
+		if strings.EqualFold(node.exe, wantFZF) {
+			return node.command
 		}
 	}
+	t.Fatalf("fzf process not found below picker %d", root)
+	return ""
+}
+
+func (session *windowsTerminalSession) DescendantCommandLines(t *testing.T) []string {
+	t.Helper()
+	records := session.DescendantProcessRecords(t)
+	commands := make([]string, 0, len(records))
+	for _, record := range records {
+		commands = append(commands, record.CommandLine)
+	}
+	return commands
+}
+
+func (session *windowsTerminalSession) DescendantProcessRecords(t *testing.T) []descendantProcessRecord {
+	t.Helper()
+	if session.recorder != nil {
+		session.recorder.CaptureAndWait()
+		return session.recorder.Records()
+	}
+	records, err := snapshotDescendantProcessRecords(session.pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return records
+}
+
+func (session *windowsTerminalSession) stopDescendantRecorder() {
+	if session.recorder != nil {
+		session.recorder.StopAndJoin()
+	}
+}
+
+func (session *windowsTerminalSession) captureDescendantSample() {
+	if session.recorder != nil {
+		session.recorder.Capture()
+	}
+}
+
+func snapshotDescendantProcessRecords(root int) ([]descendantProcessRecord, error) {
+	nodes, err := snapshotWindowsProcesses(false)
+	if err != nil {
+		return nil, err
+	}
+	descendants := map[uint32]bool{uint32(root): true}
+	for changed := true; changed; {
+		changed = false
+		for pid, node := range nodes {
+			if !descendants[pid] && descendants[node.ppid] {
+				descendants[pid], changed = true, true
+			}
+		}
+	}
+	records := make([]descendantProcessRecord, 0, len(descendants)-1)
+	for pid, node := range nodes {
+		if pid == uint32(root) || !descendants[pid] || node.queryErr != nil {
+			continue
+		}
+		command, err := queryWindowsProcessCommandLineByPID(pid)
+		if err != nil {
+			continue
+		}
+		records = append(records, descendantProcessRecord{
+			PID: int(pid), Identity: fmt.Sprintf("%d:%d", pid, node.creationMarker), CommandLine: command,
+		})
+	}
+	sort.Slice(records, func(left, right int) bool { return records[left].PID < records[right].PID })
+	return records, nil
+}
+
+func queryWindowsProcessCommandLineByPID(pid uint32) (string, error) {
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_VM_READ, false, pid)
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(handle)
+	return queryWindowsProcessCommandLine(handle)
+}
+
+func (session *windowsTerminalSession) AssertNoLiveDescendants(t *testing.T) {
+	t.Helper()
+	_ = session.VerifiedProcessExits(t, session.DescendantProcessRecords(t))
 }
 
 func (session *windowsTerminalSession) TrackLiveDescendants(t *testing.T) []trackedProcess {
@@ -202,7 +305,11 @@ func snapshotWindowsProcesses(withCommandLine bool) (map[uint32]windowsProcessNo
 	nodes := make(map[uint32]windowsProcessNode)
 	for err = windows.Process32First(snapshot, &entry); err == nil; err = windows.Process32Next(snapshot, &entry) {
 		node := windowsProcessNode{pid: entry.ProcessID, ppid: entry.ParentProcessID}
-		handle, openErr := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, entry.ProcessID)
+		access := uint32(windows.PROCESS_QUERY_LIMITED_INFORMATION)
+		if withCommandLine {
+			access |= windows.PROCESS_VM_READ
+		}
+		handle, openErr := windows.OpenProcess(access, false, entry.ProcessID)
 		if openErr != nil {
 			node.queryErr = fmt.Errorf("OpenProcess: %w", openErr)
 			nodes[entry.ProcessID] = node
@@ -254,19 +361,80 @@ func queryWindowsProcessImage(handle windows.Handle) (string, error) {
 }
 
 func queryWindowsProcessCommandLine(handle windows.Handle) (string, error) {
-	buffer := make([]byte, 128<<10)
+	processBasicInformation := make([]byte, 48)
 	var returned uint32
-	if err := windows.NtQueryInformationProcess(handle, windows.ProcessCommandLineInformation,
-		unsafe.Pointer(&buffer[0]), uint32(len(buffer)), &returned); err != nil {
+	if err := windows.NtQueryInformationProcess(handle, windows.ProcessBasicInformation,
+		unsafe.Pointer(&processBasicInformation[0]), uint32(len(processBasicInformation)), &returned); err != nil {
 		return "", err
 	}
-	type unicodeString struct {
-		Length, MaximumLength uint16
-		Buffer                *uint16
+	return readRemoteProcessCommandLine(handle, processBasicInformation)
+}
+
+func readRemoteProcessCommandLine(handle windows.Handle, processBasicInformation []byte) (string, error) {
+	pointerSize := int(unsafe.Sizeof(uintptr(0)))
+	pebAddress, err := readRemotePointer(processBasicInformation[pointerSize:])
+	if err != nil {
+		return "", fmt.Errorf("decode process PEB address: %w", err)
 	}
-	value := (*unicodeString)(unsafe.Pointer(&buffer[0]))
-	if value.Buffer == nil || value.Length%2 != 0 {
+	paramsOffset := uintptr(0x20)
+	if pointerSize == 4 {
+		paramsOffset = 0x10
+	}
+	peb := make([]byte, int(paramsOffset)+pointerSize)
+	if err := readRemoteMemory(handle, pebAddress, peb); err != nil {
+		return "", fmt.Errorf("read process PEB: %w", err)
+	}
+	paramsAddress, err := readRemotePointer(peb[int(paramsOffset):])
+	if err != nil {
+		return "", fmt.Errorf("decode process parameters address: %w", err)
+	}
+	params := make([]byte, unsafe.Sizeof(remoteProcessParameters{}))
+	if err := readRemoteMemory(handle, paramsAddress, params); err != nil {
+		return "", fmt.Errorf("read process parameters: %w", err)
+	}
+	commandOffset := unsafe.Offsetof(remoteProcessParameters{}.CommandLine)
+	commandLine := (*remoteUnicodeString)(unsafe.Pointer(&params[commandOffset]))
+	if commandLine.Length%2 != 0 || commandLine.MaximumLength < commandLine.Length {
 		return "", fmt.Errorf("invalid process command line")
 	}
-	return windows.UTF16ToString(unsafe.Slice(value.Buffer, int(value.Length/2))), nil
+	if commandLine.Length == 0 {
+		return "", nil
+	}
+	if commandLine.Buffer == 0 {
+		return "", fmt.Errorf("invalid process command line")
+	}
+	raw := make([]byte, commandLine.Length)
+	if err := readRemoteMemory(handle, commandLine.Buffer, raw); err != nil {
+		return "", fmt.Errorf("read process command line: %w", err)
+	}
+	command := make([]uint16, len(raw)/2)
+	for index := range command {
+		command[index] = binary.LittleEndian.Uint16(raw[index*2:])
+	}
+	return windows.UTF16ToString(command), nil
+}
+
+func readRemotePointer(data []byte) (uintptr, error) {
+	size := int(unsafe.Sizeof(uintptr(0)))
+	if len(data) < size {
+		return 0, fmt.Errorf("short pointer buffer: %d/%d", len(data), size)
+	}
+	if size == 8 {
+		return uintptr(binary.LittleEndian.Uint64(data[:size])), nil
+	}
+	return uintptr(binary.LittleEndian.Uint32(data[:size])), nil
+}
+
+func readRemoteMemory(handle windows.Handle, address uintptr, buffer []byte) error {
+	if len(buffer) == 0 {
+		return nil
+	}
+	var read uintptr
+	if err := windows.ReadProcessMemory(handle, address, &buffer[0], uintptr(len(buffer)), &read); err != nil {
+		return err
+	}
+	if read != uintptr(len(buffer)) {
+		return fmt.Errorf("short read: %d/%d", read, len(buffer))
+	}
+	return nil
 }

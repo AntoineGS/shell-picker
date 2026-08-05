@@ -49,7 +49,9 @@ func cachedRealBinaries(t *testing.T) (picker, helper string) {
 			{output: picker, pkg: "./cmd/shell-picker"},
 			{output: helper, pkg: "./integration/testhelper"},
 		} {
-			command := exec.Command("go", "build", "-o", build.output, build.pkg)
+			arguments := append([]string{"build"}, firstFrameReproducibleBuildFlags...)
+			arguments = append(arguments, "-o", build.output, build.pkg)
+			command := exec.Command("go", arguments...)
 			command.Dir = repository
 			command.Env = append(os.Environ(), "TMPDIR="+os.Getenv("TMPDIR"))
 			if output, err := command.CombinedOutput(); err != nil {

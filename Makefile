@@ -1,4 +1,6 @@
-.PHONY: build install windows-native fmt fmt-check test check real-fzf security-gate performance-stable performance-dedicated cross-build release-snapshot release-check
+.PHONY: build install windows-native fmt fmt-check test check real-fzf security-gate performance-stable performance-dedicated performance-first-frame cross-build release-snapshot release-check
+
+SHELL_PICKER_FIRST_FRAME_POWERSHELL ?= pwsh
 
 build:
 	mkdir -p bin
@@ -43,6 +45,13 @@ performance-dedicated:
 	go test -c -o bin/shell-picker-perf.test ./integration
 	./bin/shell-picker-perf.test -test.run TestDedicatedBaseline -binary ./bin/shell-picker -samples 50 -output host-baseline.json
 	./bin/shell-picker-perf.test -test.run TestDedicatedTargets -binary ./bin/shell-picker -samples 50 -baseline host-baseline.json -output performance.json
+
+performance-first-frame:
+	test "$(SHELL_PICKER_DEDICATED_PERF)" = 1
+	test -n "$(SHELL_PICKER_FIRST_FRAME_BINARY)" -a -n "$(SHELL_PICKER_FIRST_FRAME_TEST_BINARY)" -a -n "$(SHELL_PICKER_FIRST_FRAME_BUILD_METADATA)" -a -n "$(SHELL_PICKER_FIRST_FRAME_BASELINE)" -a -n "$(SHELL_PICKER_FIRST_FRAME_OUTPUT)" -a -n "$(SHELL_PICKER_FIRST_FRAME_RAW_DIR)" -a -n "$(SHELL_PICKER_FIRST_FRAME_SAMPLES)"
+	$(SHELL_PICKER_FIRST_FRAME_POWERSHELL) -NoProfile -File scripts/verify-first-frame-build.ps1 -ProductionOutput "$(SHELL_PICKER_FIRST_FRAME_BINARY)" -HarnessOutput "$(SHELL_PICKER_FIRST_FRAME_TEST_BINARY)" -MetadataOutput "$(SHELL_PICKER_FIRST_FRAME_BUILD_METADATA)"
+	"$(SHELL_PICKER_FIRST_FRAME_TEST_BINARY)" -test.run=^TestDedicatedBaseline$$ -binary "$(SHELL_PICKER_FIRST_FRAME_BINARY)" -samples "$(SHELL_PICKER_FIRST_FRAME_SAMPLES)" -output "$(SHELL_PICKER_FIRST_FRAME_BASELINE)"
+	"$(SHELL_PICKER_FIRST_FRAME_TEST_BINARY)" -test.run=^TestDedicatedFirstFrameTargets$$ -binary "$(SHELL_PICKER_FIRST_FRAME_BINARY)" -baseline "$(SHELL_PICKER_FIRST_FRAME_BASELINE)" -first-frame-build-metadata "$(SHELL_PICKER_FIRST_FRAME_BUILD_METADATA)" -first-frame-output "$(SHELL_PICKER_FIRST_FRAME_OUTPUT)" -first-frame-raw-dir "$(SHELL_PICKER_FIRST_FRAME_RAW_DIR)" -first-frame-samples "$(SHELL_PICKER_FIRST_FRAME_SAMPLES)"
 
 cross-build:
 	mkdir -p bin

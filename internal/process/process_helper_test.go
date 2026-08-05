@@ -114,6 +114,19 @@ func TestSanitizeEnvRejectsMaliciousInheritedDefaults(t *testing.T) {
 	}
 }
 
+func TestSanitizeEnvStripsSidecarActivationAndAllShellPickerVariables(t *testing.T) {
+	got := SanitizeEnv([]string{
+		"PATH=/bin",
+		"SHELL_PICKER_EXPERIMENTAL_FZF_SIDECAR=1",
+		"SHELL_PICKER_UNRELATED=secret",
+		"FZF_API_KEY=stale",
+	}, nil)
+	want := []string{"PATH=/bin", "FZF_API_KEY=stale"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("env=%q, want=%q", got, want)
+	}
+}
+
 func eventPhases(events []ProcessEvent) string {
 	phases := make([]string, len(events))
 	for i := range events {

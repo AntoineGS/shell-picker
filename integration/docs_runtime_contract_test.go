@@ -231,7 +231,10 @@ func TestDocumentationStatesCurrentRuntimeContracts(t *testing.T) {
 
 func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode) []string {
 	t.Helper()
-	options := fzf.Options(picker, "[I] ", "/work/")
+	options, err := fzf.Options(fzf.OptionsConfig{Picker: picker, Prompt: "[I] ", Header: "/work/"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	type binding struct {
 		keys   []string
 		render string

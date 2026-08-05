@@ -65,7 +65,7 @@ func platformParityPreviewPath(root, caseName string) string {
 	}
 }
 
-func exerciseParityZshAdapter(t *testing.T, picker protocol.Picker) zshParityEvidence {
+func exerciseParityZshAdapter(t *testing.T, picker protocol.Picker, outputOverride ...[]byte) zshParityEvidence {
 	t.Helper()
 	cwd, home := t.TempDir(), t.TempDir()
 	target := filepath.Join(t.TempDir(), "portable $(literal) `literal` target\n")
@@ -87,17 +87,39 @@ func exerciseParityZshAdapter(t *testing.T, picker protocol.Picker) zshParityEvi
 		output = append(output, record.Bytes()...)
 		output = append(output, 0)
 	}
-	result, err := fzf.ParseOutput(picker, output, 0)
-	options := fzf.Options(picker, "[N] ", "portable/")
+	if len(outputOverride) != 0 {
+		output = outputOverride[0]
+	}
+	result, parseErr := fzf.ParseOutput(picker, output, 0)
+	options, optionsErr := fzf.Options(fzf.OptionsConfig{Picker: picker, Prompt: "[N] ", Header: "portable/"})
+	if optionsErr != nil {
+		t.Fatal(optionsErr)
+	}
 	accepted := 0
-	if err == nil && result.Key == "enter" {
+	if parseErr == nil && result.Key == "enter" {
 		accepted = boolInt(picker == protocol.PickerCD)
 	}
 	buffer := "portable-zsh-buffer"
-	return zshParityEvidence{Started: len(options) > 0, Ended: err == nil, BufferEqual: true,
+	return zshParityEvidence{Started: len(options) > 0, Ended: parseErr == nil, BufferEqual: true,
 		NoTrailingSpace: true, OrderedPaths: true, Multiplicity: true,
-		InvocationCount: boolInt(err == nil), AcceptCount: accepted, CWD: cwd, Home: home, Target: target, Second: second,
+		InvocationCount: boolInt(parseErr == nil), AcceptCount: accepted, CWD: cwd, Home: home, Target: target, Second: second,
 		Buffer: buffer, ExpectedBuffer: buffer, Args: []string{string(picker), "--cwd", cwd, "--home", home, "--output", "nul"}, Selected: selected}
+}
+
+func TestParityWindowsEvidenceSeparatesParseAndOptionsErrors(t *testing.T) {
+	evidence := exerciseParityZshAdapter(t, protocol.PickerCD, []byte("malformed output"))
+	if !evidence.Started {
+		t.Fatal("valid fzf options were not reported as started")
+	}
+	if evidence.Ended {
+		t.Fatal("parse failure was reported as a completed session")
+	}
+	if evidence.InvocationCount != 0 {
+		t.Fatalf("invocation count=%d, want 0 after parse failure", evidence.InvocationCount)
+	}
+	if evidence.AcceptCount != 0 {
+		t.Fatalf("accept count=%d, want 0 after parse failure", evidence.AcceptCount)
+	}
 }
 
 func TestParityWindowsSemanticSubstitutions(t *testing.T) {

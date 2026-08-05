@@ -29,9 +29,12 @@ type linuxTerminalSession struct {
 	cmd          *exec.Cmd
 	fzfPath      string
 	argvCanaries []string
+	sidecar      bool
+	recorder     *descendantRecorder
 
 	outputMu      sync.Mutex
 	output        bytes.Buffer
+	firstOutputAt time.Time
 	outputChanged chan struct{}
 	eventMu       sync.Mutex
 	events        []traceEvent
@@ -58,6 +61,12 @@ type linuxTerminalSession struct {
 }
 
 func (session *linuxTerminalSession) TraceEvents() []traceEvent { return session.traceEvents() }
+
+func (session *linuxTerminalSession) FirstOutputAt() time.Time {
+	session.outputMu.Lock()
+	defer session.outputMu.Unlock()
+	return session.firstOutputAt
+}
 
 func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	t.Helper()
@@ -90,7 +99,8 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	}
 	session := &linuxTerminalSession{t: t, master: master, traceReader: os.NewFile(uintptr(readerFD), tracePath),
 		dummyWriter: os.NewFile(uintptr(dummyFD), tracePath), changed: make(chan struct{}), waitDone: make(chan struct{}),
-		drainDone: make(chan struct{}), traceDone: make(chan struct{}), outputChanged: make(chan struct{})}
+		drainDone: make(chan struct{}), traceDone: make(chan struct{}), outputChanged: make(chan struct{}),
+		sidecar: realFZFSidecarEnabled(config.Environment), recorder: newDescendantRecorder(snapshotDescendantProcessRecords)}
 	for index, argument := range config.Args {
 		if argument == "--fzf" && index+1 < len(config.Args) {
 			session.fzfPath = config.Args[index+1]
@@ -103,6 +113,7 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 			}
 		}
 	}
+	session.recorder.Start()
 	go session.drainPTY()
 	go session.drainTrace()
 
@@ -119,6 +130,7 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 
 func startLinuxTerminalCommand(session *linuxTerminalSession, command *exec.Cmd, slave *os.File) error {
 	if err := command.Start(); err != nil {
+		session.stopDescendantRecorder()
 		_ = slave.Close()
 		session.closeMaster()
 		session.closeDummyWriter()
@@ -134,6 +146,8 @@ func startLinuxTerminalCommand(session *linuxTerminalSession, command *exec.Cmd,
 		return err
 	}
 	session.cmd = command
+	session.recorder.SetRoot(command.Process.Pid)
+	session.recorder.Capture()
 	_ = slave.Close()
 	go session.waitCommand()
 	return nil
@@ -193,12 +207,16 @@ func (session *linuxTerminalSession) drainPTY() {
 		n, err := session.master.Read(buffer)
 		if n > 0 {
 			session.outputMu.Lock()
+			if session.firstOutputAt.IsZero() {
+				session.firstOutputAt = time.Now()
+			}
 			_, _ = session.output.Write(buffer[:n])
 			if session.outputChanged != nil {
 				close(session.outputChanged)
 			}
 			session.outputChanged = make(chan struct{})
 			session.outputMu.Unlock()
+			session.captureDescendantSample()
 		}
 		if err != nil {
 			return
@@ -226,6 +244,7 @@ func (session *linuxTerminalSession) drainTrace() {
 		close(session.changed)
 		session.changed = make(chan struct{})
 		session.eventMu.Unlock()
+		session.captureDescendantSample()
 	}
 	if err := scanner.Err(); err != nil {
 		session.publishTraceError(err)
@@ -299,9 +318,7 @@ func (session *linuxTerminalSession) WaitBarrier(ctx context.Context, wanted bar
 				session.eventMu.Unlock()
 				session.t.Fatalf("trace reader failed: %s", event.Outcome)
 			}
-			if event.Event == wanted.Event && (wanted.Operation == "" || event.Outcome == wanted.Operation) &&
-				(wanted.Renderer == "" || event.Renderer == wanted.Renderer) &&
-				(wanted.Generation == 0 || event.Generation == wanted.Generation) {
+			if matchesTraceBarrier(event, wanted) {
 				count++
 				matched = event
 				if count >= wanted.Count {
@@ -315,7 +332,8 @@ func (session *linuxTerminalSession) WaitBarrier(ctx context.Context, wanted bar
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			session.t.Fatalf("wait for barrier %+v: %v; events=%+v; output=%q", wanted, ctx.Err(), session.traceEvents(), session.Output())
+			events := session.traceEvents()
+			session.t.Fatalf("wait for barrier %+v: %v; sidecar=%s; events=%+v; output=%q", wanted, ctx.Err(), sidecarDiagnostics(events), events, session.Output())
 		}
 	}
 }

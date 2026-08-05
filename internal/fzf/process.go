@@ -3,6 +3,7 @@ package fzf
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -25,8 +26,11 @@ type Config struct {
 	FZFPath         string
 	ExecutablePath  string
 	Environment     []string
+	TracePath       string
+	TraceSession    string
 	CallbackAddress string
 	CallbackToken   string
+	ListenAPIKey    string
 	Options         []string
 	Input           io.ReadCloser
 	Runner          process.Runner
@@ -82,15 +86,39 @@ func prepareSession(config Config) (process.Spec, *bytes.Buffer, error) {
 	if runtime.GOOS != "windows" && config.ForegroundTTY == nil {
 		return process.Spec{}, nil, errors.New("fzf: foreground terminal is required")
 	}
+	listenAddress, err := listenAddressFromOptions(config.Options)
+	if err != nil {
+		return process.Spec{}, nil, err
+	}
+	if listenAddress == "" {
+		if config.ListenAPIKey != "" {
+			return process.Spec{}, nil, errors.New("fzf: listen API key requires a listen option")
+		}
+	} else {
+		if config.ListenAPIKey == "" {
+			return process.Spec{}, nil, errors.New("fzf: listen API key is required for listen mode")
+		}
+		if err := validateListenAPIKey(config.ListenAPIKey); err != nil {
+			return process.Spec{}, nil, err
+		}
+	}
 
 	sanitized := process.SanitizeEnv(config.Environment, nil)
 	oldPath := environmentValue(sanitized, "PATH")
 	path := directory + string(os.PathListSeparator) + oldPath
-	environment := process.SanitizeEnv(sanitized, map[string]string{
+	controlled := map[string]string{
 		"PATH":               path,
 		"SHELL_PICKER_ADDR":  config.CallbackAddress,
 		"SHELL_PICKER_TOKEN": config.CallbackToken,
-	})
+	}
+	if config.TracePath != "" && config.TraceSession != "" {
+		controlled["SHELL_PICKER_TRACE_PATH"] = config.TracePath
+		controlled["SHELL_PICKER_TRACE_SESSION"] = config.TraceSession
+	}
+	if listenAddress != "" {
+		controlled["FZF_API_KEY"] = config.ListenAPIKey
+	}
+	environment := process.SanitizeEnv(sanitized, controlled)
 	args := append([]string(nil), config.Options...)
 	args = append(args, "--with-shell="+basename+" --fzf-shell")
 	output := &bytes.Buffer{}
@@ -110,6 +138,34 @@ func prepareSession(config Config) (process.Spec, *bytes.Buffer, error) {
 		ForegroundTTY:    config.ForegroundTTY,
 		WaitDelay:        time.Second,
 	}, output, nil
+}
+
+func listenAddressFromOptions(options []string) (string, error) {
+	var address string
+	for _, option := range options {
+		if option == "--listen" {
+			return "", errInvalidListenAddress
+		}
+		if !strings.HasPrefix(option, "--listen=") {
+			continue
+		}
+		if address != "" {
+			return "", errors.New("fzf: multiple listen options")
+		}
+		address = strings.TrimPrefix(option, "--listen=")
+		if err := validateListenAddress(address); err != nil {
+			return "", err
+		}
+	}
+	return address, nil
+}
+
+func validateListenAPIKey(key string) error {
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(key)
+	if err != nil || len(decoded) != 32 {
+		return errors.New("fzf: invalid listen API key")
+	}
+	return nil
 }
 
 func environmentValue(environment []string, wanted string) string {

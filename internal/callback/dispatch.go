@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/fzf"
+	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
 	"github.com/AntoineGS/shell-picker/internal/preview"
 	processpkg "github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
@@ -34,6 +35,7 @@ type Dependencies struct {
 	Stdout    io.Writer
 	Stderr    io.Writer
 	Preview   func(context.Context, protocol.ResolvedCandidate, io.Writer, io.Writer) error
+	Trace     func(integrationpkg.TraceEvent) error
 }
 
 func Dispatch(ctx context.Context, command Command, dependencies Dependencies) error {
@@ -56,7 +58,14 @@ func Dispatch(ctx context.Context, command Command, dependencies Dependencies) e
 	case KindDisplay:
 		return dispatchDisplay(ctx, dependencies)
 	case KindInfo:
-		return writeAll(dependencies.Stdout, []byte(finderInfo(command.Picker, dependencies.LookupEnv)))
+		recordTrace(dependencies, integrationpkg.TraceEvent{Name: "callback.info.start", Outcome: "started"})
+		err := writeAll(dependencies.Stdout, []byte(finderInfo(command.Picker, dependencies.LookupEnv)))
+		outcome := "ok"
+		if err != nil {
+			outcome = "error"
+		}
+		recordTrace(dependencies, integrationpkg.TraceEvent{Name: "callback.info", Outcome: outcome})
+		return err
 	case KindEmptySource:
 		return nil
 	case KindInvalidPreview:
@@ -66,21 +75,10 @@ func Dispatch(ctx context.Context, command Command, dependencies Dependencies) e
 	}
 }
 
-func ValidateLocal(command Command, lookupEnv func(string) string) error {
-	if lookupEnv == nil {
-		return errors.New("callback: nil environment reader")
+func recordTrace(dependencies Dependencies, event integrationpkg.TraceEvent) {
+	if dependencies.Trace != nil {
+		_ = dependencies.Trace(event)
 	}
-	switch command.Kind {
-	case KindEvent:
-		if command.Opcode != protocol.OpRestoreView && !validKey(command.Opcode, lookupEnv("FZF_KEY")) {
-			return ErrKey
-		}
-	case KindLoad, KindPreview, KindDisplay, KindInfo, KindEmptySource, KindInvalidPreview:
-		return nil
-	default:
-		return ErrGrammar
-	}
-	return nil
 }
 
 func dispatchEvent(ctx context.Context, command Command, dependencies Dependencies) (err error) {
@@ -329,15 +327,4 @@ func decodeCanonical(encoded string) ([]byte, error) {
 		return nil, errors.New("callback: invalid resolved path encoding")
 	}
 	return decoded, nil
-}
-
-func validKey(opcode protocol.Opcode, key string) bool {
-	allowed := map[protocol.Opcode]map[string]bool{
-		protocol.OpModeInsert: {"i": true}, protocol.OpModeAdd: {"a": true}, protocol.OpEscape: {"esc": true},
-		protocol.OpForward: {"ctrl-l": true, "tab": true, "right": true, "l": true},
-		protocol.OpParent:  {"ctrl-h": true, "left": true, "h": true},
-		protocol.OpSlash:   {"/": true}, protocol.OpHome: {"~": true}, protocol.OpEnter: {"enter": true},
-	}
-	keys, ok := allowed[opcode]
-	return ok && keys[key]
 }

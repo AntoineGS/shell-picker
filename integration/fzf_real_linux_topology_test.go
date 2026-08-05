@@ -27,15 +27,11 @@ func (session *linuxTerminalSession) AssertProcessTopology(t *testing.T) {
 		if parseErr != nil {
 			continue
 		}
-		ppid, parentErr := linuxParentPID(pid)
-		exe, exeErr := os.Readlink("/proc/" + entry.Name() + "/exe")
-		marker, markerErr := linuxProcessStartMarker(pid)
-		if parentErr != nil || exeErr != nil || markerErr != nil {
+		node, nodeErr := snapshotLinuxProcessNode(pid)
+		if nodeErr != nil {
 			continue
 		}
-		raw, _ := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
-		nodes[pid] = linuxProcessNode{pid: pid, ppid: ppid, exe: exe,
-			args: strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00"), startMarker: marker}
+		nodes[pid] = node
 	}
 	descendants := map[int]bool{session.PID(): true}
 	for changed := true; changed; {
@@ -95,7 +91,13 @@ func (session *linuxTerminalSession) AssertProcessTopology(t *testing.T) {
 			t.Fatalf("interpreter role in picker tree pid=%d", pid)
 		}
 		for _, argument := range node.args {
-			if argument == "--listen" || strings.HasPrefix(argument, "--listen=") || strings.Contains(argument, "SHELL_PICKER_TOKEN") {
+			if (argument == "--listen" || strings.HasPrefix(argument, "--listen=")) && !session.sidecar {
+				t.Fatalf("listener or credential name in process argv pid=%d", pid)
+			}
+			if session.sidecar && strings.HasPrefix(argument, "--listen=") && !strings.HasPrefix(argument, "--listen=127.0.0.1:") {
+				t.Fatalf("sidecar listen address is not numeric IPv4 loopback pid=%d: %q", pid, argument)
+			}
+			if strings.Contains(argument, "SHELL_PICKER_TOKEN") {
 				t.Fatalf("listener or credential name in process argv pid=%d", pid)
 			}
 			for _, canary := range session.argvCanaries {
@@ -109,6 +111,58 @@ func (session *linuxTerminalSession) AssertProcessTopology(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func (session *linuxTerminalSession) FZFCommandLine(t *testing.T) string {
+	t.Helper()
+	nodes := snapshotLinuxPickerProcesses(t)
+	root := session.PID()
+	wantFZF, err := filepath.EvalSymlinks(session.fzfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range linuxPickerDescendants(nodes, root) {
+		if node.exe == wantFZF {
+			return strings.Join(node.args, "\x00")
+		}
+	}
+	t.Fatalf("fzf process not found below picker %d", root)
+	return ""
+}
+
+func (session *linuxTerminalSession) DescendantProcessRecords(t *testing.T) []descendantProcessRecord {
+	t.Helper()
+	if session.recorder != nil {
+		session.recorder.CaptureAndWait()
+		return session.recorder.Records()
+	}
+	records, err := snapshotDescendantProcessRecords(session.PID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return records
+}
+
+func (session *linuxTerminalSession) DescendantCommandLines(t *testing.T) []string {
+	t.Helper()
+	records := session.DescendantProcessRecords(t)
+	commands := make([]string, 0, len(records))
+	for _, record := range records {
+		commands = append(commands, record.CommandLine)
+	}
+	return commands
+}
+
+func (session *linuxTerminalSession) stopDescendantRecorder() {
+	if session.recorder != nil {
+		session.recorder.StopAndJoin()
+	}
+}
+
+func (session *linuxTerminalSession) captureDescendantSample() {
+	if session.recorder != nil {
+		session.recorder.Capture()
 	}
 }
 
@@ -258,9 +312,32 @@ func (session *linuxTerminalSession) AssertTrackedProcessesGone(t *testing.T, tr
 
 func snapshotLinuxPickerProcesses(t *testing.T) map[int]linuxProcessNode {
 	t.Helper()
-	entries, err := os.ReadDir("/proc")
+	nodes, err := snapshotLinuxProcesses()
 	if err != nil {
 		t.Fatal(err)
+	}
+	return nodes
+}
+
+func snapshotDescendantProcessRecords(root int) ([]descendantProcessRecord, error) {
+	nodes, err := snapshotLinuxProcesses()
+	if err != nil {
+		return nil, err
+	}
+	descendants := linuxPickerDescendants(nodes, root)
+	records := make([]descendantProcessRecord, 0, len(descendants))
+	for _, node := range descendants {
+		records = append(records, descendantProcessRecord{
+			PID: node.pid, Identity: fmt.Sprintf("%d:%s", node.pid, node.startMarker), CommandLine: strings.Join(node.args, "\x00"),
+		})
+	}
+	return records, nil
+}
+
+func snapshotLinuxProcesses() (map[int]linuxProcessNode, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
 	}
 	nodes := make(map[int]linuxProcessNode)
 	for _, entry := range entries {
@@ -268,15 +345,42 @@ func snapshotLinuxPickerProcesses(t *testing.T) map[int]linuxProcessNode {
 		if parseErr != nil {
 			continue
 		}
-		ppid, parentErr := linuxParentPID(pid)
-		exe, exeErr := os.Readlink("/proc/" + entry.Name() + "/exe")
-		marker, markerErr := linuxProcessStartMarker(pid)
-		if parentErr != nil || exeErr != nil || markerErr != nil {
+		node, nodeErr := snapshotLinuxProcessNode(pid)
+		if nodeErr != nil {
 			continue
 		}
-		nodes[pid] = linuxProcessNode{pid: pid, ppid: ppid, exe: exe, startMarker: marker}
+		nodes[pid] = node
 	}
-	return nodes
+	return nodes, nil
+}
+
+var errLinuxProcessChangedDuringSnapshot = errors.New("linux process changed during snapshot")
+
+func snapshotLinuxProcessNode(pid int) (linuxProcessNode, error) {
+	ppid, err := linuxParentPID(pid)
+	if err != nil {
+		return linuxProcessNode{}, err
+	}
+	exe, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe")
+	if err != nil {
+		return linuxProcessNode{}, err
+	}
+	marker, err := linuxProcessStartMarker(pid)
+	if err != nil {
+		return linuxProcessNode{}, err
+	}
+	args, err := readLinuxProcessCommandLine(pid)
+	if err != nil {
+		return linuxProcessNode{}, err
+	}
+	currentMarker, err := linuxProcessStartMarker(pid)
+	if err != nil {
+		return linuxProcessNode{}, err
+	}
+	if currentMarker != marker {
+		return linuxProcessNode{}, errLinuxProcessChangedDuringSnapshot
+	}
+	return linuxProcessNode{pid: pid, ppid: ppid, exe: exe, args: args, startMarker: marker}, nil
 }
 
 func linuxPickerDescendants(nodes map[int]linuxProcessNode, root int) []linuxProcessNode {

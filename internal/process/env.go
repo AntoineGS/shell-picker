@@ -15,7 +15,7 @@ type environmentEntry struct {
 
 var blockedEnvironment = []string{
 	"FZF_DEFAULT_OPTS", "FZF_DEFAULT_OPTS_FILE", "FZF_DEFAULT_COMMAND",
-	"FZF_KEY", "FZF_QUERY", "FZF_CURRENT_ITEM",
+	"FZF_KEY", "FZF_QUERY", "FZF_CURRENT_ITEM", "SHELL_PICKER_TRACE_PATH", "SHELL_PICKER_TRACE_SESSION",
 }
 
 func SanitizeEnv(inherited []string, controlled map[string]string) []string {

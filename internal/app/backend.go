@@ -20,27 +20,33 @@ type pickerBackend struct {
 	stat       func(string) (os.FileInfo, error)
 }
 
-func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (sessionipc.EventResult, error) {
+func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (result sessionipc.EventResult, err error) {
+	started := time.Now()
+	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.event.start", Outcome: "started", Timestamp: time.Now()})
+	defer func() {
+		outcome := string(event.Opcode)
+		if err != nil {
+			outcome = "error"
+		}
+		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.event", Outcome: outcome, CallbackIPC: time.Since(started), Timestamp: time.Now()})
+	}()
 	if backend.enrichment != nil {
 		return backend.enrichment.HandleEvent(ctx, event)
 	}
 	if cause := context.Cause(ctx); cause != nil {
 		return sessionipc.EventResult{}, cause
 	}
-	started := time.Now()
-	result, err := session.Handle(ctx, backend.actor, event)
+	transition, handleErr := session.Handle(ctx, backend.actor, event)
 	duration := time.Since(started)
-	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.event", Outcome: string(event.Opcode), CallbackIPC: duration,
-		Timestamp: time.Now()})
-	if err == nil {
-		backend.metrics.recordTransition(result)
-		if result.Effect.ReloadGeneration != 0 {
-			state := result.Snapshot.State()
-			traceTransition(backend.trace, backend.metrics.policy, result, state.Location.Path)
+	if handleErr == nil {
+		backend.metrics.recordTransition(transition)
+		if transition.Effect.ReloadGeneration != 0 {
+			state := transition.Snapshot.State()
+			traceTransition(backend.trace, backend.metrics.policy, transition, state.Location.Path)
 		}
 	}
 	backend.metrics.recordCallback(duration)
-	return sessionipc.EventResult{Effect: result.Effect}, err
+	return sessionipc.EventResult{Effect: transition.Effect}, handleErr
 }
 
 func (backend *pickerBackend) FinalizeEvent(ctx context.Context, request sessionipc.EventFinalizeRequest) error {
@@ -57,11 +63,19 @@ func (backend *pickerBackend) FinalizeLoad(ctx context.Context, request sessioni
 	return nil
 }
 
-func (backend *pickerBackend) LoadGeneration(ctx context.Context, request sessionipc.LoadRequest) ([]byte, error) {
+func (backend *pickerBackend) LoadGeneration(ctx context.Context, request sessionipc.LoadRequest) (data []byte, err error) {
+	started := time.Now()
+	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load.start", Generation: request.Generation, Outcome: "started", Timestamp: time.Now()})
+	defer func() {
+		outcome := "ok"
+		if err != nil {
+			outcome = "error"
+		}
+		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: request.Generation, Outcome: outcome, LoadDuration: time.Since(started), Timestamp: time.Now()})
+	}()
 	if cause := context.Cause(ctx); cause != nil {
 		return nil, cause
 	}
-	started := time.Now()
 	if backend.enrichment != nil {
 		if err := backend.enrichment.ValidateLoad(request); err != nil {
 			return nil, err
@@ -70,10 +84,9 @@ func (backend *pickerBackend) LoadGeneration(ctx context.Context, request sessio
 	snapshot, err := backend.actor.Snapshot(ctx, request.Generation)
 	duration := time.Since(started)
 	if err != nil {
-		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: request.Generation, Outcome: "error", LoadDuration: duration})
 		return nil, err
 	}
-	data := frameCandidateRecords(snapshot.Records())
+	data = frameCandidateRecords(snapshot.Records())
 	if backend.enrichment != nil {
 		// Mark the exact reservation only after Snapshot and framing have copied
 		// the bytes returned to fzf. FinalizeLoad performs the release.
@@ -81,12 +94,19 @@ func (backend *pickerBackend) LoadGeneration(ctx context.Context, request sessio
 			return nil, err
 		}
 	}
-	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.load", Generation: request.Generation, Outcome: "ok", LoadDuration: duration})
 	backend.metrics.recordLoad(duration)
 	return data, nil
 }
 
-func (backend *pickerBackend) CurrentHeader(ctx context.Context) (string, error) {
+func (backend *pickerBackend) CurrentHeader(ctx context.Context) (header string, err error) {
+	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.display.start", Outcome: "started", Timestamp: time.Now()})
+	defer func() {
+		outcome := "ok"
+		if err != nil {
+			outcome = "error"
+		}
+		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.display", Outcome: outcome, Timestamp: time.Now()})
+	}()
 	if cause := context.Cause(ctx); cause != nil {
 		return "", cause
 	}
@@ -97,7 +117,15 @@ func (backend *pickerBackend) CurrentHeader(ctx context.Context) (string, error)
 	return pathutil.PromptDisplayHome(state.Location, state.Home), nil
 }
 
-func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte) (protocol.ResolvedCandidate, error) {
+func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte) (candidate protocol.ResolvedCandidate, err error) {
+	backend.trace.event(integrationpkg.TraceEvent{Name: "callback.preview.start", Outcome: "started", Timestamp: time.Now()})
+	defer func() {
+		outcome := "ok"
+		if err != nil {
+			outcome = "error"
+		}
+		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.preview", Outcome: outcome, Timestamp: time.Now()})
+	}()
 	if cause := context.Cause(ctx); cause != nil {
 		return protocol.ResolvedCandidate{}, cause
 	}

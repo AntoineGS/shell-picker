@@ -51,12 +51,16 @@ func TestEnvironmentBlockEncodesDriveCurrentDirectoryEntries(t *testing.T) {
 func (session *windowsTerminalSession) drainOutput(handle windows.Handle, done chan<- struct{}) {
 	session.drainBytes(handle, done, func(data []byte) {
 		session.outputMu.Lock()
+		if session.firstOutputAt.IsZero() {
+			session.firstOutputAt = time.Now()
+		}
 		_, _ = session.buffer.Write(data)
 		if session.outputChanged != nil {
 			close(session.outputChanged)
 		}
 		session.outputChanged = make(chan struct{})
 		session.outputMu.Unlock()
+		session.captureDescendantSample()
 	})
 }
 
@@ -65,6 +69,7 @@ func (session *windowsTerminalSession) drainResult(handle windows.Handle, done c
 		session.resultMu.Lock()
 		_, _ = session.resultBuffer.Write(data)
 		session.resultMu.Unlock()
+		session.captureDescendantSample()
 	})
 }
 
@@ -76,12 +81,12 @@ func (session *windowsTerminalSession) drainBytes(handle windows.Handle, done ch
 		return
 	}
 	defer session.ops.closeHandle(event)
-	overlapped := windows.Overlapped{HEvent: event}
 	buffer := make([]byte, 32<<10)
 	for {
 		if err := windows.ResetEvent(event); err != nil {
 			return
 		}
+		overlapped := windows.Overlapped{HEvent: event}
 		var read uint32
 		err := windows.ReadFile(handle, buffer, &read, &overlapped)
 		if errors.Is(err, windows.ERROR_IO_PENDING) {
@@ -163,9 +168,7 @@ func (session *windowsTerminalSession) WaitBarrier(ctx context.Context, wanted b
 				session.eventMu.Unlock()
 				session.t.Fatalf("trace reader failed: %s", event.Outcome)
 			}
-			if event.Event == wanted.Event && (wanted.Operation == "" || event.Outcome == wanted.Operation) &&
-				(wanted.Renderer == "" || event.Renderer == wanted.Renderer) &&
-				(wanted.Generation == 0 || event.Generation == wanted.Generation) {
+			if matchesTraceBarrier(event, wanted) {
 				count++
 				matched = event
 				if count >= wanted.Count {
@@ -179,7 +182,8 @@ func (session *windowsTerminalSession) WaitBarrier(ctx context.Context, wanted b
 		select {
 		case <-changed:
 		case <-ctx.Done():
-			session.t.Fatalf("wait for barrier %+v: %v; events=%+v; output=%q", wanted, ctx.Err(), session.TraceEvents(), session.Output())
+			events := session.TraceEvents()
+			session.t.Fatalf("wait for barrier %+v: %v; sidecar=%s; events=%+v; output=%q", wanted, ctx.Err(), sidecarDiagnostics(events), events, session.Output())
 		}
 	}
 }
@@ -250,6 +254,7 @@ func (session *windowsTerminalSession) Wait(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		session.stopDescendantRecorder()
 		session.waitMu.Lock()
 		err := session.waitErr
 		session.waitMu.Unlock()
@@ -260,6 +265,7 @@ func (session *windowsTerminalSession) Wait(ctx context.Context) error {
 }
 
 const defaultWindowsTerminalCleanupTimeout = 5 * time.Second
+const defaultWindowsTerminalForceCleanupTimeout = time.Second
 
 func waitForWindowsTerminalDone(done <-chan struct{}, deadline time.Time) bool {
 	if done == nil {
@@ -350,7 +356,10 @@ func (session *windowsTerminalSession) Close() error {
 }
 
 func (session *windowsTerminalSession) closeAttemptRun() error {
-	session.requestStop()
+	traceGraceful := session.traceStarted && session.traceHandles != nil
+	if !traceGraceful {
+		session.requestStop()
+	}
 	session.handleMu.Lock()
 	if session.process != 0 && !windowsTerminalDone(session.waitDone) {
 		_ = session.ops.terminateProcess(session.process, 1)
@@ -386,9 +395,17 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 	}
 	if session.trace != 0 {
 		if session.traceStarted {
-			err = errors.Join(err, session.cancelWorkerIO(&session.trace, session.traceDone))
+			if session.traceHandles == nil {
+				err = errors.Join(err, session.cancelWorkerIO(&session.trace, session.traceDone))
+			} else {
+				session.stopTraceAccept()
+			}
 		} else {
-			err = errors.Join(err, session.ops.closeHandle(session.trace))
+			if session.traceHandles == nil {
+				err = errors.Join(err, session.ops.closeHandle(session.trace))
+			} else {
+				err = errors.Join(err, session.closeTraceHandle(session.trace))
+			}
 			session.trace = 0
 		}
 	}
@@ -413,7 +430,23 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 	processDone := await("process", session.waitStarted, session.waitDone)
 	outputDone := await("output", session.outputStarted, session.drainDone)
 	resultDone := await("result", session.resultStarted, session.resultDone)
-	traceDone := await("trace", session.traceStarted, session.traceDone)
+	traceDone := true
+	if session.traceStarted {
+		traceDone = waitForWindowsTerminalDone(session.traceDone, deadline)
+		if !traceDone && traceGraceful {
+			session.requestStop()
+			err = errors.Join(err, session.cancelTraceIO())
+			traceDone = waitForWindowsTerminalDone(session.traceDone, time.Now().Add(defaultWindowsTerminalForceCleanupTimeout))
+		}
+		if !traceDone {
+			err = errors.Join(err, fmt.Errorf("wait for trace cleanup: %w", process.ErrWaitDelay))
+		}
+	}
+	if traceGraceful && !traceDone {
+		session.requestStop()
+		err = errors.Join(err, session.cancelTraceIO())
+	}
+	session.stopDescendantRecorder()
 	session.handleMu.Lock()
 	if processDone && session.process != 0 {
 		err = errors.Join(err, session.ops.closeHandle(session.process))
@@ -433,14 +466,23 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 }
 
 func (session *windowsTerminalSession) requestStop() {
-	session.stopOnce.Do(func() {
+	session.stopMu.Lock()
+	if session.stop == nil {
 		session.stop = make(chan struct{})
-		close(session.stop)
-	})
+	}
+	stop := session.stop
+	session.stopMu.Unlock()
+	session.stopOnce.Do(func() { close(stop) })
 }
 
 func (session *windowsTerminalSession) resourcesReleased() bool {
 	session.handleMu.Lock()
-	defer session.handleMu.Unlock()
-	return session.process == 0 && session.output == 0 && session.result == 0 && session.trace == 0
+	released := session.process == 0 && session.output == 0 && session.result == 0 && session.trace == 0
+	session.handleMu.Unlock()
+	if !released {
+		return false
+	}
+	session.traceMu.Lock()
+	defer session.traceMu.Unlock()
+	return len(session.traceHandles) == 0 && len(session.traceListeners) == 0 && session.traceListener == 0
 }

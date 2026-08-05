@@ -11,7 +11,6 @@ import (
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
-	"github.com/AntoineGS/shell-picker/internal/integration"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/session"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
@@ -474,7 +473,6 @@ func (enrichment *initialEnrichment) HandleEvent(ctx context.Context, event prot
 	cancelEvent(nil)
 
 	duration := time.Since(started)
-	enrichment.traceEvent(event, duration)
 	if err == nil {
 		if enrichment.metrics != nil {
 			enrichment.metrics.recordTransition(result)
@@ -743,10 +741,6 @@ func (enrichment *initialEnrichment) resolveEvent(event protocol.Event, eventID 
 		}
 	}
 	return stopCause, stopSource
-}
-
-func (enrichment *initialEnrichment) traceEvent(event protocol.Event, duration time.Duration) {
-	enrichment.trace.event(integration.TraceEvent{Name: "callback.event", Outcome: string(event.Opcode), CallbackIPC: duration, Timestamp: time.Now()})
 }
 
 func (enrichment *initialEnrichment) recordCallback(duration time.Duration) {

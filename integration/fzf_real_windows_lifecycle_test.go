@@ -5,6 +5,9 @@ package integration
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"sync"
 	"testing"
@@ -121,6 +124,97 @@ func TestWindowsTerminalSessionLifecycleUsesActualStateAndOps(t *testing.T) {
 	}
 	if err := session.Resize(80, 24); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("Resize after Close=%v", err)
+	}
+}
+
+func TestWindowsTerminalGracefulTraceCloseDrainsJoinedConnectionsBeforeForceCancel(t *testing.T) {
+	recorder := &windowsLifecycleRecorder{}
+	ops := recorder.ops()
+	traceDone := make(chan struct{})
+	var session *windowsTerminalSession
+	activeCancelled := false
+	ops.cancelIO = func(handle windows.Handle, _ *windows.Overlapped) error {
+		recorder.add("cancel")
+		switch handle {
+		case 4:
+			session.traceMu.Lock()
+			delete(session.traceHandles, 4)
+			delete(session.traceListeners, 4)
+			delete(session.traceIO, 4)
+			session.traceListener = 0
+			delete(session.traceHandles, 6)
+			session.traceMu.Unlock()
+			close(traceDone)
+		case 6:
+			activeCancelled = true
+		}
+		return nil
+	}
+	session = &windowsTerminalSession{ops: ops, trace: 4, traceStarted: true, traceDone: traceDone,
+		traceHandles: map[windows.Handle]struct{}{4: {}, 6: {}}, traceListeners: map[windows.Handle]struct{}{4: {}},
+		traceIO: map[windows.Handle]*windows.Overlapped{4: nil, 6: nil}, traceListener: 4,
+		traceAcceptStop: make(chan struct{}), stop: make(chan struct{}), changed: make(chan struct{})}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if activeCancelled {
+		t.Fatal("graceful trace close force-cancelled a connected reader after it joined")
+	}
+	if len(session.traceHandles) != 0 || len(session.traceListeners) != 0 || session.traceListener != 0 {
+		t.Fatalf("trace resources retained: handles=%v listeners=%v listener=%d", session.traceHandles, session.traceListeners, session.traceListener)
+	}
+}
+
+func TestWindowsByteDrainCreatesOverlappedPerRead(t *testing.T) {
+	source, err := os.ReadFile("fzf_real_windows_methods_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "fzf_real_windows_methods_test.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "drainBytes" {
+			continue
+		}
+		fresh := false
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			loop, ok := node.(*ast.ForStmt)
+			if !ok {
+				return true
+			}
+			ast.Inspect(loop.Body, func(node ast.Node) bool {
+				assignment, ok := node.(*ast.AssignStmt)
+				if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+					return true
+				}
+				name, ok := assignment.Lhs[0].(*ast.Ident)
+				if !ok || name.Name != "overlapped" {
+					return true
+				}
+				literal, ok := assignment.Rhs[0].(*ast.CompositeLit)
+				selector, ok := literal.Type.(*ast.SelectorExpr)
+				if ok && selector.Sel.Name == "Overlapped" {
+					fresh = true
+				}
+				return true
+			})
+			return false
+		})
+		if !fresh {
+			t.Fatal("Windows byte drain must create a fresh OVERLAPPED inside its read loop")
+		}
+		return
+	}
+	t.Fatal("cannot locate Windows byte drain")
+}
+
+func TestPseudoConsoleAttributeValueUsesHandleValue(t *testing.T) {
+	want := windows.Handle(0x1234)
+	if got := pseudoConsoleAttributeValue(want); got != uintptr(want) {
+		t.Fatalf("pseudoconsole attribute value=%#x, want handle value %#x", got, want)
 	}
 }
 

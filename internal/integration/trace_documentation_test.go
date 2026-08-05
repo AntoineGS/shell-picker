@@ -35,7 +35,7 @@ func TestTraceContractChangesWithValidationAuthority(t *testing.T) {
 		}, "offline", ""},
 		{"remove zoxide outcome", func(schema *traceSchemaRules) {
 			schema.ZoxideOutcomes = removeString(schema.ZoxideOutcomes, "timeout")
-		}, "@zoxide_outcomes", "timeout"},
+		}, "@zoxide_outcomes", "@zoxide_outcomes,cached|cancelled|malformed|missing|not-run|ok|pending|process-error|timeout"},
 		{"change candidate count maximum", func(schema *traceSchemaRules) {
 			schema.CandidateCountMax++
 		}, "candidate_count=0..1000001", ""},
@@ -121,6 +121,9 @@ func traceContractRowsForSchema(t *testing.T, schema traceSchemaRules) []string 
 		profiles := map[string][]string{}
 		for _, outcome := range acceptedOutcomes {
 			base := TraceEvent{Name: event, Outcome: outcome}
+			if event == "sidecar.get" || event == "sidecar.post" {
+				base.SidecarAttempt = 1
+			}
 			if event == "zoxide.enrichment" {
 				base.Generation = 1
 				base.ZoxidePolicy = schema.ZoxidePolicies[0]
@@ -188,6 +191,7 @@ func traceNumericBounds(schema traceSchemaRules) []string {
 		"zoxide_processes=zoxide_starts",
 		"zoxide_live=" + strconv.Itoa(schema.ZoxideLiveRequired),
 		"zoxide_max_live=" + strconv.Itoa(schema.ZoxideCounterMin) + "..zoxide_starts",
+		"sidecar_attempt=0.." + strconv.FormatUint(schema.SidecarAttemptMax, 10),
 		"duration_us=" + strconv.FormatInt(schema.DurationMin.Microseconds(), 10) + ".." + strconv.FormatInt(schema.DurationMax.Microseconds(), 10),
 		"timestamp=" + timestampRequirement + "-" + schema.TimestampFormat + "-" + timestampZone,
 		"timestamp_input=zero-or-now-" + schema.TimestampPastLimit.String() + "..now+" + schema.TimestampFutureLimit.String(),
@@ -285,6 +289,7 @@ func acceptedOptionalFields(base TraceEvent, schema traceSchemaRules) []string {
 		"load_us":             func(event *TraceEvent) { event.LoadDuration = time.Microsecond },
 		"local_us":            func(event *TraceEvent) { event.LocalDuration = time.Microsecond },
 		"path":                func(event *TraceEvent) { event.Path = []byte("path") },
+		"sidecar_attempt":     func(event *TraceEvent) { event.SidecarAttempt = 2 },
 		"transform_us":        func(event *TraceEvent) { event.TransformDuration = time.Microsecond },
 		"zoxide_us":           func(event *TraceEvent) { event.ZoxideDuration = time.Microsecond },
 	}

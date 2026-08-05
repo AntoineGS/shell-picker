@@ -1,11 +1,16 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/AntoineGS/shell-picker/internal/candidate"
+	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
 	"github.com/AntoineGS/shell-picker/internal/pathutil"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/session"
@@ -82,4 +87,77 @@ func TestPickerBackendCurrentHeaderReadsCurrentStateWithoutGenerationOrBuild(t *
 	if generatorCalls != 1 {
 		t.Fatalf("generator calls=%d want=1", generatorCalls)
 	}
+}
+
+func TestPickerBackendCurrentHeaderEmitsDisplayTrace(t *testing.T) {
+	actor := session.New(context.Background(), func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error) {
+		return candidate.BuildResult{}, nil
+	})
+	t.Cleanup(func() { _ = actor.Close() })
+	if _, err := actor.Apply(context.Background(), session.ProposedTransition{
+		State: session.State{Picker: protocol.PickerCP, Mode: protocol.ModeInsert,
+			Location: pathutil.Filesystem([]byte("/work")), Home: pathutil.Filesystem([]byte("/home"))},
+		Build: &candidate.BuildRequest{Picker: protocol.PickerCP, Location: pathutil.Filesystem([]byte("/work"))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	backend := &pickerBackend{actor: actor, trace: &pickerTrace{trace: integrationpkg.NewTrace(&output, [16]byte{1})}}
+	if _, err := backend.CurrentHeader(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	records := decodeBackendTraceRecords(t, output.String())
+	if len(records) != 2 {
+		t.Fatalf("display trace records=%d want 2; output=%q", len(records), output.Bytes())
+	}
+	if records[0].Event != "callback.display.start" || records[0].Outcome != "started" {
+		t.Fatalf("display start trace=%+v", records[0])
+	}
+	if records[1].Event != "callback.display" || records[1].Outcome != "ok" {
+		t.Fatalf("display completion trace=%+v, want callback.display/ok", records[1])
+	}
+	t.Run("error completion", testPickerBackendCurrentHeaderEmitsErrorCompletionTrace)
+}
+
+func testPickerBackendCurrentHeaderEmitsErrorCompletionTrace(t *testing.T) {
+	actor := session.New(context.Background(), func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error) {
+		return candidate.BuildResult{}, nil
+	})
+	t.Cleanup(func() { _ = actor.Close() })
+	if _, err := actor.Apply(context.Background(), session.ProposedTransition{
+		State: session.State{Picker: protocol.PickerCP, Mode: protocol.ModeInsert,
+			Location: pathutil.Filesystem([]byte("/work")), Home: pathutil.Filesystem([]byte("/home"))},
+		Build: &candidate.BuildRequest{Picker: protocol.PickerCP, Location: pathutil.Filesystem([]byte("/work"))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	backend := &pickerBackend{actor: actor, trace: &pickerTrace{trace: integrationpkg.NewTrace(&output, [16]byte{1})}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := backend.CurrentHeader(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("CurrentHeader error=%v, want context canceled", err)
+	}
+	records := decodeBackendTraceRecords(t, output.String())
+	if len(records) != 2 {
+		t.Fatalf("display error records=%d want 2; output=%q", len(records), output.Bytes())
+	}
+	if records[0].Event != "callback.display.start" || records[0].Outcome != "started" ||
+		records[1].Event != "callback.display" || records[1].Outcome != "error" {
+		t.Fatalf("display error traces=%+v", records)
+	}
+}
+
+func decodeBackendTraceRecords(t *testing.T, raw string) []integrationpkg.TraceRecord {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(raw), "\n")
+	records := make([]integrationpkg.TraceRecord, 0, len(lines))
+	for _, line := range lines {
+		var record integrationpkg.TraceRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("trace record: %v; line=%q", err, line)
+		}
+		records = append(records, record)
+	}
+	return records
 }

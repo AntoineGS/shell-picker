@@ -18,28 +18,43 @@ import (
 )
 
 type windowsTerminalSession struct {
-	ops           windowsTerminalOps
-	t             *testing.T
-	console       windows.Handle
-	input         windows.Handle
-	output        windows.Handle
-	result        windows.Handle
-	resultWrite   windows.Handle
-	standardInput windows.Handle
-	trace         windows.Handle
-	process       windows.Handle // control handle; waiter owns a duplicate
-	pid           int
-	fzfPath       string
-	argvCanaries  []string
-	handleMu      sync.Mutex
+	ops                 windowsTerminalOps
+	t                   *testing.T
+	console             windows.Handle
+	input               windows.Handle
+	output              windows.Handle
+	result              windows.Handle
+	resultWrite         windows.Handle
+	standardInput       windows.Handle
+	trace               windows.Handle
+	tracePath           string
+	traceFactory        func(string, bool) (windows.Handle, error)
+	traceMu             sync.Mutex
+	traceHandles        map[windows.Handle]struct{}
+	traceListeners      map[windows.Handle]struct{}
+	traceIO             map[windows.Handle]*windows.Overlapped
+	traceListener       windows.Handle
+	traceAcceptStop     chan struct{}
+	traceAcceptOnce     sync.Once
+	traceAcceptorsReady chan struct{}
+	traceAcceptorsOnce  sync.Once
+	process             windows.Handle // control handle; waiter owns a duplicate
+	pid                 int
+	fzfPath             string
+	argvCanaries        []string
+	sidecar             bool
+	recorder            *descendantRecorder
+	handleMu            sync.Mutex
 
 	outputMu      sync.Mutex
 	buffer        bytes.Buffer
+	firstOutputAt time.Time
 	outputChanged chan struct{}
 	resultMu      sync.Mutex
 	resultBuffer  bytes.Buffer
 	eventMu       sync.Mutex
 	events        []traceEvent
+	eventTimes    []time.Time
 	changed       chan struct{}
 
 	waitMu         sync.Mutex
@@ -53,6 +68,7 @@ type windowsTerminalSession struct {
 	closeRunning   bool
 	closed         bool
 	closeErr       error
+	stopMu         sync.Mutex
 	stop           chan struct{}
 	stopOnce       sync.Once
 	outputStarted  bool
@@ -90,6 +106,7 @@ type windowsTerminalFactory struct {
 	createResultPipe    func() (windows.Handle, windows.Handle, error)
 	createPseudoConsole func(windows.Coord, windows.Handle, windows.Handle) (windows.Handle, error)
 	createTracePipe     func() (string, windows.Handle, error)
+	createTraceInstance func(string, bool) (windows.Handle, error)
 }
 
 func defaultWindowsTerminalFactory() windowsTerminalFactory {
@@ -107,7 +124,8 @@ func defaultWindowsTerminalFactory() windowsTerminalFactory {
 			err := windows.CreatePseudoConsole(size, input, output, 0, &console)
 			return console, err
 		},
-		createTracePipe: createWindowsTracePipe,
+		createTracePipe:     createWindowsTracePipe,
+		createTraceInstance: createWindowsTracePipeInstance,
 	}
 }
 
@@ -136,7 +154,10 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 	session := &windowsTerminalSession{ops: factory.ops, console: console, input: inputWrite, output: outputRead,
 		result: resultRead, resultWrite: resultWrite, changed: make(chan struct{}), waitDone: make(chan struct{}),
 		drainDone: make(chan struct{}), resultDone: make(chan struct{}), traceDone: make(chan struct{}),
-		outputChanged: make(chan struct{})}
+		outputChanged: make(chan struct{}), recorder: newDescendantRecorder(snapshotDescendantProcessRecords),
+		traceHandles: make(map[windows.Handle]struct{}), traceListeners: make(map[windows.Handle]struct{}),
+		traceIO:         make(map[windows.Handle]*windows.Overlapped),
+		traceAcceptStop: make(chan struct{}), traceAcceptorsReady: make(chan struct{}), stop: make(chan struct{})}
 	if closeErr := errors.Join(factory.ops.closeHandle(inputRead), factory.ops.closeHandle(outputWrite)); closeErr != nil {
 		close(session.drainDone)
 		close(session.traceDone)
@@ -149,6 +170,16 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 		return nil, "", errors.Join(fmt.Errorf("create trace pipe: %w", err), session.Close())
 	}
 	session.trace = traceHandle
+	session.tracePath = tracePath
+	session.traceFactory = factory.createTraceInstance
+	if session.traceFactory == nil {
+		session.traceFactory = createWindowsTracePipeInstance
+	}
+	session.traceMu.Lock()
+	session.traceHandles[traceHandle] = struct{}{}
+	session.traceListeners[traceHandle] = struct{}{}
+	session.traceListener = traceHandle
+	session.traceMu.Unlock()
 	return session, tracePath, nil
 }
 
@@ -178,11 +209,21 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 			session.argvCanaries = append(session.argvCanaries, value)
 		}
 	}
+	session.sidecar = realFZFSidecarEnabled(config.Environment)
 	session.outputStarted, session.traceStarted = true, true
 	go session.drainOutput(session.output, session.drainDone)
 	traceReady := make(chan struct{})
 	go session.drainTrace(session.trace, traceReady)
 	<-traceReady
+	if session.traceAcceptorsReady != nil {
+		select {
+		case <-session.traceAcceptorsReady:
+		case <-session.traceAcceptStop:
+			session.Close()
+			t.Fatal("trace acceptors stopped before picker launch")
+		}
+	}
+	session.recorder.Start()
 
 	attributes, err := windows.NewProcThreadAttributeList(1)
 	if err != nil {
@@ -190,7 +231,7 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		t.Fatal(err)
 	}
 	defer attributes.Delete()
-	if err := attributes.Update(windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, pseudoConsoleAttributeValue(session.console), unsafe.Sizeof(session.console)); err != nil {
+	if err := updatePseudoConsoleAttribute(attributes, session.console); err != nil {
 		session.Close()
 		t.Fatal(err)
 	}
@@ -261,11 +302,19 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		t.Fatalf("duplicate picker wait handle: %v", err)
 	}
 	session.process, session.pid = information.Process, int(information.ProcessId)
+	session.recorder.SetRoot(session.pid)
+	session.recorder.Capture()
 	session.waitStarted = true
 	session.resultStarted = true
 	go session.waitProcess(waitHandle)
 	go session.drainResult(session.result, session.resultDone)
 	return session
+}
+
+func (session *windowsTerminalSession) FirstOutputAt() time.Time {
+	session.outputMu.Lock()
+	defer session.outputMu.Unlock()
+	return session.firstOutputAt
 }
 
 func createWindowsOverlappedReadPipe() (windows.Handle, windows.Handle, error) {
@@ -347,28 +396,50 @@ func createWindowsTracePipe() (string, windows.Handle, error) {
 		return "", 0, fmt.Errorf("random trace pipe name: %w", err)
 	}
 	name := `\\.\pipe\shell-picker-trace-` + hex.EncodeToString(random)
-	wide, err := windows.UTF16PtrFromString(name)
-	if err != nil {
-		return "", 0, err
-	}
-	security, err := currentUserSecurityAttributes()
-	if err != nil {
-		return "", 0, fmt.Errorf("create trace pipe security descriptor: %w", err)
-	}
-	handle, err := windows.CreateNamedPipe(wide, windows.PIPE_ACCESS_INBOUND|windows.FILE_FLAG_FIRST_PIPE_INSTANCE|windows.FILE_FLAG_OVERLAPPED,
-		windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT, 1, 64<<10, 64<<10, 0, security)
+	handle, err := createWindowsTracePipeInstance(name, true)
 	if err != nil {
 		return "", 0, fmt.Errorf("create trace named pipe: %w", err)
 	}
 	return name, handle, nil
 }
 
+func createWindowsTracePipeInstance(name string, first bool) (windows.Handle, error) {
+	wide, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return 0, err
+	}
+	security, err := currentUserSecurityAttributes()
+	if err != nil {
+		return 0, fmt.Errorf("create trace pipe security descriptor: %w", err)
+	}
+	flags := uint32(windows.PIPE_ACCESS_INBOUND | windows.FILE_FLAG_OVERLAPPED)
+	if first {
+		flags |= windows.FILE_FLAG_FIRST_PIPE_INSTANCE
+	}
+	return windows.CreateNamedPipe(wide, flags, windows.PIPE_TYPE_BYTE|windows.PIPE_READMODE_BYTE|windows.PIPE_WAIT,
+		windows.PIPE_UNLIMITED_INSTANCES, 64<<10, 64<<10, 0, security)
+}
+
+var updateProcThreadAttribute = windows.NewLazySystemDLL("kernel32.dll").NewProc("UpdateProcThreadAttribute")
+
+func updatePseudoConsoleAttribute(attributes *windows.ProcThreadAttributeListContainer, console windows.Handle) error {
+	result, _, callErr := updateProcThreadAttribute.Call(
+		uintptr(unsafe.Pointer(attributes.List())), 0, windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+		pseudoConsoleAttributeValue(console), unsafe.Sizeof(console), 0, 0)
+	if result != 0 {
+		return nil
+	}
+	if callErr != nil {
+		return callErr
+	}
+	return errors.New("UpdateProcThreadAttribute failed")
+}
+
 // pseudoConsoleAttributeValue passes the HPCON handle value required by
-// PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE. Passing &console would change the ABI.
-//
-//go:nocheckptr
-func pseudoConsoleAttributeValue(console windows.Handle) unsafe.Pointer {
-	return unsafe.Pointer(console)
+// PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE. Passing the address of the handle would
+// change the ABI.
+func pseudoConsoleAttributeValue(console windows.Handle) uintptr {
+	return uintptr(console)
 }
 
 func currentUserSecurityAttributes() (*windows.SecurityAttributes, error) {

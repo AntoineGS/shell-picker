@@ -69,7 +69,10 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 	}
 	state := parityState(picker, protocol.ModeNormal, pathutil.Filesystem([]byte(root)), pathutil.Filesystem([]byte(evidence.Home)))
 	actor, snapshot := newParityActor(t, state, []candidate.Record{first, second, first})
-	options := fzf.Options(picker, state.Prompt, pathutil.PromptDisplay(state.Location))
+	options, err := fzf.Options(fzf.OptionsConfig{Picker: picker, Prompt: state.Prompt, Header: pathutil.PromptDisplay(state.Location)})
+	if err != nil {
+		t.Fatal(err)
+	}
 	joined := strings.Join(options, "\n")
 	for _, key := range golden.Bindings {
 		needle := "--bind=" + key + ":"
@@ -322,7 +325,11 @@ func runZshBindingSemantic(t *testing.T, row parityRow) {
 	location := pathutil.Filesystem([]byte(root))
 	state := parityState(picker, protocol.ModeAdd, location, location)
 	actor, _ := newParityActor(t, state, nil)
-	options := strings.Join(fzf.Options(picker, state.Prompt, pathutil.PromptDisplay(state.Location)), "\n")
+	generated, err := fzf.Options(fzf.OptionsConfig{Picker: picker, Prompt: state.Prompt, Header: pathutil.PromptDisplay(state.Location)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := strings.Join(generated, "\n")
 	switch row.Check {
 	case "slash-delegates":
 		result, err := session.Handle(context.Background(), actor, protocol.Event{Opcode: protocol.OpSlash, Query: []byte("nested")})

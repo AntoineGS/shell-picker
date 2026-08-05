@@ -89,6 +89,47 @@ func TestWindowsOutputDrainUsesCancellableOverlappedIO(t *testing.T) {
 	}
 }
 
+func TestWindowsByteDrainCreatesOverlappedPerRead(t *testing.T) {
+	files := parseWindowsContractSources(t, "fzf_real_windows_methods_test.go")
+	for _, file := range files {
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Name.Name != "drainBytes" {
+				continue
+			}
+			fresh := false
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				loop, ok := node.(*ast.ForStmt)
+				if !ok {
+					return true
+				}
+				ast.Inspect(loop.Body, func(node ast.Node) bool {
+					assignment, ok := node.(*ast.AssignStmt)
+					if !ok || assignment.Tok != token.DEFINE || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 {
+						return true
+					}
+					name, ok := assignment.Lhs[0].(*ast.Ident)
+					if !ok || name.Name != "overlapped" {
+						return true
+					}
+					literal, ok := assignment.Rhs[0].(*ast.CompositeLit)
+					selector, ok := literal.Type.(*ast.SelectorExpr)
+					if ok && selector.Sel.Name == "Overlapped" {
+						fresh = true
+					}
+					return true
+				})
+				return false
+			})
+			if !fresh {
+				t.Fatal("Windows byte drain must create a fresh OVERLAPPED inside its read loop")
+			}
+			return
+		}
+	}
+	t.Fatal("cannot locate Windows byte drain")
+}
+
 func TestWindowsTerminalLifecycleSourceContract(t *testing.T) {
 	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go")
 	for _, required := range []string{"waitErr", "waitDone", "DuplicateHandle", "ops.closeHandle(information.Thread)",

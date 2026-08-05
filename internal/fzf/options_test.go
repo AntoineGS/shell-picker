@@ -9,35 +9,83 @@ import (
 )
 
 func TestPickerOptions(t *testing.T) {
-	required := []string{
-		"--keep-right",
-		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
-		"--jump-labels=g",
-		"--bind=ctrl-u:half-page-up",
-		"--bind=ctrl-d:half-page-down",
-		"--bind=g:jump",
-		"--bind=G:last",
-		"--bind=jump:first",
-		"--bind=,:preview-half-page-up",
-		"--bind=.:preview-half-page-down",
-		"--bind=change:transform(e:rs)",
-		"--bind=result-final:rebind(change)+unbind(result-final)",
-	}
 	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
-		got := Options(picker, "[I] ", "/work/")
-		for _, option := range required {
-			if !slices.Contains(got, option) {
-				t.Errorf("picker %q lacks option %q", picker, option)
-			}
+		config := OptionsConfig{Picker: picker, Prompt: "[I] ", Header: "/work/"}
+		got, err := Options(config)
+		if err != nil {
+			t.Fatalf("Options(%+v) error = %v", config, err)
 		}
-		if !slices.Contains(got, "--prompt=[I] ") || !slices.Contains(got, "--header=/work/") {
-			t.Errorf("picker %q lacks prompt/header options", picker)
+		want := wantOptionSnapshot(config)
+		if !slices.Equal(got, want) {
+			t.Fatalf("Options(%+v) = %q, want %q", config, got, want)
 		}
-		if !slices.ContainsFunc(got, func(option string) bool {
-			return strings.HasPrefix(option, "--bind=start:unbind(") &&
-				strings.Contains(option, `,change,result-final)+unbind[(,),\]+transform(d)`)
-		}) {
-			t.Errorf("picker %q start binding does not disable restore events", picker)
+	}
+}
+
+func TestPickerOptionsSidecarSnapshot(t *testing.T) {
+	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
+		config := OptionsConfig{
+			Picker:        picker,
+			Prompt:        "[I] ",
+			Header:        "/work/",
+			ListenAddress: "127.0.0.1:4321",
+		}
+		got, err := Options(config)
+		if err != nil {
+			t.Fatalf("Options(%+v) error = %v", config, err)
+		}
+		want := wantOptionSnapshot(config)
+		if !slices.Equal(got, want) {
+			t.Fatalf("Options(%+v) = %q, want %q", config, got, want)
+		}
+	}
+}
+
+func TestPickerOptionsRejectListenAddressInjection(t *testing.T) {
+	for _, address := range []string{
+		"127.0.0.1:0",
+		"127.0.0.1:01",
+		"127.0.0.1:65536",
+		"127.0.0.1:-1",
+		"127.0.0.1:1\n--bind=q:abort",
+		"127.0.0.1:1,change-header:forged",
+		"127.0.0.1:1:2",
+		"127.0.0.2:1",
+		"localhost:1",
+		"127.0.0.1:١",
+	} {
+		config := OptionsConfig{Picker: protocol.PickerCP, ListenAddress: address}
+		if got, err := Options(config); err == nil {
+			t.Fatalf("Options(%+v) = %q, nil error; want invalid-address error", config, got)
+		}
+	}
+}
+
+func TestPickerOptionsAcceptCanonicalListenAddresses(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:1", "127.0.0.1:65535"} {
+		config := OptionsConfig{Picker: protocol.PickerCD, ListenAddress: address}
+		if _, err := Options(config); err != nil {
+			t.Fatalf("Options(%+v) error = %v", config, err)
+		}
+	}
+}
+
+func TestPickerOptionsSidecarUsesTabForFZFSelectionAndKeepsForwardNavigationOnRight(t *testing.T) {
+	options := mustOptions(t, OptionsConfig{Picker: protocol.PickerCP, ListenAddress: "127.0.0.1:4321"})
+	if !slices.Contains(options, "--bind=ctrl-l,right:transform(e:fw)") {
+		t.Fatalf("sidecar options do not retain forward navigation on right: %q", options)
+	}
+	if !slices.Contains(options, "--bind=l:trigger(right)") {
+		t.Fatalf("sidecar options do not map normal l to right navigation: %q", options)
+	}
+	for _, option := range options {
+		if strings.Contains(option, "transform(d)") || option == "--bind=resize:transform(d)" {
+			t.Fatalf("sidecar options still invoke the display callback: %q", option)
+		}
+	}
+	for _, option := range options {
+		if strings.HasPrefix(option, "--bind=ctrl-l,tab,right:") || option == "--bind=l:trigger(tab)" {
+			t.Fatalf("sidecar options still bind Tab to navigation: %q", option)
 		}
 	}
 }
@@ -48,7 +96,7 @@ func TestNormalModeIgnoresEveryOtherASCIIPrintableKey(t *testing.T) {
 		'g': true, 'G': true,
 		'/': true, '~': true, ',': true, '.': true,
 	}
-	options := Options(protocol.PickerCD, "[I] ", "/work/")
+	options := mustOptions(t, OptionsConfig{Picker: protocol.PickerCD, Prompt: "[I] ", Header: "/work/"})
 	for key := '!'; key <= '~'; key++ {
 		if active[key] {
 			continue
@@ -112,7 +160,7 @@ func TestInsertAndAddUnbindFullNormalOnlySet(t *testing.T) {
 
 func TestOptionsHaveNoListenOrDuplicateBindings(t *testing.T) {
 	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
-		options := Options(picker, "prompt", "header")
+		options := mustOptions(t, OptionsConfig{Picker: picker, Prompt: "prompt", Header: "header"})
 		keys := map[string]struct{}{}
 		for _, option := range options {
 			if strings.HasPrefix(option, "--listen") {
@@ -134,5 +182,94 @@ func TestOptionsHaveNoListenOrDuplicateBindings(t *testing.T) {
 		if !slices.Contains(options, "--read0") || !slices.Contains(options, "--print0") {
 			t.Fatalf("picker %q lacks NUL options", picker)
 		}
+	}
+}
+
+func mustOptions(t *testing.T, config OptionsConfig) []string {
+	t.Helper()
+	options, err := Options(config)
+	if err != nil {
+		t.Fatalf("Options(%+v) error = %v", config, err)
+	}
+	return options
+}
+
+func wantOptionSnapshot(config OptionsConfig) []string {
+	options := []string{
+		"--ansi",
+		"--style=full",
+		"--layout=reverse",
+		"--delimiter=\t",
+		"--with-nth=2",
+		"--keep-right",
+		"--jump-labels=g",
+		"--read0",
+		"--print0",
+		"--prompt=" + config.Prompt,
+		"--header=" + config.Header,
+		"--header-first",
+	}
+	if config.ListenAddress == "" {
+		if config.Picker == protocol.PickerCD {
+			options = append(options, "--info-command=i:cd")
+		} else {
+			options = append(options, "--info-command=i:cp")
+		}
+	} else {
+		options = append(options, "--info=hidden", "--list-label=0/0", "--listen="+config.ListenAddress)
+	}
+	forwardBinding, normalForward := "ctrl-l,tab,right", "tab"
+	if config.ListenAddress != "" {
+		forwardBinding, normalForward = "ctrl-l,right", "right"
+	}
+	options = append(options,
+		"--preview=p",
+		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
+		"--bind=enter:transform(e:en)",
+		"--bind=esc:transform(e:es)",
+		"--bind=i:transform(e:mi)",
+		"--bind=a:transform(e:ma)",
+		"--bind="+forwardBinding+":transform(e:fw)",
+		"--bind=ctrl-h,left:transform(e:up)",
+		"--bind=/:transform(e:sl)",
+		"--bind=~:transform(e:hm)",
+		"--bind=g:jump",
+		"--bind=G:last",
+		"--bind=jump:first",
+		"--bind=j:down",
+		"--bind=k:up",
+		"--bind=h:trigger(ctrl-h)",
+		"--bind=l:trigger("+normalForward+")",
+		"--bind=q:cancel+abort",
+		"--bind=ctrl-u:half-page-up",
+		"--bind=ctrl-d:half-page-down",
+		"--bind=,:preview-half-page-up",
+		"--bind=.:preview-half-page-down",
+		"--bind=change:transform(e:rs)",
+		"--bind=result-final:rebind(change)+unbind(result-final)",
+	)
+	start := "--bind=start:" + startUnbind().text
+	if config.ListenAddress == "" {
+		start += "+transform(d)"
+	}
+	options = append(options, start)
+	if config.ListenAddress == "" {
+		options = append(options, "--bind=resize:transform(d)")
+	}
+	for _, key := range optionSnapshotPrintableKeys() {
+		options = append(options, "--bind="+key+":ignore")
+	}
+	if config.Picker == protocol.PickerCD {
+		return append(options, "--bind=space:clear-multi+toggle", "--sort", "--print-query", "--multi=1")
+	}
+	return append(options, "--bind=space:toggle", "--no-sort", "--multi")
+}
+
+func optionSnapshotPrintableKeys() []string {
+	return []string{
+		"!", `"`, "#", "$", "%", "&", "'", "(", ")", "*", "+", "-",
+		"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@",
+		"A", "B", "C", "D", "E", "F", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+		"[", `\`, "]", "^", "_", "`", "b", "c", "d", "e", "f", "m", "n", "o", "p", "r", "s", "t", "u", "v", "w", "x", "y", "z", "{", "|", "}",
 	}
 }

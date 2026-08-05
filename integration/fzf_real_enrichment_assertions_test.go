@@ -86,6 +86,14 @@ func (term *resultFinalTerminalStub) TraceEvents() []traceEvent {
 
 func (*resultFinalTerminalStub) AssertProcessTopology(*testing.T) {}
 
+func (*resultFinalTerminalStub) FZFCommandLine(*testing.T) string { return "" }
+
+func (*resultFinalTerminalStub) DescendantProcessRecords(*testing.T) []descendantProcessRecord {
+	return nil
+}
+
+func (*resultFinalTerminalStub) DescendantCommandLines(*testing.T) []string { return nil }
+
 func (*resultFinalTerminalStub) TrackLiveDescendants(*testing.T) []trackedProcess { return nil }
 
 func (*resultFinalTerminalStub) AssertTrackedProcessesGone(*testing.T, []trackedProcess) {}
@@ -218,6 +226,21 @@ func assertRealZoxidePendingPublication(t *testing.T, event traceEvent) {
 		event.ZoxideExits != 0 || event.ZoxideProcesses != 0 || event.ZoxideLive != 0 || event.ZoxideMaxLive != 0 {
 		t.Fatalf("initial zoxide publication=%+v", event)
 	}
+}
+
+func candidateCountForGeneration(t *testing.T, events []traceEvent, generation uint64) int {
+	t.Helper()
+	for index := len(events) - 1; index >= 0; index-- {
+		event := events[index]
+		if event.Event == "generation.publish" && event.Generation == generation {
+			if event.CandidateCount <= 0 {
+				t.Fatalf("generation %d published nonpositive candidate count: %+v", generation, event)
+			}
+			return event.CandidateCount
+		}
+	}
+	t.Fatalf("generation %d publication missing from events=%+v", generation, events)
+	return 0
 }
 
 func assertRealZoxideTerminalCounters(t *testing.T, event traceEvent, wantProcesses int) {

@@ -21,6 +21,21 @@ type chunkedTraceWriter struct {
 	chunk int
 }
 
+type recordTraceWriter struct {
+	records  [][]byte
+	fallback int
+}
+
+func (writer *recordTraceWriter) Write([]byte) (int, error) {
+	writer.fallback++
+	return 0, errors.New("record writer fallback used")
+}
+
+func (writer *recordTraceWriter) WriteRecord(record []byte) error {
+	writer.records = append(writer.records, append([]byte(nil), record...))
+	return nil
+}
+
 func (writer *chunkedTraceWriter) Write(data []byte) (int, error) {
 	if len(data) > writer.chunk {
 		data = data[:writer.chunk]
@@ -85,6 +100,20 @@ func TestTraceCompletesShortJSONLWrites(t *testing.T) {
 	}
 }
 
+func TestTraceUsesCompleteRecordWriterWhenAvailable(t *testing.T) {
+	writer := &recordTraceWriter{}
+	trace := NewTrace(writer, fixedSessionID())
+	if err := trace.Event(TraceEvent{Name: "session.start", Outcome: "cp"}); err != nil {
+		t.Fatal(err)
+	}
+	if writer.fallback != 0 || len(writer.records) != 1 {
+		t.Fatalf("fallback=%d records=%d, want one complete-record write", writer.fallback, len(writer.records))
+	}
+	if _, err := DecodeTraceRecord(writer.records[0]); err != nil {
+		t.Fatalf("complete record is invalid: %v; bytes=%q", err, writer.records[0])
+	}
+}
+
 func fixedSessionID() [16]byte {
 	return [16]byte{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'}
 }
@@ -146,6 +175,38 @@ func TestTraceAllowsBoundedLifecycleExtensionsWithoutInventedExitLatency(t *test
 	}
 	if strings.Contains(output.String(), "exit_latency") || strings.Contains(output.String(), "cancel_to_exit") {
 		t.Fatalf("trace claims OS exit latency: %s", output.String())
+	}
+}
+
+func TestTraceAcceptsPrivacySafeCallbackInvocationEvents(t *testing.T) {
+	valid := []TraceEvent{
+		{Name: "callback.info.start", Outcome: "started"},
+		{Name: "callback.info", Outcome: "ok"},
+		{Name: "callback.info", Outcome: "error"},
+		{Name: "callback.display.start", Outcome: "started"},
+		{Name: "callback.display", Outcome: "ok"},
+		{Name: "callback.display", Outcome: "error"},
+		{Name: "callback.preview.start", Outcome: "started"},
+		{Name: "callback.preview", Outcome: "ok"},
+		{Name: "callback.preview", Outcome: "error"},
+		{Name: "callback.event.start", Outcome: "started"},
+		{Name: "callback.event", Outcome: "es"},
+		{Name: "callback.event", Outcome: "error"},
+		{Name: "callback.load.start", Generation: 2, Outcome: "started"},
+		{Name: "callback.load", Generation: 2, Outcome: "ok"},
+		{Name: "callback.load", Generation: 2, Outcome: "error"},
+	}
+	var output bytes.Buffer
+	trace := NewTrace(&output, fixedSessionID())
+	for _, event := range valid {
+		if err := trace.Event(event); err != nil {
+			t.Fatalf("callback invocation event=%+v rejected: %v", event, err)
+		}
+	}
+	for _, forbidden := range []string{"query", "current_item", "FZF_KEY", "path", "secret"} {
+		if strings.Contains(output.String(), forbidden) {
+			t.Fatalf("callback invocation trace leaked %q: %s", forbidden, output.String())
+		}
 	}
 }
 
@@ -374,7 +435,7 @@ func TestTraceWritesStableRedactedJSONL(t *testing.T) {
 			"outcome": true, "path": true, "zoxide_policy": true, "zoxide_attempts": true, "zoxide_starts": true,
 			"zoxide_exits": true, "zoxide_processes": true, "zoxide_live": true,
 			"zoxide_max_live": true, "actor_queue_wait_us": true, "callback_ipc_us": true, "local_us": true,
-			"zoxide_us": true, "zoxide_outcome": true, "transform_us": true, "load_us": true}[key] {
+			"zoxide_us": true, "zoxide_outcome": true, "sidecar_attempt": true, "transform_us": true, "load_us": true}[key] {
 			t.Fatalf("unstable trace field %q in %v", key, record)
 		}
 	}
@@ -420,28 +481,4 @@ func TestTraceAcceptsOnlyTask19EventsAndBoundedFields(t *testing.T) {
 	if output.Len() != before {
 		t.Fatalf("invalid event reached writer: %q", output.Bytes()[before:])
 	}
-}
-
-func TestTraceReportsOneWriteFailureThenDisables(t *testing.T) {
-	writer := &failingTraceWriter{}
-	trace := NewTrace(writer, fixedSessionID())
-	first := trace.Event(TraceEvent{Name: "session.start", Outcome: "cp"})
-	if !errors.Is(first, errTraceWriteFixture) {
-		t.Fatalf("first failure=%v", first)
-	}
-	if err := trace.Event(TraceEvent{Name: "session.close", Outcome: "error"}); err != nil {
-		t.Fatalf("disabled trace returned another diagnostic: %v", err)
-	}
-	if writer.calls != 1 {
-		t.Fatalf("disabled trace wrote %d times", writer.calls)
-	}
-}
-
-var errTraceWriteFixture = errors.New("trace writer fixture failed")
-
-type failingTraceWriter struct{ calls int }
-
-func (writer *failingTraceWriter) Write([]byte) (int, error) {
-	writer.calls++
-	return 0, errTraceWriteFixture
 }
