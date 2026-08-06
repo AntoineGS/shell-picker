@@ -15,7 +15,7 @@ func TestCompactHomeDisplaysChangesOnlyZoxidePresentation(t *testing.T) {
 	path := []byte(filepath.Join(string(home), "projects", "app"))
 	wantDisplay := "~/projects/app"
 	if runtime.GOOS == "windows" {
-		wantDisplay = `~\\projects\\app`
+		wantDisplay = `~\projects\app`
 	}
 	zoxide := newRecord(protocol.KindZoxide, protocol.EscapeDisplay(path), path)
 	local := newRecord(protocol.KindLocal, ".", home)
@@ -23,7 +23,8 @@ func TestCompactHomeDisplaysChangesOnlyZoxidePresentation(t *testing.T) {
 
 	CompactHomeDisplays(records, home)
 
-	if records[0].Display != wantDisplay || !bytes.Equal(records[0].Path, zoxide.Path) ||
+	if records[0].Display != wantDisplay || records[0].Kind != zoxide.Kind ||
+		records[0].Target.Kind != zoxide.Target.Kind || !bytes.Equal(records[0].Path, zoxide.Path) ||
 		!bytes.Equal(records[0].Target.Path, zoxide.Target.Path) || records[0].Payload != zoxide.Payload {
 		t.Fatalf("zoxide record changed beyond display: got=%+v want=%+v", records[0], zoxide)
 	}

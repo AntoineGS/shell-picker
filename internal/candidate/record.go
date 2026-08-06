@@ -2,6 +2,8 @@ package candidate
 
 import (
 	"bytes"
+	"runtime"
+	"strings"
 
 	"github.com/AntoineGS/shell-picker/internal/pathutil"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
@@ -27,10 +29,18 @@ func (record Record) FullKey() string {
 	return string(record.Wire().Bytes())
 }
 
+func zoxideDisplay(path []byte) string {
+	display := protocol.EscapeDisplay(path)
+	if runtime.GOOS == "windows" {
+		return strings.ReplaceAll(display, `\\`, `\`)
+	}
+	return display
+}
+
 func CompactHomeDisplays(records []Record, home []byte) {
 	for index := range records {
 		if records[index].Kind == protocol.KindZoxide {
-			records[index].Display = protocol.EscapeDisplay(pathutil.CompactHome(records[index].Path, home))
+			records[index].Display = zoxideDisplay(pathutil.CompactHome(records[index].Path, home))
 		}
 	}
 }
