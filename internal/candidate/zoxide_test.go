@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AntoineGS/shell-picker/internal/pathutil"
 	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
@@ -175,6 +176,42 @@ func TestZoxideLoadParsesExactLFRecordsAndClonesResults(t *testing.T) {
 	if attempts, starts, maxLive, exits := counts.values(); attempts != 1 || starts != 1 || maxLive != 1 || exits != 1 {
 		t.Fatalf("counts=(%d,%d,%d,%d)", attempts, starts, maxLive, exits)
 	}
+
+	t.Run("WindowsDisplayUsesSingleBackslashes", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("Windows-only display behavior")
+		}
+
+		path := []byte(`C:\Work\Project`)
+		output := append(append([]byte(nil), path...), '\n')
+		records, err := parseZoxideRecords(output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 1 {
+			t.Fatalf("got %d records, want 1", len(records))
+		}
+
+		record := records[0]
+		if record.Kind != protocol.KindZoxide {
+			t.Fatalf("kind=%v, want %v", record.Kind, protocol.KindZoxide)
+		}
+		if record.Target.Kind != pathutil.KindFilesystem {
+			t.Fatalf("target kind=%v, want %v", record.Target.Kind, pathutil.KindFilesystem)
+		}
+		if !bytes.Equal(record.Target.Path, path) {
+			t.Fatalf("target path=%q, want %q", record.Target.Path, path)
+		}
+		if !bytes.Equal(record.Path, path) {
+			t.Fatalf("path=%q, want %q", record.Path, path)
+		}
+		if record.Payload != protocol.EncodePath(path) {
+			t.Fatalf("payload=%q, want %q", record.Payload, protocol.EncodePath(path))
+		}
+		if record.Display != string(path) {
+			t.Fatalf("display=%q, want %q", record.Display, path)
+		}
+	})
 }
 
 func TestZoxideEmptyOutputAndSanitizedEnvironment(t *testing.T) {

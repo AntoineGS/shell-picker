@@ -238,7 +238,7 @@ func parseZoxideRecords(output []byte) ([]Record, error) {
 		if !filepath.IsAbs(string(row)) {
 			return nil, fmt.Errorf("zoxide path %q is not absolute", row)
 		}
-		records = append(records, newRecord(protocol.KindZoxide, protocol.EscapeDisplay(row), row))
+		records = append(records, newRecord(protocol.KindZoxide, zoxideDisplay(row), row))
 		start += end
 		if start < len(output) && output[start] == '\n' {
 			start++
