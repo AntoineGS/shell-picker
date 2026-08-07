@@ -50,7 +50,7 @@ func oneIn(version, output, goos, goarch string, when time.Time) {
 }
 
 func payloadFiles(binary string) []string {
-	files := []string{binary, "README.md", "LICENSE", "adapters/zsh/shell-picker.plugin.zsh", "adapters/nushell/shell-picker.nu"}
+	files := []string{binary, "README.md", "LICENSE", "adapters/zsh/shell-picker.plugin.zsh", "adapters/nushell/shell-picker.nu", "adapters/powershell/shell-picker.psd1", "adapters/powershell/shell-picker.psm1", "adapters/powershell/shell-picker-core.ps1"}
 	docs, err := filepath.Glob("docs/*.md")
 	if err != nil {
 		fatal(err.Error())

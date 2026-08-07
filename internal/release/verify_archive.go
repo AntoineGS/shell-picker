@@ -136,7 +136,7 @@ func expectedFiles(archive string) []string {
 			binary += ".exe"
 		}
 	}
-	files := []string{binary, "LICENSE", "README.md", "adapters/nushell/shell-picker.nu", "adapters/zsh/shell-picker.plugin.zsh"}
+	files := []string{binary, "LICENSE", "README.md", "adapters/nushell/shell-picker.nu", "adapters/powershell/shell-picker.psd1", "adapters/powershell/shell-picker.psm1", "adapters/powershell/shell-picker-core.ps1", "adapters/zsh/shell-picker.plugin.zsh"}
 	docs, err := filepath.Glob("docs/*.md")
 	if err != nil {
 		fatal(err.Error())
