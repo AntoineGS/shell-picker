@@ -2,6 +2,7 @@ package fzf
 
 import (
 	"errors"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -20,6 +21,10 @@ var errInvalidListenAddress = errors.New("fzf: invalid listen address")
 
 // Options returns the fzf arguments for a picker configuration.
 func Options(config OptionsConfig) ([]string, error) {
+	return optionsForPlatform(config, runtime.GOOS)
+}
+
+func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 	switch config.Picker {
 	case protocol.PickerCD, protocol.PickerCP:
 	default:
@@ -47,6 +52,8 @@ func Options(config OptionsConfig) ([]string, error) {
 	}
 	if listenEnabled {
 		options = append(options, "--info=hidden", "--list-label=0/0", "--listen="+config.ListenAddress)
+	} else if goos == "windows" {
+		options = append(options, "--info=inline-right")
 	} else {
 		options = append(options, pickerInfoCommand(config.Picker))
 	}
@@ -81,11 +88,11 @@ func Options(config OptionsConfig) ([]string, error) {
 		binding("result-final", keyAction("rebind", []string{"change"}), keyAction("unbind", []string{"result-final"})),
 	)
 	start := []action{startUnbind()}
-	if !listenEnabled {
+	if !listenEnabled && goos != "windows" {
 		start = append(start, transformDisplay())
 	}
 	options = append(options, binding("start", start...))
-	if !listenEnabled {
+	if !listenEnabled && goos != "windows" {
 		options = append(options, binding("resize", transformDisplay()))
 	}
 	for _, key := range normalPrintableKeys {

@@ -26,12 +26,16 @@ import (
 func TestRunPickerOwnsOneSessionAndOneFZF(t *testing.T) {
 	fixture := newPickerFixture(t, protocol.PickerCD)
 	launches := 0
+	infoOption := "--info-command=i:cd"
+	if runtime.GOOS == "windows" {
+		infoOption = "--info=inline-right"
+	}
 	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
 		launches++
 		if config.CallbackAddress == "" || config.CallbackToken == "" || config.CallbackToken == "forged" ||
 			!contains(config.Options, "--preview=p") || !contains(config.Options, "--prompt=[I] ") ||
 			!contains(config.Options, "--header="+pathutil.PromptDisplayHome(pathutil.Filesystem(fixture.options.CWD), pathutil.Filesystem(fixture.options.Home))) ||
-			!contains(config.Options, "--header-first") || !contains(config.Options, "--info-command=i:cd") {
+			!contains(config.Options, "--header-first") || !contains(config.Options, infoOption) {
 			t.Fatalf("callback/options config=%+v", config)
 		}
 		for _, entry := range config.Environment {

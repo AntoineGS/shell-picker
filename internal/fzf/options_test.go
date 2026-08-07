@@ -1,6 +1,7 @@
 package fzf
 
 import (
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -37,6 +38,78 @@ func TestPickerOptionsSidecarSnapshot(t *testing.T) {
 		want := wantOptionSnapshot(config)
 		if !slices.Equal(got, want) {
 			t.Fatalf("Options(%+v) = %q, want %q", config, got, want)
+		}
+	}
+}
+
+func TestPickerOptionsWindowsUseNativePresentation(t *testing.T) {
+	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
+		config := OptionsConfig{Picker: picker, Prompt: "[I] ", Header: "/work/"}
+		got, err := optionsForPlatform(config, "windows")
+		if err != nil {
+			t.Fatalf("optionsForPlatform(%+v, windows) error = %v", config, err)
+		}
+		want := wantOptionSnapshotForPlatform(config, "windows")
+		if !slices.Equal(got, want) {
+			t.Fatalf("optionsForPlatform(%+v, windows) = %q, want %q", config, got, want)
+		}
+	}
+}
+
+func TestPickerOptionsLinuxRetainsCustomPresentation(t *testing.T) {
+	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
+		config := OptionsConfig{Picker: picker, Prompt: "[I] ", Header: "/work/"}
+		got, err := optionsForPlatform(config, "linux")
+		if err != nil {
+			t.Fatalf("optionsForPlatform(%+v, linux) error = %v", config, err)
+		}
+		want := wantOptionSnapshotForPlatform(config, "linux")
+		if !slices.Equal(got, want) {
+			t.Fatalf("optionsForPlatform(%+v, linux) = %q, want %q", config, got, want)
+		}
+	}
+}
+
+func TestPickerOptionsExplicitSidecarProfilePrecedesPlatformProfile(t *testing.T) {
+	for _, goos := range []string{"windows", "linux"} {
+		for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
+			config := OptionsConfig{
+				Picker:        picker,
+				Prompt:        "[I] ",
+				Header:        "/work/",
+				ListenAddress: "127.0.0.1:4321",
+			}
+			got, err := optionsForPlatform(config, goos)
+			if err != nil {
+				t.Fatalf("optionsForPlatform(%+v, %s) error = %v", config, goos, err)
+			}
+			want := wantOptionSnapshotForPlatform(config, goos)
+			if !slices.Equal(got, want) {
+				t.Fatalf("optionsForPlatform(%+v, %s) = %q, want %q", config, goos, got, want)
+			}
+		}
+	}
+}
+
+func TestPickerOptionsWindowsPreserveDefaultNavigation(t *testing.T) {
+	options, err := optionsForPlatform(OptionsConfig{Picker: protocol.PickerCP}, "windows")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--bind=ctrl-l,tab,right:transform(e:fw)",
+		"--bind=l:trigger(tab)",
+	} {
+		if !slices.Contains(options, want) {
+			t.Fatalf("Windows default options lack %q: %q", want, options)
+		}
+	}
+	for _, forbidden := range []string{
+		"--bind=ctrl-l,right:transform(e:fw)",
+		"--bind=l:trigger(right)",
+	} {
+		if slices.Contains(options, forbidden) {
+			t.Fatalf("Windows default options contain sidecar navigation %q: %q", forbidden, options)
 		}
 	}
 }
@@ -195,6 +268,10 @@ func mustOptions(t *testing.T, config OptionsConfig) []string {
 }
 
 func wantOptionSnapshot(config OptionsConfig) []string {
+	return wantOptionSnapshotForPlatform(config, runtime.GOOS)
+}
+
+func wantOptionSnapshotForPlatform(config OptionsConfig, goos string) []string {
 	options := []string{
 		"--ansi",
 		"--style=full",
@@ -211,9 +288,17 @@ func wantOptionSnapshot(config OptionsConfig) []string {
 	}
 	if config.ListenAddress == "" {
 		if config.Picker == protocol.PickerCD {
-			options = append(options, "--info-command=i:cd")
+			if goos == "windows" {
+				options = append(options, "--info=inline-right")
+			} else {
+				options = append(options, "--info-command=i:cd")
+			}
 		} else {
-			options = append(options, "--info-command=i:cp")
+			if goos == "windows" {
+				options = append(options, "--info=inline-right")
+			} else {
+				options = append(options, "--info-command=i:cp")
+			}
 		}
 	} else {
 		options = append(options, "--info=hidden", "--list-label=0/0", "--listen="+config.ListenAddress)
@@ -249,11 +334,11 @@ func wantOptionSnapshot(config OptionsConfig) []string {
 		"--bind=result-final:rebind(change)+unbind(result-final)",
 	)
 	start := "--bind=start:" + startUnbind().text
-	if config.ListenAddress == "" {
+	if config.ListenAddress == "" && goos != "windows" {
 		start += "+transform(d)"
 	}
 	options = append(options, start)
-	if config.ListenAddress == "" {
+	if config.ListenAddress == "" && goos != "windows" {
 		options = append(options, "--bind=resize:transform(d)")
 	}
 	for _, key := range optionSnapshotPrintableKeys() {
