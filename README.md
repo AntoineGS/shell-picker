@@ -70,7 +70,22 @@ For `cd`, zoxide candidates can appear only in the initial CD view. Cached and f
 
 ## Shell adapters
 
-Source `adapters/zsh/shell-picker.plugin.zsh` and call `shell-picker-bind-zsh`; source `adapters/nushell/shell-picker.nu` and call `shell-picker-bind-nushell`. The shipped commands intentionally omit zoxide flags, so their eligible initial launch query uses the default cached policy and the 75ms Linux/150ms Windows timeout. Users who need that launch query to be authoritative must invoke the public fresh+`0` form directly; later navigation remains local-only.
+Source `adapters/zsh/shell-picker.plugin.zsh` and call `shell-picker-bind-zsh`; source `adapters/nushell/shell-picker.nu` and call `shell-picker-bind-nushell`. Nushell and Clink remain supported, but neither carries a sub-100ms latency promise.
+
+On Windows, PowerShell 7.4.7 or newer with PSReadLine 2.3.6 or newer is the recommended low-latency adapter. Install the module from the release payload, then register the picker executable:
+
+```powershell
+Import-Module .\adapters\powershell\shell-picker.psd1
+Register-ShellPicker -PickerPath C:\path\to\shell-picker.exe
+```
+
+Use Ctrl+V or Shift+Insert for PSReadLine paste; those paths avoid the per-character Space handler. Legacy right-click paste can still trigger that handler, which is a documented limitation.
+
+The shipped commands intentionally omit zoxide flags, so their eligible initial launch query uses the default cached policy and the 75ms Linux/150ms Windows timeout. Users who need that launch query to be authoritative must invoke the public fresh+`0` form directly; later navigation remains local-only.
+
+The Windows adapter uses native `fzf --info=inline-right` and omits the info/display startup callbacks; its counts and placement therefore differ from Linux. Linux retains the exact custom `info-command` counts and transforms.
+
+The fzf listen sidecar remains experimental, disabled by default, and requires explicit opt-in. No adapter injects or enables it.
 
 The process topology is one parent and one fzf. Callback transforms are synchronous and short-lived. Optional preview tools are not required: native preview fallbacks remain useful when they are absent.
 

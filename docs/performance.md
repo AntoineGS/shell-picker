@@ -30,6 +30,17 @@ consumers should use the named `startup_duration`, `source_duration`,
 This is the performance split: local startup, asynchronous source enrichment,
 user action, and full lifecycle are separate measurements.
 
+For Windows interactive use, PowerShell 7.4.7+ with PSReadLine 2.3.6+ is the
+recommended low-latency adapter. Its native `fzf --info=inline-right` path
+omits info/display startup callbacks, so its count formatting and placement are
+not directly comparable to Linux. Linux retains the exact custom
+`info-command` counts and transforms. Nushell and Clink remain supported, but
+neither carries a sub-100ms promise.
+
+PSReadLine Ctrl+V and Shift+Insert paste through the editor without invoking a
+per-character Space handler. Legacy right-click paste can still trigger that
+handler and remains a documented limitation.
+
 Task6 first-frame reports use an explicit `unit` on every metric object.
 Duration metrics use `unit: "us"` with generic `p50`, `p95`, and confidence
 interval values; callback, renderer, and sidecar counts use `unit: "count"`
@@ -148,7 +159,7 @@ forbidden, oversized, and inconsistent state; deterministic generated-key
 coverage in the concrete app/fake server across captured sinks; unknown-state
 field coverage; and real command-line absence checks for injected canaries.
 The real process tests do not claim to capture the runtime-generated key.
-The rollback is to unset
+No adapter injects or enables the sidecar. The rollback is to unset
 `SHELL_PICKER_EXPERIMENTAL_FZF_SIDECAR` and return to the callback-only path.
 
 ## Sampling and qualification
