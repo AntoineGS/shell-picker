@@ -5,10 +5,12 @@ package integration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -124,6 +126,82 @@ func TestWindowsTerminalSessionLifecycleUsesActualStateAndOps(t *testing.T) {
 	}
 	if err := session.Resize(80, 24); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("Resize after Close=%v", err)
+	}
+}
+
+func TestWindowsPreWaitCleanupWaitsBeforeClosingProcessHandles(t *testing.T) {
+	recorder := &windowsLifecycleRecorder{}
+	ops := recorder.ops()
+	var events []string
+	ops.terminateProcess = func(windows.Handle, uint32) error {
+		events = append(events, "terminate")
+		return nil
+	}
+	ops.waitForSingleObject = func(handle windows.Handle, _ uint32) (uint32, error) {
+		events = append(events, fmt.Sprintf("wait:%d", handle))
+		return windows.WAIT_OBJECT_0, nil
+	}
+	closeHandle := ops.closeHandle
+	ops.closeHandle = func(handle windows.Handle) error {
+		events = append(events, fmt.Sprintf("close:%d", handle))
+		return closeHandle(handle)
+	}
+	session := &windowsTerminalSession{ops: ops, process: 5, pid: 0, waitHandle: 7, cleanupTimeout: time.Second}
+	if err := session.Close(); err != nil {
+		t.Fatalf("session.Close() = %v", err)
+	}
+	if len(events) < 4 || events[0] != "terminate" || events[1] != "wait:5" {
+		t.Fatalf("cleanup events = %v, want terminate then wait:5 before closes", events)
+	}
+	waitIndex := 1
+	for index, event := range events {
+		if strings.HasPrefix(event, "close:") && index <= waitIndex {
+			t.Fatalf("close event %q occurred before process wait: %v", event, events)
+		}
+	}
+	if session.process != 0 || session.waitHandle != 0 {
+		t.Fatalf("pending process ownership process=%d wait=%d", session.process, session.waitHandle)
+	}
+}
+
+func TestWindowsPreWaitCleanupRetainsHandlesAfterWaitTimeout(t *testing.T) {
+	recorder := &windowsLifecycleRecorder{}
+	ops := recorder.ops()
+	waits := 0
+	ops.waitForSingleObject = func(windows.Handle, uint32) (uint32, error) {
+		waits++
+		if waits == 1 {
+			return uint32(windows.WAIT_TIMEOUT), nil
+		}
+		return uint32(windows.WAIT_OBJECT_0), nil
+	}
+	session := &windowsTerminalSession{ops: ops, process: 5, waitHandle: 7, cleanupTimeout: time.Second}
+	if err := session.Close(); !errors.Is(err, process.ErrWaitDelay) {
+		t.Fatalf("first session.Close() = %v, want wait delay", err)
+	}
+	if session.process != 5 || session.waitHandle != 7 {
+		t.Fatalf("first cleanup cleared ownership process=%d wait=%d", session.process, session.waitHandle)
+	}
+	if recorder.closed[5] != 0 || recorder.closed[7] != 0 {
+		t.Fatalf("first cleanup closed handles process=%d wait=%d", recorder.closed[5], recorder.closed[7])
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("second session.Close() = %v", err)
+	}
+	if session.process != 0 || session.waitHandle != 0 || recorder.closed[5] != 1 || recorder.closed[7] != 1 {
+		t.Fatalf("retry ownership process=%d wait=%d closes=%v", session.process, session.waitHandle, recorder.closed)
+	}
+}
+
+func TestWindowsProductionRootIdentityClosesDuringSessionCleanup(t *testing.T) {
+	recorder := &windowsLifecycleRecorder{}
+	identity := &fakeProcessIdentity{pid: 202}
+	session := &windowsTerminalSession{ops: recorder.ops(), productionIdentity: identity}
+	if err := session.Close(); err != nil {
+		t.Fatalf("session.Close() = %v", err)
+	}
+	if !identity.closed || session.productionIdentity != nil {
+		t.Fatalf("production identity closed=%t retained=%v", identity.closed, session.productionIdentity)
 	}
 }
 

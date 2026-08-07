@@ -3,7 +3,9 @@
 package integration
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -23,6 +25,200 @@ type windowsProcessNode struct {
 	creationMarker uint64
 	identity       ownedProcessIdentity
 	queryErr       error
+}
+
+type windowsProcessIdentityKey struct {
+	pid    uint32
+	marker uint64
+}
+
+type windowsProcessTreeTracker struct {
+	root     windowsProcessIdentityKey
+	observed map[windowsProcessIdentityKey]struct{}
+}
+
+func (tracker *windowsProcessTreeTracker) observe(nodes map[uint32]windowsProcessNode) bool {
+	if tracker.observed == nil {
+		tracker.observed = make(map[windowsProcessIdentityKey]struct{})
+	}
+	parents := map[uint32]struct{}{}
+	live := false
+	if root, ok := nodes[tracker.root.pid]; ok {
+		if root.queryErr != nil {
+			live = true
+		} else if tracker.root.marker == 0 || root.creationMarker == tracker.root.marker {
+			live = true
+			parents[tracker.root.pid] = struct{}{}
+		}
+	}
+	for key := range tracker.observed {
+		node, ok := nodes[key.pid]
+		if !ok {
+			continue
+		}
+		if node.queryErr != nil {
+			live = true
+			continue
+		}
+		if key.marker != 0 && node.creationMarker != key.marker {
+			continue
+		}
+		live = true
+		parents[key.pid] = struct{}{}
+	}
+	for changed := true; changed; {
+		changed = false
+		for pid, node := range nodes {
+			if node.queryErr != nil || !containsWindowsParent(parents, node.ppid) {
+				continue
+			}
+			if hasObservedWindowsPID(tracker.observed, pid) {
+				continue
+			}
+			key := windowsProcessIdentityKey{pid: pid, marker: node.creationMarker}
+			if _, exists := tracker.observed[key]; exists {
+				continue
+			}
+			tracker.observed[key] = struct{}{}
+			parents[pid] = struct{}{}
+			live = true
+			changed = true
+		}
+	}
+	return live
+}
+
+func containsWindowsParent(parents map[uint32]struct{}, pid uint32) bool {
+	_, ok := parents[pid]
+	return ok
+}
+
+func hasObservedWindowsPID(observed map[windowsProcessIdentityKey]struct{}, pid uint32) bool {
+	for key := range observed {
+		if key.pid == pid {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotWindowsProcessTreeIdentityKeys(root windowsProcessIdentityKey) ([]windowsProcessIdentityKey, error) {
+	nodes, err := snapshotWindowsProcesses(false)
+	if err != nil {
+		return nil, err
+	}
+	tracker := windowsProcessTreeTracker{root: root}
+	if !tracker.observe(nodes) {
+		return nil, nil
+	}
+	keys := make([]windowsProcessIdentityKey, 0, len(tracker.observed))
+	for key := range tracker.observed {
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+var (
+	errWindowsBootstrapExited         = errors.New("bootstrap process exited before production root discovery")
+	errWindowsAmbiguousProductionRoot = errors.New("multiple direct production roots discovered")
+)
+
+type windowsProductionRoot struct {
+	pid      int
+	marker   uint64
+	identity ownedProcessIdentity
+}
+
+type windowsProductionDiscoveryDeps struct {
+	snapshot       func() (map[uint32]windowsProcessNode, error)
+	wait           func(windows.Handle, uint32) (uint32, error)
+	openIdentity   func(int) (ownedProcessIdentity, error)
+	verifyIdentity func(ownedProcessIdentity, string) error
+	isTransient    func(error) bool
+}
+
+func discoverWindowsProductionRoot(ctx context.Context, bootstrapHandle windows.Handle, rootPID uint32, wantPath string, deps windowsProductionDiscoveryDeps) (windowsProductionRoot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	wantPath, err := filepath.Abs(wantPath)
+	if err != nil {
+		return windowsProductionRoot{}, err
+	}
+	if deps.snapshot == nil {
+		deps.snapshot = func() (map[uint32]windowsProcessNode, error) { return snapshotWindowsProcesses(false) }
+	}
+	if deps.wait == nil {
+		deps.wait = windows.WaitForSingleObject
+	}
+	if deps.openIdentity == nil {
+		deps.openIdentity = openWindowsProductionProcessIdentity
+	}
+	if deps.verifyIdentity == nil {
+		deps.verifyIdentity = verifyProcessIdentityMarker
+	}
+	if deps.isTransient == nil {
+		deps.isTransient = isTransientProcessIdentityError
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return windowsProductionRoot{}, err
+		}
+		waitTimeout := uint32(10)
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return windowsProductionRoot{}, ctx.Err()
+			}
+			if milliseconds := uint32(remaining / time.Millisecond); milliseconds < waitTimeout {
+				waitTimeout = milliseconds
+				if waitTimeout == 0 {
+					waitTimeout = 1
+				}
+			}
+		}
+		status, err := deps.wait(bootstrapHandle, waitTimeout)
+		if err != nil {
+			return windowsProductionRoot{}, err
+		}
+		if status == uint32(windows.WAIT_OBJECT_0) {
+			return windowsProductionRoot{}, errWindowsBootstrapExited
+		}
+		if status != uint32(windows.WAIT_TIMEOUT) {
+			return windowsProductionRoot{}, fmt.Errorf("wait for bootstrap discovery: status %#x", status)
+		}
+		nodes, err := deps.snapshot()
+		if err != nil {
+			return windowsProductionRoot{}, err
+		}
+		candidates := make([]windowsProcessNode, 0, 1)
+		for _, node := range nodes {
+			if node.ppid == rootPID && node.queryErr == nil && strings.EqualFold(node.exe, wantPath) {
+				candidates = append(candidates, node)
+			}
+		}
+		sort.Slice(candidates, func(left, right int) bool {
+			if candidates[left].pid != candidates[right].pid {
+				return candidates[left].pid < candidates[right].pid
+			}
+			return candidates[left].creationMarker < candidates[right].creationMarker
+		})
+		if len(candidates) > 1 {
+			return windowsProductionRoot{}, errWindowsAmbiguousProductionRoot
+		}
+		if len(candidates) == 1 {
+			candidate := candidates[0]
+			captured, err := captureOwnedProcessIdentities(
+				[]processIdentityEntry{{pid: int(candidate.pid), marker: strconv.FormatUint(candidate.creationMarker, 10)}},
+				deps.openIdentity, deps.verifyIdentity, deps.isTransient)
+			if err != nil {
+				return windowsProductionRoot{}, err
+			}
+			if len(captured) == 1 {
+				return windowsProductionRoot{pid: int(candidate.pid), marker: candidate.creationMarker, identity: captured[0].identity}, nil
+			}
+		}
+	}
 }
 
 type remoteUnicodeString struct {
@@ -102,6 +298,154 @@ func TestWindowsProcessTreeExitWaitRetriesTransientDescendants(t *testing.T) {
 	}
 }
 
+func TestDiscoverWindowsProductionRootBranches(t *testing.T) {
+	fakeIdentity := &fakeProcessIdentity{pid: 202}
+	baseNodes := map[uint32]windowsProcessNode{
+		101: {pid: 101, ppid: 1, exe: `C:\bootstrap.exe`, creationMarker: 1},
+		202: {pid: 202, ppid: 101, exe: `C:\pwsh.exe`, creationMarker: 2},
+		303: {pid: 303, ppid: 202, exe: `C:\pwsh.exe`, creationMarker: 3},
+	}
+	newDeps := func(nodes map[uint32]windowsProcessNode, identity ownedProcessIdentity, verify func(ownedProcessIdentity, string) error) windowsProductionDiscoveryDeps {
+		return windowsProductionDiscoveryDeps{
+			snapshot: func() (map[uint32]windowsProcessNode, error) { return nodes, nil },
+			wait:     func(windows.Handle, uint32) (uint32, error) { return uint32(windows.WAIT_TIMEOUT), nil },
+			openIdentity: func(int) (ownedProcessIdentity, error) {
+				return identity, nil
+			},
+			verifyIdentity: verify,
+			isTransient:    func(error) bool { return true },
+		}
+	}
+
+	t.Run("direct child wins over arbitrary descendant", func(t *testing.T) {
+		root, err := discoverWindowsProductionRoot(context.Background(), 11, 101, `C:\pwsh.exe`, newDeps(baseNodes, fakeIdentity, func(ownedProcessIdentity, string) error { return nil }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if root.pid != 202 || root.marker != 2 || root.identity != fakeIdentity {
+			t.Fatalf("root=%+v, want direct child identity", root)
+		}
+	})
+
+	t.Run("ambiguous direct children fail", func(t *testing.T) {
+		nodes := map[uint32]windowsProcessNode{202: {pid: 202, ppid: 101, exe: `C:\pwsh.exe`, creationMarker: 2}, 204: {pid: 204, ppid: 101, exe: `C:\pwsh.exe`, creationMarker: 4}}
+		_, err := discoverWindowsProductionRoot(context.Background(), 11, 101, `C:\pwsh.exe`, newDeps(nodes, fakeIdentity, func(ownedProcessIdentity, string) error { return nil }))
+		if !errors.Is(err, errWindowsAmbiguousProductionRoot) {
+			t.Fatalf("error=%v, want ambiguous root", err)
+		}
+	})
+
+	t.Run("bootstrap exit returns immediately", func(t *testing.T) {
+		deps := newDeps(nil, fakeIdentity, func(ownedProcessIdentity, string) error { return nil })
+		deps.wait = func(windows.Handle, uint32) (uint32, error) { return windows.WAIT_OBJECT_0, nil }
+		_, err := discoverWindowsProductionRoot(context.Background(), 11, 101, `C:\pwsh.exe`, deps)
+		if !errors.Is(err, errWindowsBootstrapExited) {
+			t.Fatalf("error=%v, want bootstrap exit", err)
+		}
+	})
+
+	t.Run("context cancellation returns", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := discoverWindowsProductionRoot(ctx, 11, 101, `C:\pwsh.exe`, newDeps(nil, fakeIdentity, func(ownedProcessIdentity, string) error { return nil }))
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error=%v, want context cancellation", err)
+		}
+	})
+
+	t.Run("context deadline returns", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now())
+		defer cancel()
+		_, err := discoverWindowsProductionRoot(ctx, 11, 101, `C:\pwsh.exe`, newDeps(nil, fakeIdentity, func(ownedProcessIdentity, string) error { return nil }))
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("error=%v, want deadline exceeded", err)
+		}
+	})
+
+	t.Run("identity change retries", func(t *testing.T) {
+		calls := 0
+		deps := newDeps(baseNodes, fakeIdentity, func(ownedProcessIdentity, string) error {
+			calls++
+			if calls == 1 {
+				return errProcessIdentityChanged
+			}
+			return nil
+		})
+		deps.snapshot = func() (map[uint32]windowsProcessNode, error) { return baseNodes, nil }
+		root, err := discoverWindowsProductionRoot(context.WithoutCancel(context.Background()), 11, 101, `C:\pwsh.exe`, deps)
+		if err != nil || root.pid != 202 || calls != 2 {
+			t.Fatalf("root=%+v error=%v verifyCalls=%d, want retry then success", root, err, calls)
+		}
+	})
+}
+
+func TestWindowsProcessTreeIdentityTrackerRetainsObservedDescendant(t *testing.T) {
+	snapshots := []map[uint32]windowsProcessNode{
+		{
+			101: {pid: 101, ppid: 1, creationMarker: 1},
+			202: {pid: 202, ppid: 101, creationMarker: 2},
+			303: {pid: 303, ppid: 202, creationMarker: 3},
+		},
+		{
+			303: {pid: 303, ppid: 202, creationMarker: 3},
+		},
+		{},
+	}
+	calls := 0
+	err := waitForWindowsProcessTreeIdentityExit(windowsProcessIdentityKey{pid: 101, marker: 1}, time.Now().Add(time.Second), func() (map[uint32]windowsProcessNode, error) {
+		nodes := snapshots[min(calls, len(snapshots)-1)]
+		calls++
+		return nodes, nil
+	})
+	if err != nil {
+		t.Fatalf("waitForWindowsProcessTreeIdentityExit() = %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("snapshot calls=%d, want 3", calls)
+	}
+}
+
+func TestWindowsProcessTreeIdentityTrackerRejectsPIDReuse(t *testing.T) {
+	snapshots := []map[uint32]windowsProcessNode{
+		{101: {pid: 101, ppid: 1, creationMarker: 1}, 202: {pid: 202, ppid: 101, creationMarker: 2}},
+		{101: {pid: 101, ppid: 1, creationMarker: 1}, 202: {pid: 202, ppid: 101, creationMarker: 99}},
+		{},
+	}
+	calls := 0
+	err := waitForWindowsProcessTreeIdentityExit(windowsProcessIdentityKey{pid: 101, marker: 1}, time.Now().Add(time.Second), func() (map[uint32]windowsProcessNode, error) {
+		nodes := snapshots[min(calls, len(snapshots)-1)]
+		calls++
+		return nodes, nil
+	})
+	if err != nil {
+		t.Fatalf("waitForWindowsProcessTreeIdentityExit() = %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("snapshot calls=%d, want 3 after PID reuse", calls)
+	}
+}
+
+func TestWindowsProcessTreeIdentityTrackerUsesSeededObservedDescendants(t *testing.T) {
+	calls := 0
+	err := waitForWindowsProcessTreeIdentityExitSeeded(
+		windowsProcessIdentityKey{pid: 101, marker: 1}, time.Now().Add(time.Second),
+		func() (map[uint32]windowsProcessNode, error) {
+			calls++
+			if calls == 1 {
+				return map[uint32]windowsProcessNode{303: {pid: 303, ppid: 202, creationMarker: 3}}, nil
+			}
+			return map[uint32]windowsProcessNode{}, nil
+		},
+		[]windowsProcessIdentityKey{{pid: 202, marker: 2}, {pid: 303, marker: 3}},
+	)
+	if err != nil {
+		t.Fatalf("waitForWindowsProcessTreeIdentityExitSeeded() = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("snapshot calls=%d, want 2", calls)
+	}
+}
+
 func (session *windowsTerminalSession) AssertPowerShellBootstrapTopology(t *testing.T) {
 	t.Helper()
 	nodes, err := snapshotWindowsProcesses(true)
@@ -120,14 +464,17 @@ func (session *windowsTerminalSession) AssertPowerShellBootstrapTopology(t *test
 	if !strings.EqualFold(root.exe, wantRoot) {
 		t.Fatalf("bootstrap root executable=%q, want %q", root.exe, wantRoot)
 	}
+	if session.rootMarker != 0 && root.creationMarker != session.rootMarker {
+		t.Fatalf("bootstrap root creation marker=%d, want %d", root.creationMarker, session.rootMarker)
+	}
 	wantPowerShell, err := filepath.Abs(session.productionRootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	powershellPIDs := make([]uint32, 0, 1)
-	for pid := range windowsDescendantPIDs(nodes, rootPID) {
-		node := nodes[pid]
-		if node.queryErr == nil && strings.EqualFold(node.exe, wantPowerShell) {
+	for pid, node := range nodes {
+		if node.ppid == rootPID && node.queryErr == nil && strings.EqualFold(node.exe, wantPowerShell) &&
+			(session.productionMarker == 0 || node.creationMarker == session.productionMarker) {
 			powershellPIDs = append(powershellPIDs, pid)
 		}
 	}
@@ -167,7 +514,11 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := uint32(session.productionRootPID())
+	rootKey := session.processTreeRoot()
+	root := rootKey.pid
+	if rootNode, ok := nodes[root]; ok && rootNode.queryErr == nil && rootKey.marker != 0 && rootNode.creationMarker != rootKey.marker {
+		t.Fatalf("production root %d creation marker=%d, want %d", root, rootNode.creationMarker, rootKey.marker)
+	}
 	descendants := map[uint32]bool{root: true}
 	for changed := true; changed; {
 		changed = false
@@ -242,7 +593,11 @@ func (session *windowsTerminalSession) FZFCommandLine(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := uint32(session.productionRootPID())
+	rootKey := session.processTreeRoot()
+	root := rootKey.pid
+	if rootNode, ok := nodes[root]; ok && rootNode.queryErr == nil && rootKey.marker != 0 && rootNode.creationMarker != rootKey.marker {
+		t.Fatalf("production root %d creation marker=%d, want %d", root, rootNode.creationMarker, rootKey.marker)
+	}
 	descendants := map[uint32]bool{root: true}
 	for changed := true; changed; {
 		changed = false
@@ -256,17 +611,20 @@ func (session *windowsTerminalSession) FZFCommandLine(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fzfCommands := make([]string, 0, 1)
 	for pid := range descendants {
 		if pid == root {
 			continue
 		}
 		node := nodes[pid]
 		if strings.EqualFold(node.exe, wantFZF) {
-			return node.command
+			fzfCommands = append(fzfCommands, node.command)
 		}
 	}
-	t.Fatalf("fzf process not found below picker %d", root)
-	return ""
+	if len(fzfCommands) != 1 {
+		t.Fatalf("fzf process count below picker %d=%d, want 1", root, len(fzfCommands))
+	}
+	return fzfCommands[0]
 }
 
 func (session *windowsTerminalSession) DescendantCommandLines(t *testing.T) []string {
@@ -285,7 +643,7 @@ func (session *windowsTerminalSession) DescendantProcessRecords(t *testing.T) []
 		session.recorder.CaptureAndWait()
 		return session.recorder.Records()
 	}
-	records, err := snapshotDescendantProcessRecords(session.productionRootPID())
+	records, err := snapshotDescendantProcessRecordsForIdentity(session.processTreeRoot())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,11 +663,21 @@ func (session *windowsTerminalSession) captureDescendantSample() {
 }
 
 func snapshotDescendantProcessRecords(root int) ([]descendantProcessRecord, error) {
+	return snapshotDescendantProcessRecordsForIdentity(windowsProcessIdentityKey{pid: uint32(root)})
+}
+
+func snapshotDescendantProcessRecordsForIdentity(rootKey windowsProcessIdentityKey) ([]descendantProcessRecord, error) {
 	nodes, err := snapshotWindowsProcesses(false)
 	if err != nil {
 		return nil, err
 	}
-	descendants := map[uint32]bool{uint32(root): true}
+	if rootKey.marker != 0 {
+		root, ok := nodes[rootKey.pid]
+		if !ok || root.queryErr != nil || root.creationMarker != rootKey.marker {
+			return nil, nil
+		}
+	}
+	descendants := map[uint32]bool{rootKey.pid: true}
 	for changed := true; changed; {
 		changed = false
 		for pid, node := range nodes {
@@ -320,7 +688,7 @@ func snapshotDescendantProcessRecords(root int) ([]descendantProcessRecord, erro
 	}
 	records := make([]descendantProcessRecord, 0, len(descendants)-1)
 	for pid, node := range nodes {
-		if pid == uint32(root) || !descendants[pid] || node.queryErr != nil {
+		if pid == rootKey.pid || !descendants[pid] || node.queryErr != nil {
 			continue
 		}
 		command, err := queryWindowsProcessCommandLineByPID(pid)
@@ -355,9 +723,13 @@ func (session *windowsTerminalSession) TrackLiveDescendants(t *testing.T) []trac
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := uint32(session.productionRootPID())
+	rootKey := session.processTreeRoot()
+	root := rootKey.pid
 	if _, exists := nodes[root]; !exists {
 		t.Fatalf("picker root %d missing while tracking descendants", root)
+	}
+	if rootKey.marker != 0 && nodes[root].queryErr == nil && nodes[root].creationMarker != rootKey.marker {
+		t.Fatalf("picker root %d creation marker=%d, want %d", root, nodes[root].creationMarker, rootKey.marker)
 	}
 	descendants := map[uint32]bool{root: true}
 	for changed := true; changed; {

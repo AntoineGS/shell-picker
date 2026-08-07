@@ -31,10 +31,14 @@ func run(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("open ConPTY console handles: %w", err)
 	}
+	originals := originalStandardHandles()
 	defer windows.CloseHandle(input)
 	defer windows.CloseHandle(output)
 	if err := setStandardHandles(input, output); err != nil {
 		return fmt.Errorf("set bootstrap standard handles: %w", err)
+	}
+	if err := closeReplacedStandardHandles(originals, input, output, windows.CloseHandle); err != nil {
+		return fmt.Errorf("close inherited standard handles: %w", err)
 	}
 
 	job, err := createKillJob()
@@ -131,6 +135,34 @@ func setStandardHandles(input, output windows.Handle) error {
 	return windows.SetStdHandle(windows.STD_ERROR_HANDLE, output)
 }
 
+func originalStandardHandles() []windows.Handle {
+	stdHandles := []uint32{windows.STD_INPUT_HANDLE, windows.STD_OUTPUT_HANDLE, windows.STD_ERROR_HANDLE}
+	handles := make([]windows.Handle, 0, len(stdHandles))
+	for _, stdHandle := range stdHandles {
+		handle, err := windows.GetStdHandle(stdHandle)
+		if err == nil && handle != 0 && handle != windows.InvalidHandle {
+			handles = append(handles, handle)
+		}
+	}
+	return handles
+}
+
+func closeReplacedStandardHandles(originals []windows.Handle, input, output windows.Handle, closeHandle func(windows.Handle) error) error {
+	seen := make(map[windows.Handle]struct{}, len(originals))
+	var err error
+	for _, handle := range originals {
+		if handle == 0 || handle == windows.InvalidHandle || handle == input || handle == output {
+			continue
+		}
+		if _, exists := seen[handle]; exists {
+			continue
+		}
+		seen[handle] = struct{}{}
+		err = errors.Join(err, closeHandle(handle))
+	}
+	return err
+}
+
 func createKillJob() (windows.Handle, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -156,19 +188,38 @@ func startChild(path string, arguments []string, input, output windows.Handle) (
 	if err != nil {
 		return windows.ProcessInformation{}, err
 	}
-	startup := windows.StartupInfo{
-		Cb:        uint32(unsafe.Sizeof(windows.StartupInfo{})),
-		Flags:     windows.STARTF_USESTDHANDLES,
-		StdInput:  input,
-		StdOutput: output,
-		StdErr:    output,
+	attributes, err := windows.NewProcThreadAttributeList(1)
+	if err != nil {
+		return windows.ProcessInformation{}, err
+	}
+	defer attributes.Delete()
+	if err := updateWindowsHandleList(attributes, input, output); err != nil {
+		return windows.ProcessInformation{}, err
+	}
+	startup := windows.StartupInfoEx{
+		StartupInfo: windows.StartupInfo{
+			Cb:        uint32(unsafe.Sizeof(windows.StartupInfoEx{})),
+			Flags:     windows.STARTF_USESTDHANDLES,
+			StdInput:  input,
+			StdOutput: output,
+			StdErr:    output,
+		},
+		ProcThreadAttributeList: attributes.List(),
 	}
 	var information windows.ProcessInformation
 	if err := windows.CreateProcess(application, &commandLine[0], nil, nil, true,
-		windows.CREATE_SUSPENDED|windows.CREATE_UNICODE_ENVIRONMENT, nil, nil, &startup, &information); err != nil {
+		windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_SUSPENDED|windows.CREATE_UNICODE_ENVIRONMENT, nil, nil,
+		(*windows.StartupInfo)(unsafe.Pointer(&startup)), &information); err != nil {
 		return windows.ProcessInformation{}, err
 	}
 	return information, nil
+}
+
+func updateWindowsHandleList(attributes *windows.ProcThreadAttributeListContainer, handles ...windows.Handle) error {
+	if len(handles) == 0 {
+		return errors.New("inherited handle list cannot be empty")
+	}
+	return attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0]))
 }
 
 func terminateChild(information *windows.ProcessInformation) {

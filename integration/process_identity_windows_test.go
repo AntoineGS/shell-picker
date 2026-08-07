@@ -88,6 +88,14 @@ func openOwnedProcessIdentity(pid int) (ownedProcessIdentity, error) {
 	return &windowsProcessIdentity{pid: pid, handle: handle}, nil
 }
 
+func openWindowsProductionProcessIdentity(pid int) (ownedProcessIdentity, error) {
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return nil, err
+	}
+	return &windowsProcessIdentity{pid: pid, handle: handle}, nil
+}
+
 func verifyOwnedProcessGroup(int) error { return nil }
 
 func (identity *windowsProcessIdentity) PID() int { return identity.pid }

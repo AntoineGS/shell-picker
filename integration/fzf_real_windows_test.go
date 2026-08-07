@@ -4,14 +4,17 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -46,7 +49,10 @@ type windowsTerminalSession struct {
 	waitHandle          windows.Handle // pending waiter ownership before waitProcess starts
 	launchInformation   windows.ProcessInformation
 	pid                 int
+	rootMarker          uint64
 	productionPID       int
+	productionMarker    uint64
+	productionIdentity  ownedProcessIdentity
 	bootstrapPath       string
 	productionRootPath  string
 	fzfPath             string
@@ -298,6 +304,156 @@ func TestWindowsStartupInfoUsesHarnessHandles(t *testing.T) {
 	}
 }
 
+func TestWindowsHarnessHandleListExcludesInheritableCanary(t *testing.T) {
+	security := &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), InheritHandle: 1}
+	var inputRead, inputWrite windows.Handle
+	if err := windows.CreatePipe(&inputRead, &inputWrite, security, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(inputRead)
+	defer windows.CloseHandle(inputWrite)
+	var outputRead, outputWrite windows.Handle
+	if err := windows.CreatePipe(&outputRead, &outputWrite, security, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if outputWrite != 0 {
+			_ = windows.CloseHandle(outputWrite)
+		}
+	})
+	var canaryRead, canaryWrite windows.Handle
+	if err := windows.CreatePipe(&canaryRead, &canaryWrite, security, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(canaryRead)
+	defer windows.CloseHandle(canaryWrite)
+
+	attributes, err := windows.NewProcThreadAttributeList(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attributes.Delete()
+	if err := updateWindowsHandleList(attributes, inputRead, outputWrite); err != nil {
+		t.Fatal(err)
+	}
+	startup := windows.StartupInfoEx{StartupInfo: windows.StartupInfo{Flags: windows.STARTF_USESTDHANDLES, StdInput: inputRead, StdOutput: outputWrite, StdErr: outputWrite}, ProcThreadAttributeList: attributes.List()}
+	startup.Cb = uint32(unsafe.Sizeof(startup))
+	commandLine, err := windows.UTF16FromString(windows.ComposeCommandLine([]string{os.Args[0], "-test.run=^TestWindowsHarnessHandleProbe$", "canary=" + strconv.FormatUint(uint64(canaryRead), 10)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := windows.UTF16PtrFromString(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var information windows.ProcessInformation
+	if err := windows.CreateProcess(application, &commandLine[0], nil, nil, true, windows.CREATE_SUSPENDED|windows.CREATE_UNICODE_ENVIRONMENT|windows.EXTENDED_STARTUPINFO_PRESENT, nil, nil, (*windows.StartupInfo)(unsafe.Pointer(&startup)), &information); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := windows.ResumeThread(information.Thread); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := windows.WaitForSingleObject(information.Process, windows.INFINITE); err != nil {
+		t.Fatal(err)
+	}
+	if err := closeWindowsProcessInformation(&windowsTerminalSession{ops: defaultWindowsTerminalOps()}, &information); err != nil {
+		t.Fatal(err)
+	}
+	_ = windows.CloseHandle(outputWrite)
+	outputWrite = 0
+	probeOutput := os.NewFile(uintptr(outputRead), "probe-output")
+	defer probeOutput.Close()
+	line, err := io.ReadAll(probeOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(line)), "false") {
+		t.Fatalf("canary inheritance result=%q, want false", line)
+	}
+}
+
+func TestWindowsHarnessHandleListAcceptsProductionHandles(t *testing.T) {
+	standardInput, err := createWindowsInheritableNullInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(standardInput)
+	resultRead, resultWrite, err := createWindowsResultPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(resultRead)
+	defer windows.CloseHandle(resultWrite)
+	attributes, err := windows.NewProcThreadAttributeList(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attributes.Delete()
+	if err := updateWindowsHandleList(attributes, standardInput, resultWrite); err != nil {
+		t.Fatalf("update production handle list: %v", err)
+	}
+}
+
+func TestWindowsHarnessHandleListCombinesWithPseudoConsole(t *testing.T) {
+	factory := defaultWindowsTerminalFactory()
+	inputRead, inputWrite, err := factory.createInputPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(inputRead)
+	defer windows.CloseHandle(inputWrite)
+	outputRead, outputWrite, err := factory.createOutputPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(outputRead)
+	defer windows.CloseHandle(outputWrite)
+	console, err := factory.createPseudoConsole(windows.Coord{X: 80, Y: 24}, inputRead, outputWrite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.ClosePseudoConsole(console)
+	standardInput, err := createWindowsInheritableNullInput()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(standardInput)
+	resultRead, resultWrite, err := createWindowsResultPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(resultRead)
+	defer windows.CloseHandle(resultWrite)
+	attributes, err := windows.NewProcThreadAttributeList(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attributes.Delete()
+	if err := updatePseudoConsoleAttribute(attributes, console); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateWindowsHandleList(attributes, standardInput, resultWrite); err != nil {
+		t.Fatalf("update combined attributes: %v", err)
+	}
+}
+
+func TestWindowsHarnessHandleProbe(t *testing.T) {
+	for _, argument := range os.Args[1:] {
+		if strings.HasPrefix(argument, "canary=") {
+			value, err := strconv.ParseUint(strings.TrimPrefix(argument, "canary="), 10, strconv.IntSize)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fileType, err := windows.GetFileType(windows.Handle(value))
+			if err != nil {
+				fileType = windows.FILE_TYPE_UNKNOWN
+			}
+			_, _ = fmt.Fprintln(os.Stdout, fileType != windows.FILE_TYPE_UNKNOWN)
+			return
+		}
+	}
+}
+
 var conPTYBootstrapBinary struct {
 	once sync.Once
 	path string
@@ -438,14 +594,15 @@ func TestWindowsActualLaunchRetainsProcessInformationHandleAfterCloseFailure(t *
 func TestWindowsProductionRootDiscoveryFailureClosesOwnedWaitHandle(t *testing.T) {
 	recorder := &windowsLifecycleRecorder{}
 	session := &windowsTerminalSession{
-		ops:      recorder.ops(),
-		pid:      5,
-		process:  5,
-		recorder: newDescendantRecorder(nil),
+		ops:        recorder.ops(),
+		pid:        5,
+		process:    5,
+		waitHandle: 7,
+		recorder:   newDescendantRecorder(nil),
 	}
 	want := errors.New("discover production root")
-	err := finalizeWindowsTerminalLaunch(session, windows.Handle(7), terminalConfig{ProductionRootPath: `C:\pwsh.exe`}, func(int, string, time.Duration) (int, error) {
-		return 0, want
+	err := finalizeWindowsTerminalLaunch(session, terminalConfig{ProductionRootPath: `C:\pwsh.exe`}, context.Background(), windowsProductionDiscoveryDeps{
+		snapshot: func() (map[uint32]windowsProcessNode, error) { return nil, want },
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("finalizeWindowsTerminalLaunch() error = %v, want %v", err, want)
@@ -624,7 +781,7 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	}
 	session.recorder.Start()
 
-	attributes, err := windows.NewProcThreadAttributeList(1)
+	attributes, err := windows.NewProcThreadAttributeList(2)
 	if err != nil {
 		_ = session.Close()
 		t.Fatal(err)
@@ -640,6 +797,10 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		t.Fatalf("create picker standard input: %v", err)
 	}
 	session.standardInput = standardInput
+	if err := updateWindowsHandleList(attributes, session.standardInput, session.resultWrite); err != nil {
+		_ = session.Close()
+		t.Fatalf("configure inherited handles input=%#x result=%#x: %v", uintptr(session.standardInput), uintptr(session.resultWrite), err)
+	}
 	args := append([]string{config.Path}, config.Args...)
 	if !config.DisablePickerTrace {
 		args = append(args, "--trace", tracePath)
@@ -679,58 +840,46 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		_ = session.Close()
 		t.Fatalf("duplicate picker wait handle: %v", err)
 	}
+	session.handleMu.Lock()
+	session.waitHandle = waitHandle
+	session.handleMu.Unlock()
 	session.process, session.pid = session.launchInformation.Process, int(session.launchInformation.ProcessId)
 	session.launchInformation.Process = 0
-	if err := finalizeWindowsTerminalLaunch(session, waitHandle, config, nil); err != nil {
+	rootMarker, err := windowsProcessCreationTime(session.process)
+	if err != nil {
+		_ = session.Close()
+		t.Fatalf("capture bootstrap process identity: %v", err)
+	}
+	session.rootMarker = rootMarker
+	if err := finalizeWindowsTerminalLaunch(session, config, testContext(t), windowsProductionDiscoveryDeps{}); err != nil {
 		_ = session.Close()
 		t.Fatalf("finish picker launch: %v", err)
 	}
 	return session
 }
 
-func waitForWindowsDescendantProcess(root int, wantPath string, timeout time.Duration) (int, error) {
-	wantPath, err := filepath.Abs(wantPath)
-	if err != nil {
-		return 0, err
-	}
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
-	for {
-		nodes, err := snapshotWindowsProcesses(false)
-		if err != nil {
-			return 0, err
-		}
-		for pid := range windowsDescendantPIDs(nodes, uint32(root)) {
-			node := nodes[pid]
-			if node.queryErr == nil && strings.EqualFold(node.exe, wantPath) {
-				return int(pid), nil
-			}
-		}
-		select {
-		case <-ticker.C:
-		case <-deadline.C:
-			return 0, fmt.Errorf("%s did not appear below process %d", wantPath, root)
-		}
-	}
-}
-
-func finalizeWindowsTerminalLaunch(session *windowsTerminalSession, waitHandle windows.Handle, config terminalConfig, discover func(int, string, time.Duration) (int, error)) error {
+func finalizeWindowsTerminalLaunch(session *windowsTerminalSession, config terminalConfig, ctx context.Context, deps windowsProductionDiscoveryDeps) error {
 	session.handleMu.Lock()
-	session.waitHandle = waitHandle
+	waitHandle := session.waitHandle
 	session.handleMu.Unlock()
-	if discover == nil {
-		discover = waitForWindowsDescendantProcess
+	if waitHandle == 0 {
+		return errors.New("missing session-owned wait handle")
 	}
 	recordingRoot := session.pid
 	if config.ProductionRootPath != "" {
-		productionPID, err := discover(session.pid, config.ProductionRootPath, 30*time.Second)
+		productionRoot, err := discoverWindowsProductionRoot(ctx, waitHandle, uint32(session.pid), config.ProductionRootPath, deps)
 		if err != nil {
 			return err
 		}
-		session.productionPID = productionPID
-		recordingRoot = productionPID
+		session.productionPID = productionRoot.pid
+		session.productionMarker = productionRoot.marker
+		session.productionIdentity = productionRoot.identity
+		recordingRoot = productionRoot.pid
+	}
+	if session.recorder != nil {
+		session.recorder.snapshot = func(int) ([]descendantProcessRecord, error) {
+			return snapshotDescendantProcessRecordsForIdentity(session.processTreeRoot())
+		}
 	}
 	session.recorder.SetRoot(recordingRoot)
 	session.recorder.Capture()
@@ -867,6 +1016,13 @@ func updatePseudoConsoleAttribute(attributes *windows.ProcThreadAttributeListCon
 		return callErr
 	}
 	return errors.New("UpdateProcThreadAttribute failed")
+}
+
+func updateWindowsHandleList(attributes *windows.ProcThreadAttributeListContainer, handles ...windows.Handle) error {
+	if len(handles) == 0 {
+		return errors.New("inherited handle list cannot be empty")
+	}
+	return attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0]))
 }
 
 // pseudoConsoleAttributeValue passes the HPCON handle value required by
