@@ -276,8 +276,12 @@ function Test-CoreSourceContract {
         'Test-Path',
         'Get-Item',
         'Set-Location',
+        'Start-Process',
+        'Set-Content',
+        'Remove-Item',
         'Env:',
-        'GetEnvironmentVariable'
+        'GetEnvironmentVariable',
+        'SetEnvironmentVariable'
     )
 
     foreach ($reference in $forbiddenReferences) {
