@@ -75,17 +75,157 @@ function Assert-ExactType {
     [void]($script:AssertionCount++)
 }
 
-function Assert-SourceHasNoForbiddenReference {
-    param(
-        [string]$Source,
-        [string]$Reference
-    )
+function Get-TestInputAst {
+    param([string]$Source)
 
-    if ($Source.IndexOf($Reference, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        throw [System.Exception]::new("core source contains forbidden reference '$Reference'")
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+        $Source,
+        [ref]$tokens,
+        [ref]$parseErrors
+    )
+    if (($null -ne $parseErrors) -and ($parseErrors.Count -ne 0)) {
+        throw [System.Exception]::new("sentinel source failed to parse: $($parseErrors[0].Message)")
     }
 
-    [void]($script:AssertionCount++)
+    return $ast
+}
+
+function Get-TestFileAst {
+    param([string]$Path)
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+        $Path,
+        [ref]$tokens,
+        [ref]$parseErrors
+    )
+    if (($null -ne $parseErrors) -and ($parseErrors.Count -ne 0)) {
+        throw [System.Exception]::new("core source failed to parse: $($parseErrors[0].Message)")
+    }
+
+    return $ast
+}
+
+function Assert-AstHasNoForbiddenReferences {
+    param(
+        [System.Management.Automation.Language.Ast]$Ast
+    )
+
+    $forbiddenCommandNames = @(
+        'PSReadLine',
+        'GetEnvironmentVariable',
+        'SetEnvironmentVariable',
+        'Start-Process',
+        'Test-Path',
+        'Get-Item',
+        'Resolve-Path',
+        'New-Item',
+        'Set-Content',
+        'Remove-Item',
+        'Set-Location'
+    )
+    $forbiddenTypeNames = @(
+        'PSReadLine',
+        'Diagnostics.Process',
+        'System.Diagnostics.Process',
+        'ProcessStartInfo',
+        'System.Diagnostics.ProcessStartInfo',
+        'System.IO.File',
+        'System.IO.Directory'
+    )
+    $forbiddenMemberNames = @(
+        'GetEnvironmentVariable',
+        'SetEnvironmentVariable'
+    )
+
+    $commandAsts = @($Ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.CommandAst]
+    }, $true))
+    foreach ($commandAst in $commandAsts) {
+        $commandName = $commandAst.GetCommandName()
+        if (($null -ne $commandName) -and ($forbiddenCommandNames -contains $commandName)) {
+            throw [System.Exception]::new("core source contains forbidden command AST '$commandName'")
+        }
+    }
+
+    $typeAsts = @($Ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.TypeExpressionAst]
+    }, $true))
+    foreach ($typeAst in $typeAsts) {
+        $typeName = $typeAst.TypeName.FullName
+        if (($null -ne $typeName) -and ($forbiddenTypeNames -contains $typeName)) {
+            throw [System.Exception]::new("core source contains forbidden type AST '$typeName'")
+        }
+    }
+
+    $memberAsts = @($Ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]
+    }, $true))
+    foreach ($memberAst in $memberAsts) {
+        $memberName = if ($memberAst.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+            [string]$memberAst.Member.Value
+        }
+        else {
+            $null
+        }
+        if (($null -ne $memberName) -and ($forbiddenMemberNames -contains $memberName)) {
+            throw [System.Exception]::new("core source contains forbidden member AST '$memberName'")
+        }
+    }
+
+    $variableAsts = @($Ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.VariableExpressionAst]
+    }, $true))
+    foreach ($variableAst in $variableAsts) {
+        $variableName = $variableAst.VariablePath.UserPath
+        if (($null -ne $variableName) -and $variableName.StartsWith('Env:', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw [System.Exception]::new("core source contains forbidden Env: variable AST '$variableName'")
+        }
+    }
+}
+
+function Assert-AstRejectsForbiddenSource {
+    param(
+        [string]$Source,
+        [string]$Message
+    )
+
+    $ast = Get-TestInputAst -Source $Source
+    $rejected = $false
+    try {
+        Assert-AstHasNoForbiddenReferences -Ast $ast
+    }
+    catch {
+        $rejected = $true
+    }
+
+    Assert-True $rejected $Message
+}
+
+function Assert-AstAllowsSource {
+    param(
+        [string]$Source,
+        [string]$Message
+    )
+
+    $ast = Get-TestInputAst -Source $Source
+    Assert-AstHasNoForbiddenReferences -Ast $ast
+    Assert-True $true $Message
+}
+
+function Assert-CoreSourceHasNoForbiddenAstReferences {
+    param([string]$Path)
+
+    $ast = Get-TestFileAst -Path $Path
+    Assert-AstHasNoForbiddenReferences -Ast $ast
+    Assert-True $true 'core source has no forbidden AST references'
 }
 
 function Assert-StringSequence {
@@ -155,10 +295,12 @@ function Test-NulByteConversion {
     Assert-True ($nullResult.Valid -is [bool]) 'null bytes return a boolean Valid property'
     Assert-True $nullResult.Valid 'null bytes are a valid abort'
     Assert-True ($nullResult.Paths -is [string[]]) 'null bytes return string[] Paths'
+    Assert-ExactType -Value $nullResult.Paths -ExpectedType ([System.String[]]) -Message 'null-byte abort Paths is exactly System.String[]'
     Assert-StringSequence -Expected $null -Actual $nullResult.Paths -Message 'null bytes return no paths'
 
     $emptyResult = ConvertFrom-ShellPickerNulBytes -Bytes ([byte[]]@())
     Assert-ExactType -Value $emptyResult.Valid -ExpectedType ([System.Boolean]) -Message 'empty-byte abort Valid is exactly System.Boolean'
+    Assert-ExactType -Value $emptyResult.Paths -ExpectedType ([System.String[]]) -Message 'empty-byte abort Paths is exactly System.String[]'
     Assert-True $emptyResult.Valid 'empty bytes are a valid abort'
     Assert-StringSequence -Expected $null -Actual $emptyResult.Paths -Message 'empty bytes return no paths'
 
@@ -167,6 +309,7 @@ function Test-NulByteConversion {
     $validBytes = New-TestNulFramedBytes -Paths @($unicodeOne, 'C:\same', $unicodeTwo, 'C:\same')
     $validResult = ConvertFrom-ShellPickerNulBytes -Bytes $validBytes
     Assert-ExactType -Value $validResult.Valid -ExpectedType ([System.Boolean]) -Message 'valid result Valid is exactly System.Boolean'
+    Assert-ExactType -Value $validResult.Paths -ExpectedType ([System.String[]]) -Message 'valid result Paths is exactly System.String[]'
     Assert-True $validResult.Valid 'valid Unicode NUL bytes are accepted'
     Assert-True ($validResult.Paths -is [string[]]) 'valid NUL bytes return string[] Paths'
     Assert-StringSequence -Expected @($unicodeOne, 'C:\same', $unicodeTwo, 'C:\same') -Actual $validResult.Paths -Message 'valid paths preserve Unicode, order, and duplicates'
@@ -174,17 +317,20 @@ function Test-NulByteConversion {
     $missingFinalNul = ConvertTo-TestUtf8Bytes -Value 'C:\missing-final-nul'
     $missingResult = ConvertFrom-ShellPickerNulBytes -Bytes $missingFinalNul
     Assert-ExactType -Value $missingResult.Valid -ExpectedType ([System.Boolean]) -Message 'missing-final-NUL result Valid is exactly System.Boolean'
+    Assert-ExactType -Value $missingResult.Paths -ExpectedType ([System.String[]]) -Message 'missing-final-NUL result Paths is exactly System.String[]'
     Assert-False $missingResult.Valid 'missing final NUL is invalid'
     Assert-StringSequence -Expected $null -Actual $missingResult.Paths -Message 'missing final NUL rejects all paths'
 
     $emptyRecordResult = ConvertFrom-ShellPickerNulBytes -Bytes ([byte[]](0x00))
     Assert-ExactType -Value $emptyRecordResult.Valid -ExpectedType ([System.Boolean]) -Message 'empty-record result Valid is exactly System.Boolean'
+    Assert-ExactType -Value $emptyRecordResult.Paths -ExpectedType ([System.String[]]) -Message 'empty-record result Paths is exactly System.String[]'
     Assert-False $emptyRecordResult.Valid 'empty record is invalid'
     Assert-StringSequence -Expected $null -Actual $emptyRecordResult.Paths -Message 'empty record returns no paths'
 
     $invalidUtf8 = [byte[]](0x43, 0x3A, 0x5C, 0xFF, 0x00)
     $invalidUtf8Result = ConvertFrom-ShellPickerNulBytes -Bytes $invalidUtf8
     Assert-ExactType -Value $invalidUtf8Result.Valid -ExpectedType ([System.Boolean]) -Message 'invalid-UTF8 result Valid is exactly System.Boolean'
+    Assert-ExactType -Value $invalidUtf8Result.Paths -ExpectedType ([System.String[]]) -Message 'invalid-UTF8 result Paths is exactly System.String[]'
     Assert-False $invalidUtf8Result.Valid 'invalid UTF-8 is rejected'
     Assert-StringSequence -Expected $null -Actual $invalidUtf8Result.Paths -Message 'invalid UTF-8 returns no paths'
 
@@ -197,6 +343,7 @@ function Test-NulByteConversion {
     [void]$atomicBytes.Add([byte]0)
     $atomicResult = ConvertFrom-ShellPickerNulBytes -Bytes ([byte[]]$atomicBytes.ToArray())
     Assert-ExactType -Value $atomicResult.Valid -ExpectedType ([System.Boolean]) -Message 'atomic-rejection result Valid is exactly System.Boolean'
+    Assert-ExactType -Value $atomicResult.Paths -ExpectedType ([System.String[]]) -Message 'atomic-rejection result Paths is exactly System.String[]'
     Assert-False $atomicResult.Valid 'a later malformed record invalidates the whole result'
     Assert-StringSequence -Expected $null -Actual $atomicResult.Paths -Message 'malformed input never returns partial paths'
 }
@@ -267,26 +414,56 @@ function Test-CopyCommandGeneration {
     Assert-Null (New-ShellPickerCopyCommand -Paths @($nulPath)) 'copy command rejects NUL-containing paths'
 }
 
-function Test-CoreSourceContract {
-    $coreSource = [System.IO.File]::ReadAllText($corePath)
-    $forbiddenReferences = @(
+function Test-CoreAstContract {
+    $forbiddenCommandSentinels = @(
         'PSReadLine',
-        'Diagnostics.Process',
-        'ProcessStartInfo',
-        'Test-Path',
-        'Get-Item',
-        'Set-Location',
-        'Start-Process',
-        'Set-Content',
-        'Remove-Item',
-        'Env:',
-        'GetEnvironmentVariable',
-        'SetEnvironmentVariable'
+        'Start-Process -FilePath sentinel',
+        'Test-Path -LiteralPath sentinel',
+        'Get-Item -LiteralPath sentinel',
+        'Resolve-Path -LiteralPath sentinel',
+        'New-Item -Path sentinel',
+        'Set-Content -Path sentinel -Value sentinel',
+        'Remove-Item -LiteralPath sentinel',
+        'Set-Location -LiteralPath sentinel'
     )
-
-    foreach ($reference in $forbiddenReferences) {
-        Assert-SourceHasNoForbiddenReference -Source $coreSource -Reference $reference
+    foreach ($source in $forbiddenCommandSentinels) {
+        Assert-AstRejectsForbiddenSource -Source $source -Message "rejects forbidden command AST '$source'"
     }
+
+    $forbiddenTypeSentinels = @(
+        '[Diagnostics.Process]::GetCurrentProcess()',
+        '[ProcessStartInfo]::new()',
+        '[System.IO.File]::ReadAllText("sentinel")',
+        '[System.IO.Directory]::GetFiles("sentinel")'
+    )
+    foreach ($source in $forbiddenTypeSentinels) {
+        Assert-AstRejectsForbiddenSource -Source $source -Message "rejects forbidden type AST '$source'"
+    }
+
+    $forbiddenMemberSentinels = @(
+        '[Environment]::GetEnvironmentVariable("sentinel")',
+        '[Environment]::SetEnvironmentVariable("sentinel", "sentinel")'
+    )
+    foreach ($source in $forbiddenMemberSentinels) {
+        Assert-AstRejectsForbiddenSource -Source $source -Message "rejects forbidden member AST '$source'"
+    }
+
+    Assert-AstRejectsForbiddenSource -Source 'Write-Output $env:PATH' -Message 'rejects Env: variable AST'
+
+    $harmlessSource = @'
+# Start-Process Test-Path [Diagnostics.Process] [System.IO.File] SetEnvironmentVariable Env:
+$StartProcess = 'Start-Process'
+$TestPath = 'Test-Path'
+$SetContent = 'Set-Content'
+$RemoveItem = 'Remove-Item'
+$SetLocation = 'Set-Location'
+$ProcessStartInfo = 'ProcessStartInfo'
+$SetEnvironmentVariable = 'SetEnvironmentVariable'
+Write-Output 'PSReadLine'
+Write-Output 'Get-Item Resolve-Path New-Item System.IO.Directory GetEnvironmentVariable'
+'@
+    Assert-AstAllowsSource -Source $harmlessSource -Message 'ignores comments and harmless identifiers'
+    Assert-CoreSourceHasNoForbiddenAstReferences -Path $corePath
 }
 
 Test-OperationDetection
@@ -294,6 +471,6 @@ Test-NulByteConversion
 Test-SelectionValidation
 Test-SingleQuotedLiterals
 Test-CopyCommandGeneration
-Test-CoreSourceContract
+Test-CoreAstContract
 
 Write-Output 'PowerShell core tests: PASS'
