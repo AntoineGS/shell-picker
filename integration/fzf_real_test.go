@@ -144,6 +144,7 @@ type terminalConfig struct {
 	DisablePickerTrace          bool
 	TerminalOwnsStandardStreams bool
 	ExpectedFZFPath             string
+	ExpectedRootChildPath       string
 }
 
 func requireRealFZF(t *testing.T) string {

@@ -42,6 +42,76 @@ func (session *windowsTerminalSession) TraceEvents() []traceEvent {
 	return append([]traceEvent(nil), session.events...)
 }
 
+func windowsDescendantPIDs(nodes map[uint32]windowsProcessNode, root uint32) map[uint32]bool {
+	descendants := map[uint32]bool{root: true}
+	for changed := true; changed; {
+		changed = false
+		for pid, node := range nodes {
+			if !descendants[pid] && descendants[node.ppid] {
+				descendants[pid], changed = true, true
+			}
+		}
+	}
+	delete(descendants, root)
+	return descendants
+}
+
+func (session *windowsTerminalSession) AssertPowerShellBootstrapTopology(t *testing.T) {
+	t.Helper()
+	nodes, err := snapshotWindowsProcesses(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootPID := uint32(session.pid)
+	root, ok := nodes[rootPID]
+	if !ok || root.queryErr != nil {
+		t.Fatalf("bootstrap root %d missing or unqueryable: %+v", rootPID, root)
+	}
+	wantRoot, err := filepath.Abs(session.rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(root.exe, wantRoot) {
+		t.Fatalf("bootstrap root executable=%q, want %q", root.exe, wantRoot)
+	}
+	wantPowerShell, err := filepath.Abs(session.expectedRootChildPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	powershellPIDs := make([]uint32, 0, 1)
+	for pid := range windowsDescendantPIDs(nodes, rootPID) {
+		node := nodes[pid]
+		if node.queryErr == nil && strings.EqualFold(node.exe, wantPowerShell) {
+			powershellPIDs = append(powershellPIDs, pid)
+		}
+	}
+	if len(powershellPIDs) != 1 {
+		t.Fatalf("PowerShell hosts below bootstrap=%d, want exactly one: %v", len(powershellPIDs), powershellPIDs)
+	}
+	powershellPID := powershellPIDs[0]
+	if nodes[powershellPID].ppid != rootPID {
+		t.Fatalf("PowerShell pid %d parent=%d, want bootstrap %d", powershellPID, nodes[powershellPID].ppid, rootPID)
+	}
+	for pid := range windowsDescendantPIDs(nodes, powershellPID) {
+		node := nodes[pid]
+		if node.queryErr != nil {
+			continue
+		}
+		switch strings.ToLower(filepath.Base(node.exe)) {
+		case "cmd.exe", "powershell.exe", "pwsh.exe":
+			t.Fatalf("nested interpreter below PowerShell pid %d: pid=%d exe=%q", powershellPID, pid, node.exe)
+		}
+	}
+	if session.productionPID != int(powershellPID) {
+		t.Fatalf("production recorder root=%d, want PowerShell pid %d", session.productionPID, powershellPID)
+	}
+	for _, record := range session.DescendantProcessRecords(t) {
+		if record.PID == int(rootPID) {
+			t.Fatalf("bootstrap helper pid %d included in production descendant records: %+v", rootPID, record)
+		}
+	}
+}
+
 func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 	t.Helper()
 	nodes, err := snapshotWindowsProcesses(true)
