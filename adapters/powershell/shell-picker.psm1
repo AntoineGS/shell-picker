@@ -165,6 +165,19 @@ function Invoke-ShellPickerOperation {
     }
 }
 
+function Test-ShellPickerSingleInsertionArgument {
+    param(
+        [AllowNull()]
+        [object]$Argument
+    )
+
+    if ($null -eq $Argument) {
+        return $true
+    }
+
+    return ($Argument -is [int]) -and ([int]$Argument -eq 1)
+}
+
 $script:SpaceRuntime = [pscustomobject]@{
     GetBufferState = {
         $buffer = ''
@@ -209,7 +222,8 @@ function Invoke-ShellPickerSpace {
         $selfInsert = $script:SpaceRuntime.SelfInsert
         & $selfInsert $Key $Argument
 
-        if (($selectionLength -gt 0) -or ($null -eq $operation)) {
+        if (($selectionLength -ne 0) -or ($null -eq $operation) -or
+            (-not (Test-ShellPickerSingleInsertionArgument -Argument $Argument))) {
             return
         }
 
