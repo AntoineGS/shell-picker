@@ -257,7 +257,16 @@ function Register-ShellPicker {
     }
 
     $script:PickerPath = [System.IO.Path]::GetFullPath($resolved.ProviderPath)
-    Set-PSReadLineKeyHandler -Chord 'Spacebar' -ScriptBlock $script:SpaceHandler
+    $handler = @{
+        Chord = 'Spacebar'
+        ScriptBlock = $script:SpaceHandler
+        BriefDescription = 'shell-picker'
+        Description = 'Launch shell-picker after cd or cp'
+    }
+    if ((Get-PSReadLineOption).EditMode -eq 'Vi') {
+        $handler.ViMode = 'Insert'
+    }
+    Set-PSReadLineKeyHandler @handler
 }
 
 Export-ModuleMember -Function Register-ShellPicker
