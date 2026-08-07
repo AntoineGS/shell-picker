@@ -222,7 +222,7 @@ function Invoke-ShellPickerSpace {
         $selfInsert = $script:SpaceRuntime.SelfInsert
         & $selfInsert $Key $Argument
 
-        if (($selectionLength -ne 0) -or ($null -eq $operation) -or
+        if (($selectionLength -gt 0) -or ($null -eq $operation) -or
             (-not (Test-ShellPickerSingleInsertionArgument -Argument $Argument))) {
             return
         }
