@@ -205,10 +205,6 @@ func (session *windowsTerminalSession) processTreeRoot() windowsProcessIdentityK
 
 func (session *windowsTerminalSession) PID() int { return session.productionRootPID() }
 
-func waitForWindowsProcessTreeExit(root int, deadline time.Time, snapshot func() (map[uint32]windowsProcessNode, error)) error {
-	return waitForWindowsProcessTreeIdentityExit(windowsProcessIdentityKey{pid: uint32(root)}, deadline, snapshot)
-}
-
 func waitForWindowsProcessTreeIdentityExit(root windowsProcessIdentityKey, deadline time.Time, snapshot func() (map[uint32]windowsProcessNode, error)) error {
 	return waitForWindowsProcessTreeIdentityExitSeeded(root, deadline, snapshot, nil)
 }
@@ -455,6 +451,7 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 	}
 	deadline := time.Now().Add(timeout)
 	var preWaitProcess windows.Handle
+	outputDone, resultDone, traceDone := true, true, true
 	observedProcessIdentities := session.observedProcessIdentityKeys()
 	if session.pid != 0 {
 		if sampled, sampleErr := snapshotWindowsProcessTreeIdentityKeys(session.processTreeRoot()); sampleErr == nil {
@@ -483,25 +480,41 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 		if session.outputStarted {
 			err = errors.Join(err, session.cancelWorkerIO(&session.output, session.drainDone))
 		} else {
-			err = errors.Join(err, session.ops.closeHandle(session.output))
-			session.output = 0
+			closeErr := session.ops.closeHandle(session.output)
+			err = errors.Join(err, closeErr)
+			if closeErr == nil {
+				session.output = 0
+			} else {
+				outputDone = false
+			}
 		}
 	}
 	if session.result != 0 {
 		if session.resultStarted {
 			err = errors.Join(err, session.cancelWorkerIO(&session.result, session.resultDone))
 		} else {
-			err = errors.Join(err, session.ops.closeHandle(session.result))
-			session.result = 0
+			closeErr := session.ops.closeHandle(session.result)
+			err = errors.Join(err, closeErr)
+			if closeErr == nil {
+				session.result = 0
+			} else {
+				resultDone = false
+			}
 		}
 	}
 	if session.resultWrite != 0 {
-		err = errors.Join(err, session.ops.closeHandle(session.resultWrite))
-		session.resultWrite = 0
+		closeErr := session.ops.closeHandle(session.resultWrite)
+		err = errors.Join(err, closeErr)
+		if closeErr == nil {
+			session.resultWrite = 0
+		}
 	}
 	if session.standardInput != 0 {
-		err = errors.Join(err, session.ops.closeHandle(session.standardInput))
-		session.standardInput = 0
+		closeErr := session.ops.closeHandle(session.standardInput)
+		err = errors.Join(err, closeErr)
+		if closeErr == nil {
+			session.standardInput = 0
+		}
 	}
 	if session.trace != 0 {
 		if session.traceStarted {
@@ -512,16 +525,27 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 			}
 		} else {
 			if session.traceHandles == nil {
-				err = errors.Join(err, session.ops.closeHandle(session.trace))
+				closeErr := session.ops.closeHandle(session.trace)
+				err = errors.Join(err, closeErr)
+				if closeErr == nil {
+					session.trace = 0
+				} else {
+					traceDone = false
+				}
 			} else {
 				err = errors.Join(err, session.closeTraceHandle(session.trace))
+				if session.trace != 0 {
+					traceDone = false
+				}
 			}
-			session.trace = 0
 		}
 	}
 	if session.input != 0 {
-		err = errors.Join(err, session.ops.closeHandle(session.input))
-		session.input = 0
+		closeErr := session.ops.closeHandle(session.input)
+		err = errors.Join(err, closeErr)
+		if closeErr == nil {
+			session.input = 0
+		}
 	}
 	session.handleMu.Unlock()
 
@@ -534,16 +558,21 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 	}
 	processDone := true
 	if preWaitProcess != 0 {
-		processDone, err = waitForWindowsProcessTermination(session.ops, preWaitProcess, deadline)
+		var waitErr error
+		processDone, waitErr = waitForWindowsProcessTermination(session.ops, preWaitProcess, deadline)
+		err = errors.Join(err, waitErr)
 		if !processDone {
 			err = errors.Join(err, fmt.Errorf("wait for process termination: %w", process.ErrWaitDelay))
 		}
 	} else {
 		processDone = await("process", session.waitStarted, session.waitDone)
 	}
-	outputDone := await("output", session.outputStarted, session.drainDone)
-	resultDone := await("result", session.resultStarted, session.resultDone)
-	traceDone := true
+	if session.outputStarted {
+		outputDone = await("output", true, session.drainDone)
+	}
+	if session.resultStarted {
+		resultDone = await("result", true, session.resultDone)
+	}
 	if session.traceStarted {
 		traceDone = waitForWindowsTerminalDone(session.traceDone, deadline)
 		if !traceDone && traceGraceful {
@@ -591,13 +620,13 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 			}
 		}
 	}
-	if outputDone {
+	if outputDone && session.outputStarted {
 		session.output = 0
 	}
-	if resultDone {
+	if resultDone && session.resultStarted {
 		session.result = 0
 	}
-	if traceDone {
+	if traceDone && session.traceStarted {
 		session.trace = 0
 	}
 	session.handleMu.Unlock()
@@ -617,6 +646,7 @@ func (session *windowsTerminalSession) requestStop() {
 func (session *windowsTerminalSession) resourcesReleased() bool {
 	session.handleMu.Lock()
 	released := session.process == 0 && session.waitHandle == 0 && session.launchInformation.Process == 0 && session.launchInformation.Thread == 0 &&
+		session.resultWrite == 0 && session.standardInput == 0 && session.input == 0 &&
 		session.productionIdentity == nil &&
 		session.output == 0 && session.result == 0 && session.trace == 0
 	session.handleMu.Unlock()

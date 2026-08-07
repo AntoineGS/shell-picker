@@ -38,68 +38,9 @@ type windowsProcessTreeTracker struct {
 }
 
 func (tracker *windowsProcessTreeTracker) observe(nodes map[uint32]windowsProcessNode) bool {
-	if tracker.observed == nil {
-		tracker.observed = make(map[windowsProcessIdentityKey]struct{})
-	}
-	parents := map[uint32]struct{}{}
-	live := false
-	if root, ok := nodes[tracker.root.pid]; ok {
-		if root.queryErr != nil {
-			live = true
-		} else if tracker.root.marker == 0 || root.creationMarker == tracker.root.marker {
-			live = true
-			parents[tracker.root.pid] = struct{}{}
-		}
-	}
-	for key := range tracker.observed {
-		node, ok := nodes[key.pid]
-		if !ok {
-			continue
-		}
-		if node.queryErr != nil {
-			live = true
-			continue
-		}
-		if key.marker != 0 && node.creationMarker != key.marker {
-			continue
-		}
-		live = true
-		parents[key.pid] = struct{}{}
-	}
-	for changed := true; changed; {
-		changed = false
-		for pid, node := range nodes {
-			if node.queryErr != nil || !containsWindowsParent(parents, node.ppid) {
-				continue
-			}
-			if hasObservedWindowsPID(tracker.observed, pid) {
-				continue
-			}
-			key := windowsProcessIdentityKey{pid: pid, marker: node.creationMarker}
-			if _, exists := tracker.observed[key]; exists {
-				continue
-			}
-			tracker.observed[key] = struct{}{}
-			parents[pid] = struct{}{}
-			live = true
-			changed = true
-		}
-	}
+	observed, live := traverseWindowsProcessIdentities(tracker.root, nodes, tracker.observed)
+	tracker.observed = observed
 	return live
-}
-
-func containsWindowsParent(parents map[uint32]struct{}, pid uint32) bool {
-	_, ok := parents[pid]
-	return ok
-}
-
-func hasObservedWindowsPID(observed map[windowsProcessIdentityKey]struct{}, pid uint32) bool {
-	for key := range observed {
-		if key.pid == pid {
-			return true
-		}
-	}
-	return false
 }
 
 func snapshotWindowsProcessTreeIdentityKeys(root windowsProcessIdentityKey) ([]windowsProcessIdentityKey, error) {
@@ -107,15 +48,11 @@ func snapshotWindowsProcessTreeIdentityKeys(root windowsProcessIdentityKey) ([]w
 	if err != nil {
 		return nil, err
 	}
-	tracker := windowsProcessTreeTracker{root: root}
-	if !tracker.observe(nodes) {
+	identities, live := traverseWindowsProcessIdentities(root, nodes, nil)
+	if !live {
 		return nil, nil
 	}
-	keys := make([]windowsProcessIdentityKey, 0, len(tracker.observed))
-	for key := range tracker.observed {
-		keys = append(keys, key)
-	}
-	return keys, nil
+	return sortedWindowsProcessIdentities(identities), nil
 }
 
 var (
@@ -239,20 +176,6 @@ func (session *windowsTerminalSession) TraceEvents() []traceEvent {
 	return append([]traceEvent(nil), session.events...)
 }
 
-func windowsDescendantPIDs(nodes map[uint32]windowsProcessNode, root uint32) map[uint32]bool {
-	descendants := map[uint32]bool{root: true}
-	for changed := true; changed; {
-		changed = false
-		for pid, node := range nodes {
-			if !descendants[pid] && descendants[node.ppid] {
-				descendants[pid], changed = true, true
-			}
-		}
-	}
-	delete(descendants, root)
-	return descendants
-}
-
 func TestWindowsProductionRoot(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -280,13 +203,13 @@ func TestWindowsProcessTreeExitWaitRetriesTransientDescendants(t *testing.T) {
 	root := uint32(101)
 	snapshots := []map[uint32]windowsProcessNode{
 		{
-			root: {pid: root, ppid: 1},
-			202:  {pid: 202, ppid: root},
+			root: {pid: root, ppid: 1, creationMarker: 100},
+			202:  {pid: 202, ppid: root, creationMarker: 200},
 		},
 		{},
 	}
 	calls := 0
-	err := waitForWindowsProcessTreeExit(int(root), time.Now().Add(time.Second), func() (map[uint32]windowsProcessNode, error) {
+	err := waitForWindowsProcessTreeIdentityExit(windowsProcessIdentityKey{pid: root, marker: 100}, time.Now().Add(time.Second), func() (map[uint32]windowsProcessNode, error) {
 		calls++
 		return snapshots[min(calls-1, len(snapshots)-1)], nil
 	})
@@ -425,6 +348,41 @@ func TestWindowsProcessTreeIdentityTrackerRejectsPIDReuse(t *testing.T) {
 	}
 }
 
+func TestWindowsProcessTreeIdentityTrackerRejectsStalePPIDReuse(t *testing.T) {
+	root := windowsProcessIdentityKey{pid: 101, marker: 100}
+	parent := windowsProcessIdentityKey{pid: 202, marker: 200}
+	staleChild := windowsProcessIdentityKey{pid: 303, marker: 150}
+	staleGrandchild := windowsProcessIdentityKey{pid: 404, marker: 250}
+	tracker := windowsProcessTreeTracker{root: root}
+
+	first := map[uint32]windowsProcessNode{
+		101: {pid: 101, ppid: 1, creationMarker: 100},
+		202: {pid: 202, ppid: 101, creationMarker: 200},
+	}
+	if !tracker.observe(first) {
+		t.Fatal("first observation reported no live process")
+	}
+
+	second := map[uint32]windowsProcessNode{
+		101: {pid: 101, ppid: 1, creationMarker: 100},
+		202: {pid: 202, ppid: 101, creationMarker: 200},
+		303: {pid: 303, ppid: 202, creationMarker: 150},
+		404: {pid: 404, ppid: 303, creationMarker: 250},
+	}
+	if !tracker.observe(second) {
+		t.Fatal("second observation reported no live process")
+	}
+	if _, ok := tracker.observed[parent]; !ok {
+		t.Fatalf("verified parent identity missing from tracker: %+v", tracker.observed)
+	}
+	if _, ok := tracker.observed[staleChild]; ok {
+		t.Fatalf("stale child with reused PPID was accepted: %+v", tracker.observed)
+	}
+	if _, ok := tracker.observed[staleGrandchild]; ok {
+		t.Fatalf("descendant of stale child was accepted: %+v", tracker.observed)
+	}
+}
+
 func TestWindowsProcessTreeIdentityTrackerUsesSeededObservedDescendants(t *testing.T) {
 	calls := 0
 	err := waitForWindowsProcessTreeIdentityExitSeeded(
@@ -467,15 +425,21 @@ func (session *windowsTerminalSession) AssertPowerShellBootstrapTopology(t *test
 	if session.rootMarker != 0 && root.creationMarker != session.rootMarker {
 		t.Fatalf("bootstrap root creation marker=%d, want %d", root.creationMarker, session.rootMarker)
 	}
+	rootKey := windowsProcessIdentityKey{pid: rootPID, marker: session.rootMarker}
+	identities, live := traverseWindowsProcessIdentities(rootKey, nodes, nil)
+	if !live {
+		t.Fatalf("bootstrap root %d has no identity-verified descendants", rootPID)
+	}
 	wantPowerShell, err := filepath.Abs(session.productionRootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	powershellPIDs := make([]uint32, 0, 1)
-	for pid, node := range nodes {
-		if node.ppid == rootPID && node.queryErr == nil && strings.EqualFold(node.exe, wantPowerShell) &&
-			(session.productionMarker == 0 || node.creationMarker == session.productionMarker) {
-			powershellPIDs = append(powershellPIDs, pid)
+	for identity := range identities {
+		node := nodes[identity.pid]
+		if node.ppid == rootPID && strings.EqualFold(node.exe, wantPowerShell) &&
+			(session.productionMarker == 0 || identity.marker == session.productionMarker) {
+			powershellPIDs = append(powershellPIDs, identity.pid)
 		}
 	}
 	if len(powershellPIDs) != 1 {
@@ -485,14 +449,13 @@ func (session *windowsTerminalSession) AssertPowerShellBootstrapTopology(t *test
 	if nodes[powershellPID].ppid != rootPID {
 		t.Fatalf("PowerShell pid %d parent=%d, want bootstrap %d", powershellPID, nodes[powershellPID].ppid, rootPID)
 	}
-	for pid := range windowsDescendantPIDs(nodes, powershellPID) {
-		node := nodes[pid]
-		if node.queryErr != nil {
-			continue
-		}
+	productionKey := windowsProcessIdentityKey{pid: powershellPID, marker: nodes[powershellPID].creationMarker}
+	productionIdentities, _ := traverseWindowsProcessIdentities(productionKey, nodes, nil)
+	for identity := range productionIdentities {
+		node := nodes[identity.pid]
 		switch strings.ToLower(filepath.Base(node.exe)) {
 		case "cmd.exe", "powershell.exe", "pwsh.exe":
-			t.Fatalf("nested interpreter below PowerShell pid %d: pid=%d exe=%q", powershellPID, pid, node.exe)
+			t.Fatalf("nested interpreter below PowerShell pid %d: pid=%d exe=%q", powershellPID, identity.pid, node.exe)
 		}
 	}
 	if session.productionPID != int(powershellPID) {
@@ -519,31 +482,18 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 	if rootNode, ok := nodes[root]; ok && rootNode.queryErr == nil && rootKey.marker != 0 && rootNode.creationMarker != rootKey.marker {
 		t.Fatalf("production root %d creation marker=%d, want %d", root, rootNode.creationMarker, rootKey.marker)
 	}
-	descendants := map[uint32]bool{root: true}
-	for changed := true; changed; {
-		changed = false
-		for pid, node := range nodes {
-			if !descendants[pid] && descendants[node.ppid] {
-				descendants[pid], changed = true, true
-			}
-		}
+	identities, live := traverseWindowsProcessIdentities(rootKey, nodes, nil)
+	if !live {
+		t.Fatalf("production root %d has no identity-verified descendants", root)
 	}
 	wantFZF, err := filepath.Abs(session.fzfPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fzfCount := 0
-	for pid := range descendants {
-		if pid == root {
-			continue
-		}
+	for identity := range identities {
+		pid := identity.pid
 		node := nodes[pid]
-		if node.queryErr != nil {
-			// A Toolhelp snapshot can retain a just-exited child whose process
-			// handle is already invalid. It is not a live identity to validate;
-			// stable descendants are still checked below.
-			continue
-		}
 		if strings.EqualFold(node.exe, wantFZF) {
 			identity, identityErr := captureWindowsProcessIdentity(&node)
 			if identityErr != nil {
@@ -598,25 +548,17 @@ func (session *windowsTerminalSession) FZFCommandLine(t *testing.T) string {
 	if rootNode, ok := nodes[root]; ok && rootNode.queryErr == nil && rootKey.marker != 0 && rootNode.creationMarker != rootKey.marker {
 		t.Fatalf("production root %d creation marker=%d, want %d", root, rootNode.creationMarker, rootKey.marker)
 	}
-	descendants := map[uint32]bool{root: true}
-	for changed := true; changed; {
-		changed = false
-		for pid, node := range nodes {
-			if !descendants[pid] && descendants[node.ppid] {
-				descendants[pid], changed = true, true
-			}
-		}
+	identities, live := traverseWindowsProcessIdentities(rootKey, nodes, nil)
+	if !live {
+		t.Fatalf("production root %d has no identity-verified descendants", root)
 	}
 	wantFZF, err := filepath.Abs(session.fzfPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fzfCommands := make([]string, 0, 1)
-	for pid := range descendants {
-		if pid == root {
-			continue
-		}
-		node := nodes[pid]
+	for identity := range identities {
+		node := nodes[identity.pid]
 		if strings.EqualFold(node.exe, wantFZF) {
 			fzfCommands = append(fzfCommands, node.command)
 		}
@@ -671,35 +613,22 @@ func snapshotDescendantProcessRecordsForIdentity(rootKey windowsProcessIdentityK
 	if err != nil {
 		return nil, err
 	}
-	if rootKey.marker != 0 {
-		root, ok := nodes[rootKey.pid]
-		if !ok || root.queryErr != nil || root.creationMarker != rootKey.marker {
-			return nil, nil
-		}
+	identities, live := traverseWindowsProcessIdentities(rootKey, nodes, nil)
+	if !live {
+		return nil, nil
 	}
-	descendants := map[uint32]bool{rootKey.pid: true}
-	for changed := true; changed; {
-		changed = false
-		for pid, node := range nodes {
-			if !descendants[pid] && descendants[node.ppid] {
-				descendants[pid], changed = true, true
-			}
-		}
-	}
-	records := make([]descendantProcessRecord, 0, len(descendants)-1)
-	for pid, node := range nodes {
-		if pid == rootKey.pid || !descendants[pid] || node.queryErr != nil {
-			continue
-		}
-		command, err := queryWindowsProcessCommandLineByPID(pid)
+	keys := sortedWindowsProcessIdentities(identities)
+	records := make([]descendantProcessRecord, 0, len(keys))
+	for _, key := range keys {
+		node := nodes[key.pid]
+		command, err := queryWindowsProcessCommandLineByPID(key.pid)
 		if err != nil {
 			continue
 		}
 		records = append(records, descendantProcessRecord{
-			PID: int(pid), Identity: fmt.Sprintf("%d:%d", pid, node.creationMarker), CommandLine: command,
+			PID: int(key.pid), Identity: fmt.Sprintf("%d:%d", key.pid, node.creationMarker), CommandLine: command,
 		})
 	}
-	sort.Slice(records, func(left, right int) bool { return records[left].PID < records[right].PID })
 	return records, nil
 }
 
@@ -731,53 +660,35 @@ func (session *windowsTerminalSession) TrackLiveDescendants(t *testing.T) []trac
 	if rootKey.marker != 0 && nodes[root].queryErr == nil && nodes[root].creationMarker != rootKey.marker {
 		t.Fatalf("picker root %d creation marker=%d, want %d", root, nodes[root].creationMarker, rootKey.marker)
 	}
-	descendants := map[uint32]bool{root: true}
-	for changed := true; changed; {
-		changed = false
-		for pid, node := range nodes {
-			if !descendants[pid] && descendants[node.ppid] {
-				descendants[pid], changed = true, true
-			}
-		}
+	identities, live := traverseWindowsProcessIdentities(rootKey, nodes, nil)
+	if !live {
+		t.Fatalf("picker root %d has no identity-verified descendants", root)
 	}
-	pids := make([]int, 0, len(descendants)-1)
-	for pid := range descendants {
-		if pid != root {
-			pids = append(pids, int(pid))
-		}
-	}
-	sort.Ints(pids)
-	tracked := make([]trackedProcess, 0, len(pids))
+	keys := sortedWindowsProcessIdentities(identities)
+	tracked := make([]trackedProcess, 0, len(keys))
 	wantFZF, err := filepath.Abs(session.fzfPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fzfCount := 0
-	for _, rawPID := range pids {
-		pid := uint32(rawPID)
-		node := nodes[pid]
-		if node.queryErr != nil {
-			// Toolhelp can report a short-lived descendant after it has exited
-			// but before the snapshot's PID record disappears. It is not an
-			// observable live identity to retain; stable descendants below are
-			// still held by process handles.
-			continue
-		}
-		identity, identityErr := captureWindowsProcessIdentity(&node)
+	for _, processIdentity := range keys {
+		rawPID := int(processIdentity.pid)
+		node := nodes[processIdentity.pid]
+		ownedIdentity, identityErr := captureWindowsProcessIdentity(&node)
 		if identityErr != nil {
 			if isTransientProcessIdentityError(identityErr) {
 				continue
 			}
 			t.Fatalf("capture tracked %s process %d: %v", filepath.Base(node.exe), rawPID, identityErr)
 		}
-		node.identity = identity
+		node.identity = ownedIdentity
 		if strings.EqualFold(node.exe, wantFZF) {
 			fzfCount++
 		}
-		tracked = append(tracked, trackedProcess{role: filepath.Base(node.exe), identity: identity})
+		tracked = append(tracked, trackedProcess{role: filepath.Base(node.exe), identity: ownedIdentity})
 	}
 	if fzfCount != 1 {
-		t.Fatalf("tracked fzf descendant count=%d want 1; descendants=%+v", fzfCount, pids)
+		t.Fatalf("tracked fzf descendant count=%d want 1; descendants=%+v", fzfCount, keys)
 	}
 	return registerTrackedProcesses(t, tracked)
 }

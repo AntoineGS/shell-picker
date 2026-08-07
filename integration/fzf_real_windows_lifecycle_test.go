@@ -193,6 +193,45 @@ func TestWindowsPreWaitCleanupRetainsHandlesAfterWaitTimeout(t *testing.T) {
 	}
 }
 
+func TestWindowsPreWaitCleanupRetainsCloseFailureAfterSuccessfulWait(t *testing.T) {
+	recorder := &windowsLifecycleRecorder{}
+	ops := recorder.ops()
+	baseClose := ops.closeHandle
+	want := errors.New("result write close failure")
+	failed := true
+	ops.closeHandle = func(handle windows.Handle) error {
+		if handle == 8 && failed {
+			failed = false
+			return want
+		}
+		return baseClose(handle)
+	}
+	ops.waitForSingleObject = func(windows.Handle, uint32) (uint32, error) {
+		return windows.WAIT_OBJECT_0, nil
+	}
+	session := &windowsTerminalSession{ops: ops, process: 5, waitHandle: 7, resultWrite: 8, cleanupTimeout: time.Second}
+
+	if err := session.Close(); !errors.Is(err, want) {
+		t.Fatalf("first session.Close() = %v, want close failure", err)
+	}
+	if session.resultWrite != 8 {
+		t.Fatalf("failed result-write close lost ownership: handle=%d, want 8", session.resultWrite)
+	}
+	if session.process != 0 || session.waitHandle != 0 {
+		t.Fatalf("successful process wait retained process ownership: process=%d wait=%d", session.process, session.waitHandle)
+	}
+	if recorder.closed[8] != 0 {
+		t.Fatalf("failed result-write close count=%d, want 0", recorder.closed[8])
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("second session.Close() = %v", err)
+	}
+	if session.resultWrite != 0 || recorder.closed[8] != 1 {
+		t.Fatalf("retry result-write ownership=%d closes=%d, want zero and one close", session.resultWrite, recorder.closed[8])
+	}
+}
+
 func TestWindowsProductionRootIdentityClosesDuringSessionCleanup(t *testing.T) {
 	recorder := &windowsLifecycleRecorder{}
 	identity := &fakeProcessIdentity{pid: 202}

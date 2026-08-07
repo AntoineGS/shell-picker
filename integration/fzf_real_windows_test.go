@@ -261,6 +261,31 @@ func TestWindowsTerminalSupportsPowerShellConPTYRoot(t *testing.T) {
 	windowsTerm.AssertPowerShellBootstrapTopology(t)
 }
 
+func TestWindowsTerminalSupportsPowerShellConPTYRootRepeated(t *testing.T) {
+	powershell := requirePowerShell(t)
+	bootstrap := requireConPTYBootstrap(t)
+	for iteration := 0; iteration < 3; iteration++ {
+		t.Run(fmt.Sprintf("iteration-%d", iteration+1), func(t *testing.T) {
+			term := newTerminalSession(t, terminalConfig{
+				Path: powershell, BootstrapPath: bootstrap, ProductionRootPath: powershell,
+				Args:        []string{"-NoLogo", "-NoProfile", "-NoExit", "-Command", "$function:prompt={'SP> '}"},
+				Environment: os.Environ(), Columns: 120, Lines: 35, DisablePickerTrace: true,
+			})
+			windowsTerm, ok := term.(*windowsTerminalSession)
+			if !ok {
+				_ = term.Close()
+				t.Fatalf("PowerShell terminal type=%T, want *windowsTerminalSession", term)
+			}
+			waitForCurrentScreenTextAfter(t, term, 0, "SP>")
+			windowsTerm.AssertPowerShellBootstrapTopology(t)
+			if err := term.Close(); err != nil {
+				t.Fatalf("close PowerShell terminal: %v", err)
+			}
+			windowsTerm.AssertNoLiveDescendants(t)
+		})
+	}
+}
+
 func TestWindowsPrepareLaunchConfig(t *testing.T) {
 	original := terminalConfig{Path: `C:\pwsh.exe`, Args: []string{"-NoLogo", "-NoExit"}, ProductionRootPath: `C:\pwsh.exe`}
 	prepared, err := prepareWindowsLaunchConfig(terminalConfig{Path: original.Path, Args: original.Args, BootstrapPath: `C:\bootstrap.exe`, ProductionRootPath: original.ProductionRootPath})
