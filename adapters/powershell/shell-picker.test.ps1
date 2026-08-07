@@ -235,6 +235,70 @@ function Set-TestProcessFactory {
     } @($Process)
 }
 
+function New-TestSpaceRuntime {
+    param(
+        [string]$Buffer,
+        [int]$Cursor,
+        [int]$SelectionLength,
+        [object]$State
+    )
+
+    $getBufferState = {
+        $State.BufferCalls++
+        return [pscustomobject]@{
+            Buffer = $Buffer
+            Cursor = $Cursor
+        }
+    }.GetNewClosure()
+    $getSelectionState = {
+        $State.SelectionCalls++
+        return $SelectionLength
+    }.GetNewClosure()
+    $selfInsert = {
+        param($Key, $Argument)
+        $State.SelfInsertCalls++
+        $State.LastKey = $Key
+        $State.LastArgument = $Argument
+        [void]$State.Events.Add('self-insert')
+    }.GetNewClosure()
+    $invokePicker = {
+        param([string]$Operation)
+        $State.PickerCalls++
+        $State.LastOperation = $Operation
+        [void]$State.Events.Add('picker')
+    }.GetNewClosure()
+
+    return [pscustomobject]@{
+        GetBufferState = $getBufferState
+        GetSelectionState = $getSelectionState
+        SelfInsert = $selfInsert
+        InvokePicker = $invokePicker
+    }
+}
+
+function Set-TestSpaceRuntime {
+    param([object]$Runtime)
+
+    Invoke-ModulePrivate {
+        param([object]$InjectedRuntime)
+        $script:SpaceRuntime = $InjectedRuntime
+    } @($Runtime)
+}
+
+function Invoke-TestSpace {
+    param(
+        [object]$Key,
+        [object]$Argument,
+        [object]$Runtime
+    )
+
+    Set-TestSpaceRuntime -Runtime $Runtime
+    Invoke-ModulePrivate {
+        param($Key, $Argument)
+        & $script:SpaceHandler $Key $Argument
+    } @($Key, $Argument)
+}
+
 function Test-ManifestContract {
     $manifestPath = Join-Path $PSScriptRoot 'shell-picker.psd1'
     Assert-True (Test-Path -LiteralPath $manifestPath -PathType Leaf) 'adapter manifest exists'
@@ -399,6 +463,68 @@ function Test-ProcessResultAndCleanup {
     Assert-Equal 1 $failedDrainProcess.DisposeCalls 'failed process is disposed'
 }
 
+function Test-NativeSpaceBehavior {
+    $selectedState = [pscustomobject]@{
+        BufferCalls = 0
+        SelectionCalls = 0
+        SelfInsertCalls = 0
+        PickerCalls = 0
+        LastKey = $null
+        LastArgument = $null
+        LastOperation = $null
+        Events = [System.Collections.Generic.List[string]]::new()
+    }
+    $selectedRuntime = New-TestSpaceRuntime -Buffer 'cd' -Cursor 2 -SelectionLength 1 -State $selectedState
+    $selectedArgument = [pscustomobject]@{ Repeat = 'selected' }
+    Invoke-TestSpace -Key 'Spacebar' -Argument $selectedArgument -Runtime $selectedRuntime
+    Assert-Equal 1 $selectedState.BufferCalls 'selected input reads the buffer'
+    Assert-Equal 1 $selectedState.SelectionCalls 'selected input reads the selection state'
+    Assert-Equal 1 $selectedState.SelfInsertCalls 'selected input self-inserts once'
+    Assert-Equal 0 $selectedState.PickerCalls 'selected exact cd does not trigger the picker'
+    Assert-Equal 'Spacebar' $selectedState.LastKey 'selected input preserves the native key argument'
+    Assert-True ([object]::ReferenceEquals($selectedArgument, $selectedState.LastArgument)) 'selected input preserves the native repeat argument'
+    Assert-Sequence @('self-insert') $selectedState.Events 'selected input self-inserts without picker dispatch'
+
+    $nontriggerState = [pscustomobject]@{
+        BufferCalls = 0
+        SelectionCalls = 0
+        SelfInsertCalls = 0
+        PickerCalls = 0
+        LastKey = $null
+        LastArgument = $null
+        LastOperation = $null
+        Events = [System.Collections.Generic.List[string]]::new()
+    }
+    $nontriggerRuntime = New-TestSpaceRuntime -Buffer 'echo' -Cursor 4 -SelectionLength 0 -State $nontriggerState
+    $nontriggerArgument = [pscustomobject]@{ Repeat = 'nontrigger' }
+    Invoke-TestSpace -Key 'Spacebar' -Argument $nontriggerArgument -Runtime $nontriggerRuntime
+    Assert-Equal 1 $nontriggerState.SelfInsertCalls 'nontrigger input self-inserts once'
+    Assert-Equal 0 $nontriggerState.PickerCalls 'nontrigger input does not trigger the picker'
+    Assert-Equal 'Spacebar' $nontriggerState.LastKey 'nontrigger input preserves the native key argument'
+    Assert-True ([object]::ReferenceEquals($nontriggerArgument, $nontriggerState.LastArgument)) 'nontrigger input preserves the repeat argument'
+    Assert-Sequence @('self-insert') $nontriggerState.Events 'nontrigger input only self-inserts'
+
+    $triggerState = [pscustomobject]@{
+        BufferCalls = 0
+        SelectionCalls = 0
+        SelfInsertCalls = 0
+        PickerCalls = 0
+        LastKey = $null
+        LastArgument = $null
+        LastOperation = $null
+        Events = [System.Collections.Generic.List[string]]::new()
+    }
+    $triggerRuntime = New-TestSpaceRuntime -Buffer 'cd' -Cursor 2 -SelectionLength 0 -State $triggerState
+    $triggerArgument = [pscustomobject]@{ Repeat = 'trigger' }
+    Invoke-TestSpace -Key 'Spacebar' -Argument $triggerArgument -Runtime $triggerRuntime
+    Assert-Equal 1 $triggerState.SelfInsertCalls 'unselected exact cd self-inserts once'
+    Assert-Equal 1 $triggerState.PickerCalls 'unselected exact cd triggers the picker once'
+    Assert-Equal 'cd' $triggerState.LastOperation 'unselected exact cd dispatches cd'
+    Assert-Equal 'Spacebar' $triggerState.LastKey 'trigger input preserves the native key argument'
+    Assert-True ([object]::ReferenceEquals($triggerArgument, $triggerState.LastArgument)) 'trigger input preserves the repeat argument'
+    Assert-Sequence @('self-insert', 'picker') $triggerState.Events 'unselected exact cd dispatches only after self-insert'
+}
+
 function Test-SourceSafetyGuards {
     $modulePath = Join-Path $PSScriptRoot 'shell-picker.psm1'
     $source = [System.IO.File]::ReadAllText($modulePath)
@@ -462,9 +588,12 @@ function Test-SourceSafetyGuards {
     Assert-Equal 0 $environmentVariables.Count 'module does not mutate or inject environment variables'
 
     Assert-True ($source -match '\[Microsoft\.PowerShell\.PSConsoleReadLine\]::GetBufferState') 'Spacebar handler reads the buffer state'
-    Assert-True ($source -match '\[Microsoft\.PowerShell\.PSConsoleReadLine\]::Insert\(') 'Spacebar handler always inserts through PSReadLine'
+    Assert-True ($source -match '\[Microsoft\.PowerShell\.PSConsoleReadLine\]::SelfInsert\(\$Key,\s*\$Argument\)') 'Spacebar handler preserves native PSReadLine self-insert behavior'
+    Assert-False ($source -match '\[Microsoft\.PowerShell\.PSConsoleReadLine\]::Insert\(') 'Spacebar handler does not bypass native self-insert behavior'
+    Assert-True ($source -match '\[Microsoft\.PowerShell\.PSConsoleReadLine\]::GetSelectionState') 'Spacebar handler reads PSReadLine selection state'
     Assert-True ($source -match '\[Microsoft\.PowerShell\.PSConsoleReadLine\]::Replace\(') 'Spacebar handler replaces through PSReadLine'
     Assert-True ($source -match '\[Microsoft\.PowerShell\.PSConsoleReadLine\]::InvokePrompt\(') 'directory changes refresh the prompt through PSReadLine'
+    Assert-True ($source -match 'Invoke-ShellPickerSpace\s+-Key\s+\$Key\s+-Argument\s+\$Argument') 'stable Spacebar handler passes Key and Argument into the space helper'
 }
 
 Test-ManifestContract
@@ -472,6 +601,7 @@ Test-ModuleExports
 Test-RegistrationAndResolution
 Test-ProcessStartInfoContract
 Test-ProcessResultAndCleanup
+Test-NativeSpaceBehavior
 Test-SourceSafetyGuards
 
 Write-Output "PowerShell adapter tests: PASS ($script:AssertionCount assertions)"

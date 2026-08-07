@@ -123,18 +123,8 @@ function Invoke-ShellPickerProcess {
     }
 }
 
-$script:SpaceHandler = {
-    param($Key, $Arg)
-
-    $buffer = ''
-    $cursor = 0
-    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$buffer, [ref]$cursor)
-    $operation = Get-ShellPickerOperation -Buffer $buffer -Cursor $cursor
-    [Microsoft.PowerShell.PSConsoleReadLine]::Insert(' ')
-
-    if ($null -eq $operation) {
-        return
-    }
+function Invoke-ShellPickerOperation {
+    param([string]$Operation)
 
     try {
         $location = Get-Location -ErrorAction Stop
@@ -173,6 +163,67 @@ $script:SpaceHandler = {
     catch {
         return
     }
+}
+
+$script:SpaceRuntime = [pscustomobject]@{
+    GetBufferState = {
+        $buffer = ''
+        $cursor = 0
+        [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$buffer, [ref]$cursor)
+        return [pscustomobject]@{
+            Buffer = $buffer
+            Cursor = $cursor
+        }
+    }
+    GetSelectionState = {
+        $selectionStart = 0
+        $selectionLength = 0
+        [Microsoft.PowerShell.PSConsoleReadLine]::GetSelectionState([ref]$selectionStart, [ref]$selectionLength)
+        return $selectionLength
+    }
+    SelfInsert = {
+        param($Key, $Argument)
+        [Microsoft.PowerShell.PSConsoleReadLine]::SelfInsert($Key, $Argument)
+    }
+    InvokePicker = {
+        param([string]$Operation)
+        Invoke-ShellPickerOperation -Operation $Operation
+    }
+}
+
+function Invoke-ShellPickerSpace {
+    param(
+        [AllowNull()]
+        [object]$Key,
+        [AllowNull()]
+        [object]$Argument
+    )
+
+    try {
+        $getBufferState = $script:SpaceRuntime.GetBufferState
+        $bufferState = & $getBufferState
+        $getSelectionState = $script:SpaceRuntime.GetSelectionState
+        $selectionLength = [int](& $getSelectionState)
+        $operation = Get-ShellPickerOperation -Buffer $bufferState.Buffer -Cursor $bufferState.Cursor
+
+        $selfInsert = $script:SpaceRuntime.SelfInsert
+        & $selfInsert $Key $Argument
+
+        if (($selectionLength -gt 0) -or ($null -eq $operation)) {
+            return
+        }
+
+        $invokePicker = $script:SpaceRuntime.InvokePicker
+        & $invokePicker $operation
+    }
+    catch {
+        return
+    }
+}
+
+$script:SpaceHandler = {
+    param($Key, $Argument)
+    Invoke-ShellPickerSpace -Key $Key -Argument $Argument
 }
 
 function Register-ShellPicker {
