@@ -148,8 +148,15 @@ function Invoke-ShellPickerOperation {
 
         if ($operation -ceq 'cd') {
             Set-Location -LiteralPath $parsed.Paths[0] -ErrorAction Stop
-            [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, 3, '')
-            [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt()
+            $previousOutputEncoding = [Console]::OutputEncoding
+            try {
+                [Console]::OutputEncoding = [Text.Encoding]::UTF8
+                [Microsoft.PowerShell.PSConsoleReadLine]::Replace(0, 3, '')
+                [Microsoft.PowerShell.PSConsoleReadLine]::InvokePrompt()
+            }
+            finally {
+                [Console]::OutputEncoding = $previousOutputEncoding
+            }
             return
         }
 
