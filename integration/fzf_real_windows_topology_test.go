@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -56,6 +57,51 @@ func windowsDescendantPIDs(nodes map[uint32]windowsProcessNode, root uint32) map
 	return descendants
 }
 
+func TestWindowsProductionRoot(t *testing.T) {
+	tests := []struct {
+		name          string
+		bootstrapPID  int
+		productionPID int
+		want          int
+	}{
+		{name: "normal launch", bootstrapPID: 101, want: 101},
+		{name: "PowerShell bootstrap", bootstrapPID: 101, productionPID: 202, want: 202},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			session := &windowsTerminalSession{pid: test.bootstrapPID, productionPID: test.productionPID}
+			if got := session.productionRootPID(); got != test.want {
+				t.Fatalf("productionRootPID() = %d, want %d", got, test.want)
+			}
+			if got := session.PID(); got != test.want {
+				t.Fatalf("PID() = %d, want production root %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWindowsProcessTreeExitWaitRetriesTransientDescendants(t *testing.T) {
+	root := uint32(101)
+	snapshots := []map[uint32]windowsProcessNode{
+		{
+			root: {pid: root, ppid: 1},
+			202:  {pid: 202, ppid: root},
+		},
+		{},
+	}
+	calls := 0
+	err := waitForWindowsProcessTreeExit(int(root), time.Now().Add(time.Second), func() (map[uint32]windowsProcessNode, error) {
+		calls++
+		return snapshots[min(calls-1, len(snapshots)-1)], nil
+	})
+	if err != nil {
+		t.Fatalf("waitForWindowsProcessTreeExit() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("snapshot calls = %d, want 2", calls)
+	}
+}
+
 func (session *windowsTerminalSession) AssertPowerShellBootstrapTopology(t *testing.T) {
 	t.Helper()
 	nodes, err := snapshotWindowsProcesses(true)
@@ -67,14 +113,14 @@ func (session *windowsTerminalSession) AssertPowerShellBootstrapTopology(t *test
 	if !ok || root.queryErr != nil {
 		t.Fatalf("bootstrap root %d missing or unqueryable: %+v", rootPID, root)
 	}
-	wantRoot, err := filepath.Abs(session.rootPath)
+	wantRoot, err := filepath.Abs(session.bootstrapPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.EqualFold(root.exe, wantRoot) {
 		t.Fatalf("bootstrap root executable=%q, want %q", root.exe, wantRoot)
 	}
-	wantPowerShell, err := filepath.Abs(session.expectedRootChildPath)
+	wantPowerShell, err := filepath.Abs(session.productionRootPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +151,9 @@ func (session *windowsTerminalSession) AssertPowerShellBootstrapTopology(t *test
 	if session.productionPID != int(powershellPID) {
 		t.Fatalf("production recorder root=%d, want PowerShell pid %d", session.productionPID, powershellPID)
 	}
+	if session.PID() != int(powershellPID) {
+		t.Fatalf("session PID=%d, want PowerShell pid %d", session.PID(), powershellPID)
+	}
 	for _, record := range session.DescendantProcessRecords(t) {
 		if record.PID == int(rootPID) {
 			t.Fatalf("bootstrap helper pid %d included in production descendant records: %+v", rootPID, record)
@@ -118,7 +167,8 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	descendants := map[uint32]bool{uint32(session.pid): true}
+	root := uint32(session.productionRootPID())
+	descendants := map[uint32]bool{root: true}
 	for changed := true; changed; {
 		changed = false
 		for pid, node := range nodes {
@@ -133,7 +183,7 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 	}
 	fzfCount := 0
 	for pid := range descendants {
-		if pid == uint32(session.pid) {
+		if pid == root {
 			continue
 		}
 		node := nodes[pid]
@@ -159,8 +209,8 @@ func (session *windowsTerminalSession) AssertProcessTopology(t *testing.T) {
 				}
 			})
 			fzfCount++
-			if node.ppid != uint32(session.pid) {
-				t.Fatalf("fzf pid %d parent=%d want %d", pid, node.ppid, session.pid)
+			if node.ppid != root {
+				t.Fatalf("fzf pid %d parent=%d want %d", pid, node.ppid, root)
 			}
 		}
 		switch strings.ToLower(filepath.Base(node.exe)) {
@@ -192,7 +242,7 @@ func (session *windowsTerminalSession) FZFCommandLine(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := uint32(session.pid)
+	root := uint32(session.productionRootPID())
 	descendants := map[uint32]bool{root: true}
 	for changed := true; changed; {
 		changed = false
@@ -235,7 +285,7 @@ func (session *windowsTerminalSession) DescendantProcessRecords(t *testing.T) []
 		session.recorder.CaptureAndWait()
 		return session.recorder.Records()
 	}
-	records, err := snapshotDescendantProcessRecords(session.pid)
+	records, err := snapshotDescendantProcessRecords(session.productionRootPID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +355,7 @@ func (session *windowsTerminalSession) TrackLiveDescendants(t *testing.T) []trac
 	if err != nil {
 		t.Fatal(err)
 	}
-	root := uint32(session.pid)
+	root := uint32(session.productionRootPID())
 	if _, exists := nodes[root]; !exists {
 		t.Fatalf("picker root %d missing while tracking descendants", root)
 	}

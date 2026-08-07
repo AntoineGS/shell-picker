@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -21,36 +22,37 @@ import (
 )
 
 type windowsTerminalSession struct {
-	ops                   windowsTerminalOps
-	t                     *testing.T
-	console               windows.Handle
-	input                 windows.Handle
-	output                windows.Handle
-	result                windows.Handle
-	resultWrite           windows.Handle
-	standardInput         windows.Handle
-	trace                 windows.Handle
-	tracePath             string
-	traceFactory          func(string, bool) (windows.Handle, error)
-	traceMu               sync.Mutex
-	traceHandles          map[windows.Handle]struct{}
-	traceListeners        map[windows.Handle]struct{}
-	traceIO               map[windows.Handle]*windows.Overlapped
-	traceListener         windows.Handle
-	traceAcceptStop       chan struct{}
-	traceAcceptOnce       sync.Once
-	traceAcceptorsReady   chan struct{}
-	traceAcceptorsOnce    sync.Once
-	process               windows.Handle // control handle; waiter owns a duplicate
-	pid                   int
-	rootPath              string
-	productionPID         int
-	expectedRootChildPath string
-	fzfPath               string
-	argvCanaries          []string
-	sidecar               bool
-	recorder              *descendantRecorder
-	handleMu              sync.Mutex
+	ops                 windowsTerminalOps
+	t                   *testing.T
+	console             windows.Handle
+	input               windows.Handle
+	output              windows.Handle
+	result              windows.Handle
+	resultWrite         windows.Handle
+	standardInput       windows.Handle
+	trace               windows.Handle
+	tracePath           string
+	traceFactory        func(string, bool) (windows.Handle, error)
+	traceMu             sync.Mutex
+	traceHandles        map[windows.Handle]struct{}
+	traceListeners      map[windows.Handle]struct{}
+	traceIO             map[windows.Handle]*windows.Overlapped
+	traceListener       windows.Handle
+	traceAcceptStop     chan struct{}
+	traceAcceptOnce     sync.Once
+	traceAcceptorsReady chan struct{}
+	traceAcceptorsOnce  sync.Once
+	process             windows.Handle // control handle; waiter owns a duplicate
+	launchInformation   windows.ProcessInformation
+	pid                 int
+	productionPID       int
+	bootstrapPath       string
+	productionRootPath  string
+	fzfPath             string
+	argvCanaries        []string
+	sidecar             bool
+	recorder            *descendantRecorder
+	handleMu            sync.Mutex
 
 	outputMu      sync.Mutex
 	buffer        bytes.Buffer
@@ -124,6 +126,21 @@ func closeWindowsHandles(closeHandle func(windows.Handle) error, handles ...wind
 	return
 }
 
+func prepareWindowsLaunchConfig(config terminalConfig) (terminalConfig, error) {
+	if config.BootstrapPath == "" {
+		if config.ProductionRootPath != "" {
+			return terminalConfig{}, errors.New("ProductionRootPath requires BootstrapPath")
+		}
+		return config, nil
+	}
+	if config.ProductionRootPath == "" {
+		return terminalConfig{}, errors.New("BootstrapPath requires ProductionRootPath")
+	}
+	config.Args = append([]string{config.Path}, config.Args...)
+	config.Path = config.BootstrapPath
+	return config, nil
+}
+
 func closeWindowsProcessInformation(session *windowsTerminalSession, information *windows.ProcessInformation) error {
 	var err error
 	if information.Thread != 0 {
@@ -170,19 +187,30 @@ func closeWindowsLaunchHandles(session *windowsTerminalSession, information *win
 			if information.Process != 0 {
 				_ = session.ops.terminateProcess(information.Process, 1)
 			}
-			return errors.Join(threadErr, closeWindowsProcessInformation(session, information))
+			return threadErr
 		}
 	}
 	return nil
 }
 
-func windowsStartupInfo(config terminalConfig, standardInput, resultWrite windows.Handle) windows.StartupInfoEx {
-	var startup windows.StartupInfoEx
-	if !config.TerminalOwnsStandardStreams {
-		startup.Flags = windows.STARTF_USESTDHANDLES
-		startup.StdInput, startup.StdOutput, startup.StdErr = standardInput, resultWrite, resultWrite
+func launchWindowsProcess(session *windowsTerminalSession, start func(*windows.ProcessInformation) error) error {
+	var information windows.ProcessInformation
+	if err := start(&information); err != nil {
+		return err
 	}
-	return startup
+	session.launchInformation = information
+	return closeWindowsLaunchHandles(session, &session.launchInformation)
+}
+
+func windowsStartupInfo(standardInput, resultWrite windows.Handle) windows.StartupInfoEx {
+	return windows.StartupInfoEx{
+		StartupInfo: windows.StartupInfo{
+			Flags:     windows.STARTF_USESTDHANDLES,
+			StdInput:  standardInput,
+			StdOutput: resultWrite,
+			StdErr:    resultWrite,
+		},
+	}
 }
 
 func defaultWindowsTerminalFactory() windowsTerminalFactory {
@@ -206,7 +234,8 @@ func defaultWindowsTerminalFactory() windowsTerminalFactory {
 }
 
 func TestWindowsTerminalSupportsPowerShellConPTYRoot(t *testing.T) {
-	term := newTerminalSession(t, terminalConfig{Path: requirePowerShell(t), Args: []string{"-NoLogo", "-NoProfile", "-NoExit", "-Command", "$function:prompt={'SP> '}"}, Environment: os.Environ(), Columns: 120, Lines: 35, DisablePickerTrace: true, TerminalOwnsStandardStreams: true})
+	powershell := requirePowerShell(t)
+	term := newTerminalSession(t, terminalConfig{Path: powershell, BootstrapPath: requireConPTYBootstrap(t), ProductionRootPath: powershell, Args: []string{"-NoLogo", "-NoProfile", "-NoExit", "-Command", "$function:prompt={'SP> '}"}, Environment: os.Environ(), Columns: 120, Lines: 35, DisablePickerTrace: true})
 	var windowsTerm *windowsTerminalSession
 	var ok bool
 	t.Cleanup(func() {
@@ -223,6 +252,49 @@ func TestWindowsTerminalSupportsPowerShellConPTYRoot(t *testing.T) {
 		t.Fatalf("PowerShell terminal type=%T, want *windowsTerminalSession", term)
 	}
 	windowsTerm.AssertPowerShellBootstrapTopology(t)
+}
+
+func TestWindowsPrepareLaunchConfig(t *testing.T) {
+	original := terminalConfig{Path: `C:\pwsh.exe`, Args: []string{"-NoLogo", "-NoExit"}, ProductionRootPath: `C:\pwsh.exe`}
+	prepared, err := prepareWindowsLaunchConfig(terminalConfig{Path: original.Path, Args: original.Args, BootstrapPath: `C:\bootstrap.exe`, ProductionRootPath: original.ProductionRootPath})
+	if err != nil {
+		t.Fatalf("prepareWindowsLaunchConfig() error = %v", err)
+	}
+	if prepared.Path != `C:\bootstrap.exe` {
+		t.Fatalf("prepared path = %q, want bootstrap", prepared.Path)
+	}
+	if !reflect.DeepEqual(prepared.Args, append([]string{original.Path}, original.Args...)) {
+		t.Fatalf("prepared args = %#v, want production path followed by original args", prepared.Args)
+	}
+	if prepared.ProductionRootPath != original.ProductionRootPath {
+		t.Fatalf("prepared production root = %q, want %q", prepared.ProductionRootPath, original.ProductionRootPath)
+	}
+
+	unchanged := terminalConfig{Path: `C:\fzf.exe`, Args: []string{"--listen"}, Environment: []string{"A=B"}, ExpectedFZFPath: `C:\fzf.exe`}
+	got, err := prepareWindowsLaunchConfig(unchanged)
+	if err != nil {
+		t.Fatalf("prepareWindowsLaunchConfig() without bootstrap error = %v", err)
+	}
+	if !reflect.DeepEqual(got, unchanged) {
+		t.Fatalf("config without bootstrap changed: got %#v, want %#v", got, unchanged)
+	}
+
+	if _, err := prepareWindowsLaunchConfig(terminalConfig{Path: `C:\pwsh.exe`, BootstrapPath: `C:\bootstrap.exe`}); err == nil {
+		t.Fatal("prepareWindowsLaunchConfig() without production root succeeded")
+	}
+	if _, err := prepareWindowsLaunchConfig(terminalConfig{Path: `C:\pwsh.exe`, ProductionRootPath: `C:\pwsh.exe`}); err == nil {
+		t.Fatal("prepareWindowsLaunchConfig() without bootstrap succeeded")
+	}
+}
+
+func TestWindowsStartupInfoUsesHarnessHandles(t *testing.T) {
+	startup := windowsStartupInfo(8, 9)
+	if startup.Flags != windows.STARTF_USESTDHANDLES {
+		t.Fatalf("startup flags = %#x, want %#x", startup.Flags, windows.STARTF_USESTDHANDLES)
+	}
+	if startup.StdInput != 8 || startup.StdOutput != 9 || startup.StdErr != 9 {
+		t.Fatalf("startup standard handles = %d,%d,%d, want 8,9,9", startup.StdInput, startup.StdOutput, startup.StdErr)
+	}
 }
 
 var conPTYBootstrapBinary struct {
@@ -256,15 +328,6 @@ func requireConPTYBootstrap(t *testing.T) string {
 		t.Fatal(conPTYBootstrapBinary.err)
 	}
 	return conPTYBootstrapBinary.path
-}
-
-func isPowerShellExecutable(path string) bool {
-	switch strings.ToLower(filepath.Base(path)) {
-	case "pwsh", "pwsh.exe", "powershell", "powershell.exe":
-		return true
-	default:
-		return false
-	}
 }
 
 func TestWindowsCloseProcessInformationRetainsFailedHandleForRetry(t *testing.T) {
@@ -321,13 +384,53 @@ func TestWindowsCloseProcessInformationRetainsFailedHandleForRetry(t *testing.T)
 	}
 }
 
-func TestWindowsConPTYStartupInfoGenericLeavesStandardHandlesUnset(t *testing.T) {
-	startup := windowsStartupInfo(terminalConfig{TerminalOwnsStandardStreams: true}, 8, 9)
-	if startup.Flags != 0 {
-		t.Fatalf("generic startup flags=%#x, want zero", startup.Flags)
-	}
-	if startup.StdInput != 0 || startup.StdOutput != 0 || startup.StdErr != 0 {
-		t.Fatalf("generic standard handles=%d,%d,%d, want zero", startup.StdInput, startup.StdOutput, startup.StdErr)
+func TestWindowsActualLaunchRetainsProcessInformationHandleAfterCloseFailure(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		failed        windows.Handle
+		triggerLaunch bool
+		want          func(windows.ProcessInformation) windows.Handle
+	}{
+		{name: "process", failed: 5, triggerLaunch: true, want: func(information windows.ProcessInformation) windows.Handle { return information.Process }},
+		{name: "thread", failed: 6, want: func(information windows.ProcessInformation) windows.Handle { return information.Thread }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &windowsLifecycleRecorder{}
+			ops := recorder.ops()
+			closeHandle := ops.closeHandle
+			failed := true
+			closeLaunchHandle := true
+			want := errors.New("injected launch close failure")
+			ops.closeHandle = func(handle windows.Handle) error {
+				if test.triggerLaunch && handle == 8 && closeLaunchHandle {
+					closeLaunchHandle = false
+					return want
+				}
+				if handle == test.failed && failed {
+					failed = false
+					return want
+				}
+				return closeHandle(handle)
+			}
+			session := &windowsTerminalSession{ops: ops, resultWrite: 8, standardInput: 9}
+
+			err := launchWindowsProcess(session, func(information *windows.ProcessInformation) error {
+				*information = windows.ProcessInformation{Process: 5, Thread: 6, ProcessId: 5}
+				return nil
+			})
+			if !errors.Is(err, want) {
+				t.Fatalf("launchWindowsProcess() error = %v, want injected close failure", err)
+			}
+			if got := test.want(session.launchInformation); got != test.failed {
+				t.Fatalf("launch information retained handle = %d, want %d", got, test.failed)
+			}
+			if err := session.Close(); err != nil {
+				t.Fatalf("session.Close() retry = %v", err)
+			}
+			if session.launchInformation.Process != 0 || session.launchInformation.Thread != 0 {
+				t.Fatalf("launch information after retry = %+v, want zero handles", session.launchInformation)
+			}
+		})
 	}
 }
 
@@ -398,13 +501,10 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 	if err != nil {
 		return nil, "", errors.Join(fmt.Errorf("create ConPTY output pipe: %w", err), closeWindowsHandles(factory.ops.closeHandle, inputRead, inputWrite))
 	}
-	var resultRead, resultWrite windows.Handle
-	if !config.TerminalOwnsStandardStreams {
-		resultRead, resultWrite, err = factory.createResultPipe()
-		if err != nil {
-			return nil, "", errors.Join(fmt.Errorf("create picker result pipe: %w", err),
-				closeWindowsHandles(factory.ops.closeHandle, inputRead, inputWrite, outputRead, outputWrite))
-		}
+	resultRead, resultWrite, err := factory.createResultPipe()
+	if err != nil {
+		return nil, "", errors.Join(fmt.Errorf("create picker result pipe: %w", err),
+			closeWindowsHandles(factory.ops.closeHandle, inputRead, inputWrite, outputRead, outputWrite))
 	}
 	console, err := factory.createPseudoConsole(windows.Coord{X: int16(config.Columns), Y: int16(config.Lines)}, inputRead, outputWrite)
 	if err != nil {
@@ -412,9 +512,6 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 			closeWindowsHandles(factory.ops.closeHandle, inputRead, inputWrite, outputRead, outputWrite, resultRead, resultWrite))
 	}
 	resultDone := make(chan struct{})
-	if config.TerminalOwnsStandardStreams {
-		close(resultDone)
-	}
 	traceDone := make(chan struct{})
 	if config.DisablePickerTrace {
 		close(traceDone)
@@ -452,13 +549,9 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 
 func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	t.Helper()
-	// A PowerShell root needs console handles established inside an isolated
-	// process; the go test runner's redirected standard handles are not safe
-	// to pass through the generic ConPTY launch.
-	if config.TerminalOwnsStandardStreams && config.ExpectedRootChildPath == "" && isPowerShellExecutable(config.Path) {
-		config.ExpectedRootChildPath = config.Path
-		config.Path = requireConPTYBootstrap(t)
-		config.Args = append([]string{config.ExpectedRootChildPath}, config.Args...)
+	var err error
+	if config, err = prepareWindowsLaunchConfig(config); err != nil {
+		t.Fatalf("prepare Windows launch config: %v", err)
 	}
 	environment, err := windowsEnvironment(config.Environment)
 	if err != nil {
@@ -472,8 +565,8 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		t.Fatalf("create Windows terminal resources: %v", err)
 	}
 	session.t = t
-	session.rootPath = config.Path
-	session.expectedRootChildPath = config.ExpectedRootChildPath
+	session.bootstrapPath = config.BootstrapPath
+	session.productionRootPath = config.ProductionRootPath
 	session.fzfPath = configuredFZFPath(config)
 	for _, entry := range config.Environment {
 		if strings.HasPrefix(strings.ToUpper(entry), "SHELL_PICKER_ADDR=") ||
@@ -511,14 +604,12 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		_ = session.Close()
 		t.Fatal(err)
 	}
-	if !config.TerminalOwnsStandardStreams {
-		standardInput, err := createWindowsInheritableNullInput()
-		if err != nil {
-			_ = session.Close()
-			t.Fatalf("create picker standard input: %v", err)
-		}
-		session.standardInput = standardInput
+	standardInput, err := createWindowsInheritableNullInput()
+	if err != nil {
+		_ = session.Close()
+		t.Fatalf("create picker standard input: %v", err)
 	}
+	session.standardInput = standardInput
 	args := append([]string{config.Path}, config.Args...)
 	if !config.DisablePickerTrace {
 		args = append(args, "--trace", tracePath)
@@ -541,33 +632,28 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 			t.Fatal(err)
 		}
 	}
-	startup := windowsStartupInfo(config, session.standardInput, session.resultWrite)
+	startup := windowsStartupInfo(session.standardInput, session.resultWrite)
 	startup.ProcThreadAttributeList = attributes.List()
 	startup.Cb = uint32(unsafe.Sizeof(startup))
-	var information windows.ProcessInformation
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
-	inheritHandles := !config.TerminalOwnsStandardStreams
-	if err = windows.CreateProcess(application, &commandLine[0], nil, nil, inheritHandles, flags, &environment[0], directory,
-		(*windows.StartupInfo)(unsafe.Pointer(&startup)), &information); err != nil {
+	if err := launchWindowsProcess(session, func(information *windows.ProcessInformation) error {
+		return windows.CreateProcess(application, &commandLine[0], nil, nil, true, flags, &environment[0], directory,
+			(*windows.StartupInfo)(unsafe.Pointer(&startup)), information)
+	}); err != nil {
 		_ = session.Close()
 		t.Fatalf("start picker in ConPTY: %v", err)
 	}
-	if err := closeWindowsLaunchHandles(session, &information); err != nil {
-		_ = session.Close()
-		t.Fatalf("close picker child handles: %v", err)
-	}
 	var waitHandle windows.Handle
-	if err := windows.DuplicateHandle(windows.CurrentProcess(), information.Process, windows.CurrentProcess(), &waitHandle,
+	if err := windows.DuplicateHandle(windows.CurrentProcess(), session.launchInformation.Process, windows.CurrentProcess(), &waitHandle,
 		0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
-		_ = session.ops.terminateProcess(information.Process, 1)
-		_ = session.ops.closeHandle(information.Process)
 		_ = session.Close()
 		t.Fatalf("duplicate picker wait handle: %v", err)
 	}
-	session.process, session.pid = information.Process, int(information.ProcessId)
+	session.process, session.pid = session.launchInformation.Process, int(session.launchInformation.ProcessId)
+	session.launchInformation.Process = 0
 	recordingRoot := session.pid
-	if config.ExpectedRootChildPath != "" {
-		productionPID, err := waitForWindowsDescendantProcess(session.pid, config.ExpectedRootChildPath, 30*time.Second)
+	if config.ProductionRootPath != "" {
+		productionPID, err := waitForWindowsDescendantProcess(session.pid, config.ProductionRootPath, 30*time.Second)
 		if err != nil {
 			_ = session.ops.terminateProcess(session.process, 1)
 			_ = session.Close()
@@ -579,11 +665,9 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	session.recorder.SetRoot(recordingRoot)
 	session.recorder.Capture()
 	session.waitStarted = true
-	session.resultStarted = !config.TerminalOwnsStandardStreams
+	session.resultStarted = true
 	go session.waitProcess(waitHandle)
-	if session.resultStarted {
-		go session.drainResult(session.result, session.resultDone)
-	}
+	go session.drainResult(session.result, session.resultDone)
 	return session
 }
 

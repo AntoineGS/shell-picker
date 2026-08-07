@@ -135,16 +135,16 @@ func assertTrackedProcessesGone(t *testing.T, tracked []trackedProcess) {
 }
 
 type terminalConfig struct {
-	Path                        string
-	Args                        []string
-	Environment                 []string
-	Directory                   string
-	Columns                     uint16
-	Lines                       uint16
-	DisablePickerTrace          bool
-	TerminalOwnsStandardStreams bool
-	ExpectedFZFPath             string
-	ExpectedRootChildPath       string
+	Path               string
+	Args               []string
+	Environment        []string
+	Directory          string
+	Columns            uint16
+	Lines              uint16
+	DisablePickerTrace bool
+	BootstrapPath      string
+	ProductionRootPath string
+	ExpectedFZFPath    string
 }
 
 func requireRealFZF(t *testing.T) string {

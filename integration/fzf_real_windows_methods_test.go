@@ -188,7 +188,51 @@ func (session *windowsTerminalSession) WaitBarrier(ctx context.Context, wanted b
 	}
 }
 
-func (session *windowsTerminalSession) PID() int { return session.pid }
+func (session *windowsTerminalSession) productionRootPID() int {
+	if session.productionPID != 0 {
+		return session.productionPID
+	}
+	return session.pid
+}
+
+func (session *windowsTerminalSession) PID() int { return session.productionRootPID() }
+
+func waitForWindowsProcessTreeExit(root int, deadline time.Time, snapshot func() (map[uint32]windowsProcessNode, error)) error {
+	if snapshot == nil {
+		snapshot = func() (map[uint32]windowsProcessNode, error) {
+			return snapshotWindowsProcesses(false)
+		}
+	}
+	for {
+		nodes, err := snapshot()
+		if err != nil {
+			return err
+		}
+		live := false
+		if node, ok := nodes[uint32(root)]; ok && node.queryErr == nil {
+			live = true
+		}
+		for pid := range windowsDescendantPIDs(nodes, uint32(root)) {
+			if node, ok := nodes[pid]; ok && node.queryErr == nil {
+				live = true
+				break
+			}
+		}
+		if !live {
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("wait for process tree rooted at %d: %w", root, process.ErrWaitDelay)
+		}
+		interval := 10 * time.Millisecond
+		if remaining < interval {
+			interval = remaining
+		}
+		timer := time.NewTimer(interval)
+		<-timer.C
+	}
+}
 
 func (session *windowsTerminalSession) Output() []byte {
 	session.outputMu.Lock()
@@ -364,6 +408,9 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 	if session.process != 0 && !windowsTerminalDone(session.waitDone) {
 		_ = session.ops.terminateProcess(session.process, 1)
 	}
+	if session.launchInformation.Process != 0 {
+		_ = session.ops.terminateProcess(session.launchInformation.Process, 1)
+	}
 	if session.console != 0 {
 		session.ops.closePseudoConsole(session.console)
 		session.console = 0
@@ -446,12 +493,19 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 		session.requestStop()
 		err = errors.Join(err, session.cancelTraceIO())
 	}
+	if processDone && session.productionPID != 0 {
+		err = errors.Join(err, waitForWindowsProcessTreeExit(session.productionPID, deadline, nil))
+	}
 	session.stopDescendantRecorder()
 	session.handleMu.Lock()
 	if processDone && session.process != 0 {
-		err = errors.Join(err, session.ops.closeHandle(session.process))
-		session.process = 0
+		closeErr := session.ops.closeHandle(session.process)
+		err = errors.Join(err, closeErr)
+		if closeErr == nil {
+			session.process = 0
+		}
 	}
+	err = errors.Join(err, closeWindowsProcessInformation(session, &session.launchInformation))
 	if outputDone {
 		session.output = 0
 	}
@@ -477,7 +531,8 @@ func (session *windowsTerminalSession) requestStop() {
 
 func (session *windowsTerminalSession) resourcesReleased() bool {
 	session.handleMu.Lock()
-	released := session.process == 0 && session.output == 0 && session.result == 0 && session.trace == 0
+	released := session.process == 0 && session.launchInformation.Process == 0 && session.launchInformation.Thread == 0 &&
+		session.output == 0 && session.result == 0 && session.trace == 0
 	session.handleMu.Unlock()
 	if !released {
 		return false
