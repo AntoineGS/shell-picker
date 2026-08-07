@@ -135,12 +135,15 @@ func assertTrackedProcessesGone(t *testing.T, tracked []trackedProcess) {
 }
 
 type terminalConfig struct {
-	Path        string
-	Args        []string
-	Environment []string
-	Directory   string
-	Columns     uint16
-	Lines       uint16
+	Path                        string
+	Args                        []string
+	Environment                 []string
+	Directory                   string
+	Columns                     uint16
+	Lines                       uint16
+	DisablePickerTrace          bool
+	TerminalOwnsStandardStreams bool
+	ExpectedFZFPath             string
 }
 
 func requireRealFZF(t *testing.T) string {
@@ -157,6 +160,38 @@ func requireRealFZF(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return absolute
+}
+
+func requirePowerShell(t *testing.T) string {
+	t.Helper()
+	var lookupErrors []error
+	for _, name := range []string{"pwsh.exe", "pwsh"} {
+		path, err := exec.LookPath(name)
+		if err == nil {
+			return path
+		}
+		if !errors.Is(err, exec.ErrNotFound) {
+			lookupErrors = append(lookupErrors, err)
+		}
+	}
+	if len(lookupErrors) != 0 {
+		t.Fatalf("look up PowerShell: %v", errors.Join(lookupErrors...))
+	}
+	t.Skip("PowerShell 7 (pwsh.exe or pwsh) is not installed")
+	return ""
+}
+
+func configuredFZFPath(config terminalConfig) string {
+	if config.ExpectedFZFPath != "" {
+		return config.ExpectedFZFPath
+	}
+	path := ""
+	for index, argument := range config.Args {
+		if argument == "--fzf" && index+1 < len(config.Args) {
+			path = config.Args[index+1]
+		}
+	}
+	return path
 }
 
 func realFZFSidecarEnabled(environment []string) bool {

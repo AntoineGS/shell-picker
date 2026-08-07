@@ -13,9 +13,10 @@ import (
 const descendantRecorderInterval = 2 * time.Millisecond
 
 type descendantProcessRecord struct {
-	PID         int
-	Identity    string
-	CommandLine string
+	PID             int
+	Identity        string
+	CommandLine     string
+	FirstObservedAt time.Time
 }
 
 type descendantSnapshot func(int) ([]descendantProcessRecord, error)
@@ -145,8 +146,16 @@ func (recorder *descendantRecorder) captureNow() {
 	defer recorder.mu.Unlock()
 	for _, record := range records {
 		key := fmt.Sprintf("%d\x00%s", record.PID, record.Identity)
-		if previous, ok := recorder.records[key]; ok && record.CommandLine == "" {
-			record.CommandLine = previous.CommandLine
+		if previous, ok := recorder.records[key]; ok {
+			if record.CommandLine == "" {
+				record.CommandLine = previous.CommandLine
+			}
+			if !previous.FirstObservedAt.IsZero() {
+				record.FirstObservedAt = previous.FirstObservedAt
+			}
+		}
+		if record.FirstObservedAt.IsZero() {
+			record.FirstObservedAt = time.Now()
 		}
 		recorder.records[key] = record
 	}
@@ -179,7 +188,47 @@ func TestDescendantRecorderRetainsIdentityAndCommandUnionUntilJoined(t *testing.
 		{PID: 44, Identity: "44:callback", CommandLine: "shell-picker preview"},
 		{PID: 45, Identity: "45:renderer", CommandLine: "eza --long"},
 	}
-	if got := recorder.Records(); !reflect.DeepEqual(got, want) {
+	got := recorder.Records()
+	if len(got) != len(want) {
 		t.Fatalf("records=%+v, want %+v", got, want)
+	}
+	for index := range got {
+		if got[index].FirstObservedAt.IsZero() {
+			t.Fatalf("record %d has no first observation timestamp: %+v", index, got[index])
+		}
+		want[index].FirstObservedAt = got[index].FirstObservedAt
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("records=%+v, want %+v", got, want)
+	}
+}
+
+func TestDescendantRecorderPreservesFirstObservedAtForStableIdentity(t *testing.T) {
+	var calls atomic.Int32
+	recorder := newDescendantRecorder(func(root int) ([]descendantProcessRecord, error) {
+		if root != 42 {
+			t.Fatalf("snapshot root=%d, want 42", root)
+		}
+		if calls.Add(1) == 1 {
+			return []descendantProcessRecord{{PID: 43, Identity: "43:stable", CommandLine: "initial"}}, nil
+		}
+		return []descendantProcessRecord{{PID: 43, Identity: "43:stable", CommandLine: "updated"}}, nil
+	})
+	recorder.SetRoot(42)
+	recorder.captureNow()
+	first := recorder.Records()
+	if len(first) != 1 || first[0].CommandLine != "initial" {
+		t.Fatalf("first records=%+v, want initial stable record", first)
+	}
+	if first[0].FirstObservedAt.IsZero() {
+		t.Fatal("first observation timestamp is zero")
+	}
+	recorder.captureNow()
+	second := recorder.Records()
+	if len(second) != 1 || second[0].CommandLine != "updated" {
+		t.Fatalf("second records=%+v, want updated stable record", second)
+	}
+	if !second[0].FirstObservedAt.Equal(first[0].FirstObservedAt) {
+		t.Fatalf("first observation changed from %s to %s", first[0].FirstObservedAt, second[0].FirstObservedAt)
 	}
 }

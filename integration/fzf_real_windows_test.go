@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -109,6 +110,48 @@ type windowsTerminalFactory struct {
 	createTraceInstance func(string, bool) (windows.Handle, error)
 }
 
+var windowsStandardHandleMu sync.Mutex
+
+func nullWindowsStandardHandles() func() {
+	windowsStandardHandleMu.Lock()
+	standard := [...]uint32{windows.STD_INPUT_HANDLE, windows.STD_OUTPUT_HANDLE, windows.STD_ERROR_HANDLE}
+	saved := [3]windows.Handle{}
+	for index := range standard {
+		saved[index], _ = windows.GetStdHandle(standard[index])
+		_ = windows.SetStdHandle(standard[index], 0)
+	}
+	return func() {
+		for index := range standard {
+			_ = windows.SetStdHandle(standard[index], saved[index])
+		}
+		windowsStandardHandleMu.Unlock()
+	}
+}
+
+func closeWindowsHandles(closeHandle func(windows.Handle) error, handles ...windows.Handle) (err error) {
+	for _, handle := range handles {
+		if handle != 0 {
+			err = errors.Join(err, closeHandle(handle))
+		}
+	}
+	return
+}
+
+func closeWindowsLaunchHandles(session *windowsTerminalSession, process windows.Handle) error {
+	for _, handle := range []*windows.Handle{&session.resultWrite, &session.standardInput} {
+		if *handle == 0 {
+			continue
+		}
+		if err := session.ops.closeHandle(*handle); err != nil {
+			_ = session.ops.terminateProcess(process, 1)
+			_ = session.ops.closeHandle(process)
+			return err
+		}
+		*handle = 0
+	}
+	return nil
+}
+
 func defaultWindowsTerminalFactory() windowsTerminalFactory {
 	return windowsTerminalFactory{
 		ops: defaultWindowsTerminalOps(),
@@ -129,6 +172,12 @@ func defaultWindowsTerminalFactory() windowsTerminalFactory {
 	}
 }
 
+func TestWindowsTerminalSupportsPowerShellConPTYRoot(t *testing.T) {
+	term := newTerminalSession(t, terminalConfig{Path: requirePowerShell(t), Args: []string{"-NoLogo", "-NoProfile", "-NoExit", "-Command", "$function:prompt={'SP> '}"}, Environment: os.Environ(), Columns: 120, Lines: 35, DisablePickerTrace: true, TerminalOwnsStandardStreams: true})
+	t.Cleanup(func() { _ = term.Close() })
+	waitForCurrentScreenTextAfter(t, term, 0, "SP>")
+}
+
 func createWindowsTerminalResources(config terminalConfig, factory windowsTerminalFactory) (*windowsTerminalSession, string, error) {
 	inputRead, inputWrite, err := factory.createInputPipe()
 	if err != nil {
@@ -136,37 +185,44 @@ func createWindowsTerminalResources(config terminalConfig, factory windowsTermin
 	}
 	outputRead, outputWrite, err := factory.createOutputPipe()
 	if err != nil {
-		return nil, "", errors.Join(fmt.Errorf("create ConPTY output pipe: %w", err),
-			factory.ops.closeHandle(inputRead), factory.ops.closeHandle(inputWrite))
+		return nil, "", errors.Join(fmt.Errorf("create ConPTY output pipe: %w", err), closeWindowsHandles(factory.ops.closeHandle, inputRead, inputWrite))
 	}
-	resultRead, resultWrite, err := factory.createResultPipe()
-	if err != nil {
-		return nil, "", errors.Join(fmt.Errorf("create picker result pipe: %w", err),
-			factory.ops.closeHandle(inputRead), factory.ops.closeHandle(inputWrite),
-			factory.ops.closeHandle(outputRead), factory.ops.closeHandle(outputWrite))
+	var resultRead, resultWrite windows.Handle
+	if !config.TerminalOwnsStandardStreams {
+		resultRead, resultWrite, err = factory.createResultPipe()
+		if err != nil {
+			return nil, "", errors.Join(fmt.Errorf("create picker result pipe: %w", err),
+				closeWindowsHandles(factory.ops.closeHandle, inputRead, inputWrite, outputRead, outputWrite))
+		}
 	}
 	console, err := factory.createPseudoConsole(windows.Coord{X: int16(config.Columns), Y: int16(config.Lines)}, inputRead, outputWrite)
 	if err != nil {
-		return nil, "", errors.Join(fmt.Errorf("create pseudoconsole: %w", err), factory.ops.closeHandle(inputRead),
-			factory.ops.closeHandle(inputWrite), factory.ops.closeHandle(outputRead), factory.ops.closeHandle(outputWrite),
-			factory.ops.closeHandle(resultRead), factory.ops.closeHandle(resultWrite))
+		return nil, "", errors.Join(fmt.Errorf("create pseudoconsole: %w", err),
+			closeWindowsHandles(factory.ops.closeHandle, inputRead, inputWrite, outputRead, outputWrite, resultRead, resultWrite))
+	}
+	resultDone := make(chan struct{})
+	if config.TerminalOwnsStandardStreams {
+		close(resultDone)
+	}
+	traceDone := make(chan struct{})
+	if config.DisablePickerTrace {
+		close(traceDone)
 	}
 	session := &windowsTerminalSession{ops: factory.ops, console: console, input: inputWrite, output: outputRead,
 		result: resultRead, resultWrite: resultWrite, changed: make(chan struct{}), waitDone: make(chan struct{}),
-		drainDone: make(chan struct{}), resultDone: make(chan struct{}), traceDone: make(chan struct{}),
+		drainDone: make(chan struct{}), resultDone: resultDone, traceDone: traceDone,
 		outputChanged: make(chan struct{}), recorder: newDescendantRecorder(snapshotDescendantProcessRecords),
 		traceHandles: make(map[windows.Handle]struct{}), traceListeners: make(map[windows.Handle]struct{}),
 		traceIO:         make(map[windows.Handle]*windows.Overlapped),
 		traceAcceptStop: make(chan struct{}), traceAcceptorsReady: make(chan struct{}), stop: make(chan struct{})}
-	if closeErr := errors.Join(factory.ops.closeHandle(inputRead), factory.ops.closeHandle(outputWrite)); closeErr != nil {
-		close(session.drainDone)
-		close(session.traceDone)
+	if closeErr := closeWindowsHandles(factory.ops.closeHandle, inputRead, outputWrite); closeErr != nil {
 		return nil, "", errors.Join(fmt.Errorf("close ConPTY child pipe handles: %w", closeErr), session.Close())
+	}
+	if config.DisablePickerTrace {
+		return session, "", nil
 	}
 	tracePath, traceHandle, err := factory.createTracePipe()
 	if err != nil {
-		close(session.drainDone)
-		close(session.traceDone)
 		return nil, "", errors.Join(fmt.Errorf("create trace pipe: %w", err), session.Close())
 	}
 	session.trace = traceHandle
@@ -197,11 +253,7 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		t.Fatalf("create Windows terminal resources: %v", err)
 	}
 	session.t = t
-	for index, argument := range config.Args {
-		if argument == "--fzf" && index+1 < len(config.Args) {
-			session.fzfPath = config.Args[index+1]
-		}
-	}
+	session.fzfPath = configuredFZFPath(config)
 	for _, entry := range config.Environment {
 		if strings.HasPrefix(strings.ToUpper(entry), "SHELL_PICKER_ADDR=") ||
 			strings.HasPrefix(strings.ToUpper(entry), "SHELL_PICKER_TOKEN=") {
@@ -210,87 +262,93 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		}
 	}
 	session.sidecar = realFZFSidecarEnabled(config.Environment)
-	session.outputStarted, session.traceStarted = true, true
+	session.outputStarted = true
 	go session.drainOutput(session.output, session.drainDone)
-	traceReady := make(chan struct{})
-	go session.drainTrace(session.trace, traceReady)
-	<-traceReady
-	if session.traceAcceptorsReady != nil {
-		select {
-		case <-session.traceAcceptorsReady:
-		case <-session.traceAcceptStop:
-			session.Close()
-			t.Fatal("trace acceptors stopped before picker launch")
+	if !config.DisablePickerTrace {
+		session.traceStarted = true
+		traceReady := make(chan struct{})
+		go session.drainTrace(session.trace, traceReady)
+		<-traceReady
+		if session.traceAcceptorsReady != nil {
+			select {
+			case <-session.traceAcceptorsReady:
+			case <-session.traceAcceptStop:
+				_ = session.Close()
+				t.Fatal("trace acceptors stopped before picker launch")
+			}
 		}
 	}
 	session.recorder.Start()
 
 	attributes, err := windows.NewProcThreadAttributeList(1)
 	if err != nil {
-		session.Close()
+		_ = session.Close()
 		t.Fatal(err)
 	}
 	defer attributes.Delete()
 	if err := updatePseudoConsoleAttribute(attributes, session.console); err != nil {
-		session.Close()
+		_ = session.Close()
 		t.Fatal(err)
 	}
-	standardInput, err := createWindowsInheritableNullInput()
-	if err != nil {
-		session.Close()
-		t.Fatalf("create picker standard input: %v", err)
+	if !config.TerminalOwnsStandardStreams {
+		standardInput, err := createWindowsInheritableNullInput()
+		if err != nil {
+			_ = session.Close()
+			t.Fatalf("create picker standard input: %v", err)
+		}
+		session.standardInput = standardInput
 	}
-	session.standardInput = standardInput
-	args := append(append([]string{config.Path}, config.Args...), "--trace", tracePath)
+	args := append([]string{config.Path}, config.Args...)
+	if !config.DisablePickerTrace {
+		args = append(args, "--trace", tracePath)
+	}
 	commandLine, err := windows.UTF16FromString(windows.ComposeCommandLine(args))
 	if err != nil {
-		session.Close()
+		_ = session.Close()
 		t.Fatal(err)
 	}
 	application, err := windows.UTF16PtrFromString(config.Path)
 	if err != nil {
-		session.Close()
+		_ = session.Close()
 		t.Fatal(err)
 	}
 	var directory *uint16
 	if config.Directory != "" {
 		directory, err = windows.UTF16PtrFromString(config.Directory)
 		if err != nil {
-			session.Close()
+			_ = session.Close()
 			t.Fatal(err)
 		}
 	}
 	startup := windows.StartupInfoEx{ProcThreadAttributeList: attributes.List()}
 	startup.Cb = uint32(unsafe.Sizeof(startup))
-	startup.Flags = windows.STARTF_USESTDHANDLES
-	startup.StdInput, startup.StdOutput, startup.StdErr = session.standardInput, session.resultWrite, session.resultWrite
+	if !config.TerminalOwnsStandardStreams {
+		startup.Flags = windows.STARTF_USESTDHANDLES
+		startup.StdInput, startup.StdOutput, startup.StdErr = session.standardInput, session.resultWrite, session.resultWrite
+	}
 	var information windows.ProcessInformation
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
-	if err := windows.CreateProcess(application, &commandLine[0], nil, nil, true, flags, &environment[0], directory,
+	inheritHandles := !config.TerminalOwnsStandardStreams
+	restoreStandardHandles := func() {}
+	if config.TerminalOwnsStandardStreams {
+		// Avoid Windows' implicit console-handle duplication when STARTF_USESTDHANDLES is omitted.
+		restoreStandardHandles = nullWindowsStandardHandles()
+	}
+	if err = windows.CreateProcess(application, &commandLine[0], nil, nil, inheritHandles, flags, &environment[0], directory,
 		(*windows.StartupInfo)(unsafe.Pointer(&startup)), &information); err != nil {
-		session.Close()
+		restoreStandardHandles()
+		_ = session.Close()
 		t.Fatalf("start picker in ConPTY: %v", err)
 	}
-	if err := session.ops.closeHandle(session.resultWrite); err != nil {
-		_ = session.ops.terminateProcess(information.Process, 1)
-		_ = session.ops.closeHandle(information.Process)
-		session.resultWrite = 0
-		session.Close()
-		t.Fatalf("close picker result write handle: %v", err)
+	restoreStandardHandles()
+	if err := closeWindowsLaunchHandles(session, information.Process); err != nil {
+		_ = session.Close()
+		t.Fatalf("close picker child handles: %v", err)
 	}
-	session.resultWrite = 0
-	if err := session.ops.closeHandle(session.standardInput); err != nil {
-		_ = session.ops.terminateProcess(information.Process, 1)
-		_ = session.ops.closeHandle(information.Process)
-		session.standardInput = 0
-		session.Close()
-		t.Fatalf("close picker standard input handle: %v", err)
-	}
-	session.standardInput = 0
 	if err := session.ops.closeHandle(information.Thread); err != nil {
 		_ = session.ops.terminateProcess(information.Process, 1)
 		_ = session.ops.closeHandle(information.Process)
-		session.Close()
+		_ = session.Close()
 		t.Fatalf("close unused picker thread handle: %v", err)
 	}
 	var waitHandle windows.Handle
@@ -298,16 +356,18 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 		0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
 		_ = session.ops.terminateProcess(information.Process, 1)
 		_ = session.ops.closeHandle(information.Process)
-		session.Close()
+		_ = session.Close()
 		t.Fatalf("duplicate picker wait handle: %v", err)
 	}
 	session.process, session.pid = information.Process, int(information.ProcessId)
 	session.recorder.SetRoot(session.pid)
 	session.recorder.Capture()
 	session.waitStarted = true
-	session.resultStarted = true
+	session.resultStarted = !config.TerminalOwnsStandardStreams
 	go session.waitProcess(waitHandle)
-	go session.drainResult(session.result, session.resultDone)
+	if session.resultStarted {
+		go session.drainResult(session.result, session.resultDone)
+	}
 	return session
 }
 
