@@ -110,24 +110,6 @@ type windowsTerminalFactory struct {
 	createTraceInstance func(string, bool) (windows.Handle, error)
 }
 
-var windowsStandardHandleMu sync.Mutex
-
-func nullWindowsStandardHandles() func() {
-	windowsStandardHandleMu.Lock()
-	standard := [...]uint32{windows.STD_INPUT_HANDLE, windows.STD_OUTPUT_HANDLE, windows.STD_ERROR_HANDLE}
-	saved := [3]windows.Handle{}
-	for index := range standard {
-		saved[index], _ = windows.GetStdHandle(standard[index])
-		_ = windows.SetStdHandle(standard[index], 0)
-	}
-	return func() {
-		for index := range standard {
-			_ = windows.SetStdHandle(standard[index], saved[index])
-		}
-		windowsStandardHandleMu.Unlock()
-	}
-}
-
 func closeWindowsHandles(closeHandle func(windows.Handle) error, handles ...windows.Handle) (err error) {
 	for _, handle := range handles {
 		if handle != 0 {
@@ -137,17 +119,43 @@ func closeWindowsHandles(closeHandle func(windows.Handle) error, handles ...wind
 	return
 }
 
-func closeWindowsLaunchHandles(session *windowsTerminalSession, process windows.Handle) error {
+func closeWindowsProcessInformation(session *windowsTerminalSession, information *windows.ProcessInformation) error {
+	var err error
+	if information.Thread != 0 {
+		err = errors.Join(err, session.ops.closeHandle(information.Thread))
+		information.Thread = 0
+	}
+	if information.Process != 0 {
+		err = errors.Join(err, session.ops.closeHandle(information.Process))
+		information.Process = 0
+	}
+	return err
+}
+
+func closeWindowsLaunchHandles(session *windowsTerminalSession, information *windows.ProcessInformation) error {
+	var err error
 	for _, handle := range []*windows.Handle{&session.resultWrite, &session.standardInput} {
 		if *handle == 0 {
 			continue
 		}
-		if err := session.ops.closeHandle(*handle); err != nil {
-			_ = session.ops.terminateProcess(process, 1)
-			_ = session.ops.closeHandle(process)
-			return err
-		}
+		err = errors.Join(err, session.ops.closeHandle(*handle))
 		*handle = 0
+	}
+	if err != nil {
+		if information.Process != 0 {
+			_ = session.ops.terminateProcess(information.Process, 1)
+		}
+		return errors.Join(err, closeWindowsProcessInformation(session, information))
+	}
+	if information.Thread != 0 {
+		threadErr := session.ops.closeHandle(information.Thread)
+		information.Thread = 0
+		if threadErr != nil {
+			if information.Process != 0 {
+				_ = session.ops.terminateProcess(information.Process, 1)
+			}
+			return errors.Join(threadErr, closeWindowsProcessInformation(session, information))
+		}
 	}
 	return nil
 }
@@ -176,6 +184,52 @@ func TestWindowsTerminalSupportsPowerShellConPTYRoot(t *testing.T) {
 	term := newTerminalSession(t, terminalConfig{Path: requirePowerShell(t), Args: []string{"-NoLogo", "-NoProfile", "-NoExit", "-Command", "$function:prompt={'SP> '}"}, Environment: os.Environ(), Columns: 120, Lines: 35, DisablePickerTrace: true, TerminalOwnsStandardStreams: true})
 	t.Cleanup(func() { _ = term.Close() })
 	waitForCurrentScreenTextAfter(t, term, 0, "SP>")
+}
+
+func TestWindowsLaunchCleanupClosesProcessInformationHandlesAfterOwnedHandleFailure(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		failed     windows.Handle
+		failedName string
+	}{
+		{name: "result write", failed: 8, failedName: "result write"},
+		{name: "standard input", failed: 9, failedName: "standard input"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &windowsLifecycleRecorder{}
+			want := errors.New("close " + test.failedName)
+			ops := recorder.ops()
+			closeHandle := ops.closeHandle
+			failed := true
+			ops.closeHandle = func(handle windows.Handle) error {
+				if err := closeHandle(handle); err != nil {
+					return err
+				}
+				if handle == test.failed && failed {
+					failed = false
+					return want
+				}
+				return nil
+			}
+			session := &windowsTerminalSession{ops: ops, resultWrite: 8, standardInput: 9}
+			information := windows.ProcessInformation{Process: 5, Thread: 6}
+
+			if err := closeWindowsLaunchHandles(session, &information); !errors.Is(err, want) {
+				t.Fatalf("closeWindowsLaunchHandles=%v, want %v", err, want)
+			}
+			for _, handle := range []windows.Handle{8, 9, 5, 6} {
+				if recorder.closed[handle] != 1 {
+					t.Errorf("handle %d closes=%d, want one close", handle, recorder.closed[handle])
+				}
+			}
+			if information.Process != 0 || information.Thread != 0 {
+				t.Fatalf("process information retained: process=%d thread=%d", information.Process, information.Thread)
+			}
+			if session.resultWrite != 0 || session.standardInput != 0 {
+				t.Fatalf("launch handles retained: resultWrite=%d standardInput=%d", session.resultWrite, session.standardInput)
+			}
+		})
+	}
 }
 
 func createWindowsTerminalResources(config terminalConfig, factory windowsTerminalFactory) (*windowsTerminalSession, string, error) {
@@ -322,34 +376,24 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	}
 	startup := windows.StartupInfoEx{ProcThreadAttributeList: attributes.List()}
 	startup.Cb = uint32(unsafe.Sizeof(startup))
-	if !config.TerminalOwnsStandardStreams {
+	if config.TerminalOwnsStandardStreams {
+		startup.Flags = windows.STARTF_USESTDHANDLES
+		startup.StdInput, startup.StdOutput, startup.StdErr = 0, 0, 0
+	} else {
 		startup.Flags = windows.STARTF_USESTDHANDLES
 		startup.StdInput, startup.StdOutput, startup.StdErr = session.standardInput, session.resultWrite, session.resultWrite
 	}
 	var information windows.ProcessInformation
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
 	inheritHandles := !config.TerminalOwnsStandardStreams
-	restoreStandardHandles := func() {}
-	if config.TerminalOwnsStandardStreams {
-		// Avoid Windows' implicit console-handle duplication when STARTF_USESTDHANDLES is omitted.
-		restoreStandardHandles = nullWindowsStandardHandles()
-	}
 	if err = windows.CreateProcess(application, &commandLine[0], nil, nil, inheritHandles, flags, &environment[0], directory,
 		(*windows.StartupInfo)(unsafe.Pointer(&startup)), &information); err != nil {
-		restoreStandardHandles()
 		_ = session.Close()
 		t.Fatalf("start picker in ConPTY: %v", err)
 	}
-	restoreStandardHandles()
-	if err := closeWindowsLaunchHandles(session, information.Process); err != nil {
+	if err := closeWindowsLaunchHandles(session, &information); err != nil {
 		_ = session.Close()
 		t.Fatalf("close picker child handles: %v", err)
-	}
-	if err := session.ops.closeHandle(information.Thread); err != nil {
-		_ = session.ops.terminateProcess(information.Process, 1)
-		_ = session.ops.closeHandle(information.Process)
-		_ = session.Close()
-		t.Fatalf("close unused picker thread handle: %v", err)
 	}
 	var waitHandle windows.Handle
 	if err := windows.DuplicateHandle(windows.CurrentProcess(), information.Process, windows.CurrentProcess(), &waitHandle,
