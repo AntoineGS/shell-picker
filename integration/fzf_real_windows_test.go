@@ -138,8 +138,11 @@ func closeWindowsLaunchHandles(session *windowsTerminalSession, information *win
 		if *handle == 0 {
 			continue
 		}
-		err = errors.Join(err, session.ops.closeHandle(*handle))
-		*handle = 0
+		closeErr := session.ops.closeHandle(*handle)
+		err = errors.Join(err, closeErr)
+		if closeErr == nil {
+			*handle = 0
+		}
 	}
 	if err != nil {
 		if information.Process != 0 {
@@ -158,6 +161,15 @@ func closeWindowsLaunchHandles(session *windowsTerminalSession, information *win
 		}
 	}
 	return nil
+}
+
+func windowsStartupInfo(config terminalConfig, standardInput, resultWrite windows.Handle) windows.StartupInfoEx {
+	var startup windows.StartupInfoEx
+	if !config.TerminalOwnsStandardStreams {
+		startup.Flags = windows.STARTF_USESTDHANDLES
+		startup.StdInput, startup.StdOutput, startup.StdErr = standardInput, resultWrite, resultWrite
+	}
+	return startup
 }
 
 func defaultWindowsTerminalFactory() windowsTerminalFactory {
@@ -186,14 +198,26 @@ func TestWindowsTerminalSupportsPowerShellConPTYRoot(t *testing.T) {
 	waitForCurrentScreenTextAfter(t, term, 0, "SP>")
 }
 
+func TestWindowsConPTYStartupInfoGenericLeavesStandardHandlesUnset(t *testing.T) {
+	startup := windowsStartupInfo(terminalConfig{TerminalOwnsStandardStreams: true}, 8, 9)
+	if startup.Flags != 0 {
+		t.Fatalf("generic startup flags=%#x, want zero", startup.Flags)
+	}
+	if startup.StdInput != 0 || startup.StdOutput != 0 || startup.StdErr != 0 {
+		t.Fatalf("generic standard handles=%d,%d,%d, want zero", startup.StdInput, startup.StdOutput, startup.StdErr)
+	}
+}
+
 func TestWindowsLaunchCleanupClosesProcessInformationHandlesAfterOwnedHandleFailure(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		failed     windows.Handle
-		failedName string
+		name              string
+		failed            windows.Handle
+		failedName        string
+		wantResultWrite   windows.Handle
+		wantStandardInput windows.Handle
 	}{
-		{name: "result write", failed: 8, failedName: "result write"},
-		{name: "standard input", failed: 9, failedName: "standard input"},
+		{name: "result write", failed: 8, failedName: "result write", wantResultWrite: 8},
+		{name: "standard input", failed: 9, failedName: "standard input", wantStandardInput: 9},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := &windowsLifecycleRecorder{}
@@ -217,16 +241,26 @@ func TestWindowsLaunchCleanupClosesProcessInformationHandlesAfterOwnedHandleFail
 			if err := closeWindowsLaunchHandles(session, &information); !errors.Is(err, want) {
 				t.Fatalf("closeWindowsLaunchHandles=%v, want %v", err, want)
 			}
-			for _, handle := range []windows.Handle{8, 9, 5, 6} {
-				if recorder.closed[handle] != 1 {
-					t.Errorf("handle %d closes=%d, want one close", handle, recorder.closed[handle])
-				}
-			}
 			if information.Process != 0 || information.Thread != 0 {
 				t.Fatalf("process information retained: process=%d thread=%d", information.Process, information.Thread)
 			}
+			if session.resultWrite != test.wantResultWrite || session.standardInput != test.wantStandardInput {
+				t.Fatalf("launch handles after failed close=%d,%d, want %d,%d", session.resultWrite, session.standardInput, test.wantResultWrite, test.wantStandardInput)
+			}
+			if err := session.Close(); err != nil {
+				t.Fatalf("retry launch-handle cleanup: %v", err)
+			}
 			if session.resultWrite != 0 || session.standardInput != 0 {
-				t.Fatalf("launch handles retained: resultWrite=%d standardInput=%d", session.resultWrite, session.standardInput)
+				t.Fatalf("launch handles retained after retry: resultWrite=%d standardInput=%d", session.resultWrite, session.standardInput)
+			}
+			for _, handle := range []windows.Handle{8, 9, 5, 6} {
+				wantCloses := 1
+				if handle == test.failed {
+					wantCloses = 2
+				}
+				if recorder.closed[handle] != wantCloses {
+					t.Errorf("handle %d closes=%d, want %d", handle, recorder.closed[handle], wantCloses)
+				}
 			}
 		})
 	}
@@ -374,15 +408,9 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 			t.Fatal(err)
 		}
 	}
-	startup := windows.StartupInfoEx{ProcThreadAttributeList: attributes.List()}
+	startup := windowsStartupInfo(config, session.standardInput, session.resultWrite)
+	startup.ProcThreadAttributeList = attributes.List()
 	startup.Cb = uint32(unsafe.Sizeof(startup))
-	if config.TerminalOwnsStandardStreams {
-		startup.Flags = windows.STARTF_USESTDHANDLES
-		startup.StdInput, startup.StdOutput, startup.StdErr = 0, 0, 0
-	} else {
-		startup.Flags = windows.STARTF_USESTDHANDLES
-		startup.StdInput, startup.StdOutput, startup.StdErr = session.standardInput, session.resultWrite, session.resultWrite
-	}
 	var information windows.ProcessInformation
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT)
 	inheritHandles := !config.TerminalOwnsStandardStreams
