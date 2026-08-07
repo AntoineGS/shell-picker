@@ -498,6 +498,13 @@ func (session *windowsTerminalSession) closeAttemptRun() error {
 	}
 	session.stopDescendantRecorder()
 	session.handleMu.Lock()
+	if session.waitHandle != 0 {
+		closeErr := session.ops.closeHandle(session.waitHandle)
+		err = errors.Join(err, closeErr)
+		if closeErr == nil {
+			session.waitHandle = 0
+		}
+	}
 	if processDone && session.process != 0 {
 		closeErr := session.ops.closeHandle(session.process)
 		err = errors.Join(err, closeErr)
@@ -531,7 +538,7 @@ func (session *windowsTerminalSession) requestStop() {
 
 func (session *windowsTerminalSession) resourcesReleased() bool {
 	session.handleMu.Lock()
-	released := session.process == 0 && session.launchInformation.Process == 0 && session.launchInformation.Thread == 0 &&
+	released := session.process == 0 && session.waitHandle == 0 && session.launchInformation.Process == 0 && session.launchInformation.Thread == 0 &&
 		session.output == 0 && session.result == 0 && session.trace == 0
 	session.handleMu.Unlock()
 	if !released {

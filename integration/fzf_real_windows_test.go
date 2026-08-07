@@ -43,6 +43,7 @@ type windowsTerminalSession struct {
 	traceAcceptorsReady chan struct{}
 	traceAcceptorsOnce  sync.Once
 	process             windows.Handle // control handle; waiter owns a duplicate
+	waitHandle          windows.Handle // pending waiter ownership before waitProcess starts
 	launchInformation   windows.ProcessInformation
 	pid                 int
 	productionPID       int
@@ -434,6 +435,35 @@ func TestWindowsActualLaunchRetainsProcessInformationHandleAfterCloseFailure(t *
 	}
 }
 
+func TestWindowsProductionRootDiscoveryFailureClosesOwnedWaitHandle(t *testing.T) {
+	recorder := &windowsLifecycleRecorder{}
+	session := &windowsTerminalSession{
+		ops:      recorder.ops(),
+		pid:      5,
+		process:  5,
+		recorder: newDescendantRecorder(nil),
+	}
+	want := errors.New("discover production root")
+	err := finalizeWindowsTerminalLaunch(session, windows.Handle(7), terminalConfig{ProductionRootPath: `C:\pwsh.exe`}, func(int, string, time.Duration) (int, error) {
+		return 0, want
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("finalizeWindowsTerminalLaunch() error = %v, want %v", err, want)
+	}
+	if session.waitHandle != 7 {
+		t.Fatalf("wait handle after discovery failure = %d, want 7", session.waitHandle)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("session.Close() = %v", err)
+	}
+	if session.waitHandle != 0 {
+		t.Fatalf("wait handle after session.Close() = %d, want zero", session.waitHandle)
+	}
+	if recorder.closed[7] != 1 {
+		t.Fatalf("wait handle closes = %d, want 1", recorder.closed[7])
+	}
+}
+
 func TestWindowsLaunchCleanupClosesProcessInformationHandlesAfterOwnedHandleFailure(t *testing.T) {
 	for _, test := range []struct {
 		name              string
@@ -651,23 +681,10 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	}
 	session.process, session.pid = session.launchInformation.Process, int(session.launchInformation.ProcessId)
 	session.launchInformation.Process = 0
-	recordingRoot := session.pid
-	if config.ProductionRootPath != "" {
-		productionPID, err := waitForWindowsDescendantProcess(session.pid, config.ProductionRootPath, 30*time.Second)
-		if err != nil {
-			_ = session.ops.terminateProcess(session.process, 1)
-			_ = session.Close()
-			t.Fatalf("find expected root child: %v", err)
-		}
-		session.productionPID = productionPID
-		recordingRoot = productionPID
+	if err := finalizeWindowsTerminalLaunch(session, waitHandle, config, nil); err != nil {
+		_ = session.Close()
+		t.Fatalf("finish picker launch: %v", err)
 	}
-	session.recorder.SetRoot(recordingRoot)
-	session.recorder.Capture()
-	session.waitStarted = true
-	session.resultStarted = true
-	go session.waitProcess(waitHandle)
-	go session.drainResult(session.result, session.resultDone)
 	return session
 }
 
@@ -697,6 +714,35 @@ func waitForWindowsDescendantProcess(root int, wantPath string, timeout time.Dur
 			return 0, fmt.Errorf("%s did not appear below process %d", wantPath, root)
 		}
 	}
+}
+
+func finalizeWindowsTerminalLaunch(session *windowsTerminalSession, waitHandle windows.Handle, config terminalConfig, discover func(int, string, time.Duration) (int, error)) error {
+	session.handleMu.Lock()
+	session.waitHandle = waitHandle
+	session.handleMu.Unlock()
+	if discover == nil {
+		discover = waitForWindowsDescendantProcess
+	}
+	recordingRoot := session.pid
+	if config.ProductionRootPath != "" {
+		productionPID, err := discover(session.pid, config.ProductionRootPath, 30*time.Second)
+		if err != nil {
+			return err
+		}
+		session.productionPID = productionPID
+		recordingRoot = productionPID
+	}
+	session.recorder.SetRoot(recordingRoot)
+	session.recorder.Capture()
+	session.waitStarted = true
+	session.resultStarted = true
+	session.handleMu.Lock()
+	waitHandle = session.waitHandle
+	session.waitHandle = 0
+	session.handleMu.Unlock()
+	go session.waitProcess(waitHandle)
+	go session.drainResult(session.result, session.resultDone)
+	return nil
 }
 
 func (session *windowsTerminalSession) FirstOutputAt() time.Time {
