@@ -109,36 +109,38 @@ function Get-TestFileAst {
     return $ast
 }
 
-function Assert-AstHasNoForbiddenReferences {
+function Assert-AstUsesOnlyAllowedReferences {
     param(
         [System.Management.Automation.Language.Ast]$Ast
     )
 
-    $forbiddenCommandNames = @(
-        'PSReadLine',
-        'GetEnvironmentVariable',
-        'SetEnvironmentVariable',
-        'Start-Process',
-        'Test-Path',
-        'Get-Item',
-        'Resolve-Path',
-        'New-Item',
-        'Set-Content',
-        'Remove-Item',
-        'Set-Location'
+    $allowedCommandNames = @(
+        'ConvertTo-PowerShellSingleQuotedLiteral',
+        'Test-ShellPickerSelection'
     )
-    $forbiddenTypeNames = @(
-        'PSReadLine',
-        'Diagnostics.Process',
-        'System.Diagnostics.Process',
-        'ProcessStartInfo',
-        'System.Diagnostics.ProcessStartInfo',
-        'System.IO.File',
-        'System.IO.Directory'
+    $allowedTypeNames = @(
+        'byte[]',
+        'char',
+        'int',
+        'object',
+        'pscustomobject',
+        'string[]',
+        'string',
+        'System.Text.DecoderFallbackException',
+        'void',
+        'System.Collections.Generic.List[string]',
+        'System.Text.UTF8Encoding'
     )
-    $forbiddenMemberNames = @(
-        'GetEnvironmentVariable',
-        'SetEnvironmentVariable'
+    $allowedMemberNames = @(
+        'Add',
+        'Concat',
+        'Count',
+        'GetString',
+        'IndexOf',
+        'Length',
+        'new',
+        'Replace',
+        'ToArray'
     )
 
     $commandAsts = @($Ast.FindAll({
@@ -147,51 +149,41 @@ function Assert-AstHasNoForbiddenReferences {
     }, $true))
     foreach ($commandAst in $commandAsts) {
         $commandName = $commandAst.GetCommandName()
-        if (($null -ne $commandName) -and ($forbiddenCommandNames -contains $commandName)) {
-            throw [System.Exception]::new("core source contains forbidden command AST '$commandName'")
+        if ($allowedCommandNames -notcontains $commandName) {
+            throw [System.Exception]::new("core source contains command AST outside allowlist '$commandName'")
         }
     }
 
     $typeAsts = @($Ast.FindAll({
         param($node)
-        $node -is [System.Management.Automation.Language.TypeExpressionAst]
+        ($node -is [System.Management.Automation.Language.TypeExpressionAst]) -or
+        ($node -is [System.Management.Automation.Language.TypeConstraintAst])
     }, $true))
     foreach ($typeAst in $typeAsts) {
         $typeName = $typeAst.TypeName.FullName
-        if (($null -ne $typeName) -and ($forbiddenTypeNames -contains $typeName)) {
-            throw [System.Exception]::new("core source contains forbidden type AST '$typeName'")
+        if ($allowedTypeNames -notcontains $typeName) {
+            throw [System.Exception]::new("core source contains type AST outside allowlist '$typeName'")
         }
     }
 
     $memberAsts = @($Ast.FindAll({
         param($node)
-        $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst]
+        $node -is [System.Management.Automation.Language.MemberExpressionAst]
     }, $true))
     foreach ($memberAst in $memberAsts) {
         $memberName = if ($memberAst.Member -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
             [string]$memberAst.Member.Value
         }
         else {
-            $null
+            $memberAst.Member.Extent.Text
         }
-        if (($null -ne $memberName) -and ($forbiddenMemberNames -contains $memberName)) {
-            throw [System.Exception]::new("core source contains forbidden member AST '$memberName'")
-        }
-    }
-
-    $variableAsts = @($Ast.FindAll({
-        param($node)
-        $node -is [System.Management.Automation.Language.VariableExpressionAst]
-    }, $true))
-    foreach ($variableAst in $variableAsts) {
-        $variableName = $variableAst.VariablePath.UserPath
-        if (($null -ne $variableName) -and $variableName.StartsWith('Env:', [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw [System.Exception]::new("core source contains forbidden Env: variable AST '$variableName'")
+        if ($allowedMemberNames -notcontains $memberName) {
+            throw [System.Exception]::new("core source contains member AST outside allowlist '$memberName'")
         }
     }
 }
 
-function Assert-AstRejectsForbiddenSource {
+function Assert-AstRejectsDisallowedSource {
     param(
         [string]$Source,
         [string]$Message
@@ -200,7 +192,7 @@ function Assert-AstRejectsForbiddenSource {
     $ast = Get-TestInputAst -Source $Source
     $rejected = $false
     try {
-        Assert-AstHasNoForbiddenReferences -Ast $ast
+        Assert-AstUsesOnlyAllowedReferences -Ast $ast
     }
     catch {
         $rejected = $true
@@ -216,16 +208,16 @@ function Assert-AstAllowsSource {
     )
 
     $ast = Get-TestInputAst -Source $Source
-    Assert-AstHasNoForbiddenReferences -Ast $ast
+    Assert-AstUsesOnlyAllowedReferences -Ast $ast
     Assert-True $true $Message
 }
 
-function Assert-CoreSourceHasNoForbiddenAstReferences {
+function Assert-CoreUsesOnlyAllowedAst {
     param([string]$Path)
 
     $ast = Get-TestFileAst -Path $Path
-    Assert-AstHasNoForbiddenReferences -Ast $ast
-    Assert-True $true 'core source has no forbidden AST references'
+    Assert-AstUsesOnlyAllowedReferences -Ast $ast
+    Assert-True $true 'core source uses only allowlisted AST dependencies'
 }
 
 function Assert-StringSequence {
@@ -414,56 +406,27 @@ function Test-CopyCommandGeneration {
     Assert-Null (New-ShellPickerCopyCommand -Paths @($nulPath)) 'copy command rejects NUL-containing paths'
 }
 
-function Test-CoreAstContract {
-    $forbiddenCommandSentinels = @(
-        'PSReadLine',
+function Test-CoreAllowlistContract {
+    $disallowedSentinels = @(
+        'Get-Content -LiteralPath sentinel',
+        'Get-ChildItem -LiteralPath sentinel',
+        '[IO.File]::ReadAllText("sentinel")',
         'Start-Process -FilePath sentinel',
-        'Test-Path -LiteralPath sentinel',
-        'Get-Item -LiteralPath sentinel',
-        'Resolve-Path -LiteralPath sentinel',
-        'New-Item -Path sentinel',
-        'Set-Content -Path sentinel -Value sentinel',
-        'Remove-Item -LiteralPath sentinel',
-        'Set-Location -LiteralPath sentinel'
-    )
-    foreach ($source in $forbiddenCommandSentinels) {
-        Assert-AstRejectsForbiddenSource -Source $source -Message "rejects forbidden command AST '$source'"
-    }
-
-    $forbiddenTypeSentinels = @(
-        '[Diagnostics.Process]::GetCurrentProcess()',
-        '[ProcessStartInfo]::new()',
-        '[System.IO.File]::ReadAllText("sentinel")',
-        '[System.IO.Directory]::GetFiles("sentinel")'
-    )
-    foreach ($source in $forbiddenTypeSentinels) {
-        Assert-AstRejectsForbiddenSource -Source $source -Message "rejects forbidden type AST '$source'"
-    }
-
-    $forbiddenMemberSentinels = @(
-        '[Environment]::GetEnvironmentVariable("sentinel")',
         '[Environment]::SetEnvironmentVariable("sentinel", "sentinel")'
     )
-    foreach ($source in $forbiddenMemberSentinels) {
-        Assert-AstRejectsForbiddenSource -Source $source -Message "rejects forbidden member AST '$source'"
+    foreach ($source in $disallowedSentinels) {
+        Assert-AstRejectsDisallowedSource -Source $source -Message "rejects disallowed AST '$source'"
     }
 
-    Assert-AstRejectsForbiddenSource -Source 'Write-Output $env:PATH' -Message 'rejects Env: variable AST'
-
-    $harmlessSource = @'
-# Start-Process Test-Path [Diagnostics.Process] [System.IO.File] SetEnvironmentVariable Env:
+    $commentSource = @'
+# Get-Content Get-ChildItem [IO.File]::ReadAllText Start-Process SetEnvironmentVariable
+$GetContent = 'Get-Content'
+$GetChildItem = 'Get-ChildItem'
 $StartProcess = 'Start-Process'
-$TestPath = 'Test-Path'
-$SetContent = 'Set-Content'
-$RemoveItem = 'Remove-Item'
-$SetLocation = 'Set-Location'
-$ProcessStartInfo = 'ProcessStartInfo'
 $SetEnvironmentVariable = 'SetEnvironmentVariable'
-Write-Output 'PSReadLine'
-Write-Output 'Get-Item Resolve-Path New-Item System.IO.Directory GetEnvironmentVariable'
 '@
-    Assert-AstAllowsSource -Source $harmlessSource -Message 'ignores comments and harmless identifiers'
-    Assert-CoreSourceHasNoForbiddenAstReferences -Path $corePath
+    Assert-AstAllowsSource -Source $commentSource -Message 'ignores comments and harmless identifiers'
+    Assert-CoreUsesOnlyAllowedAst -Path $corePath
 }
 
 Test-OperationDetection
@@ -471,6 +434,6 @@ Test-NulByteConversion
 Test-SelectionValidation
 Test-SingleQuotedLiterals
 Test-CopyCommandGeneration
-Test-CoreAstContract
+Test-CoreAllowlistContract
 
 Write-Output 'PowerShell core tests: PASS'
