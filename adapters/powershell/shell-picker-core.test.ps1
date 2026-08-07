@@ -181,6 +181,17 @@ function Assert-AstUsesOnlyAllowedReferences {
             throw [System.Exception]::new("core source contains member AST outside allowlist '$memberName'")
         }
     }
+
+    $variableAsts = @($Ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.VariableExpressionAst]
+    }, $true))
+    foreach ($variableAst in $variableAsts) {
+        $variablePath = $variableAst.VariablePath
+        if ($variablePath.IsDriveQualified -and ($variablePath.DriveName -ieq 'env')) {
+            throw [System.Exception]::new("core source contains drive-qualified Env: variable AST '$($variablePath.UserPath)'")
+        }
+    }
 }
 
 function Assert-AstRejectsDisallowedSource {
@@ -412,14 +423,16 @@ function Test-CoreAllowlistContract {
         'Get-ChildItem -LiteralPath sentinel',
         '[IO.File]::ReadAllText("sentinel")',
         'Start-Process -FilePath sentinel',
-        '[Environment]::SetEnvironmentVariable("sentinel", "sentinel")'
+        '[Environment]::SetEnvironmentVariable("sentinel", "sentinel")',
+        '$env:PATH',
+        '$env:NAME = "changed"'
     )
     foreach ($source in $disallowedSentinels) {
         Assert-AstRejectsDisallowedSource -Source $source -Message "rejects disallowed AST '$source'"
     }
 
     $commentSource = @'
-# Get-Content Get-ChildItem [IO.File]::ReadAllText Start-Process SetEnvironmentVariable
+# Get-Content Get-ChildItem [IO.File]::ReadAllText Start-Process SetEnvironmentVariable $env:PATH $env:NAME = 'changed'
 $GetContent = 'Get-Content'
 $GetChildItem = 'Get-ChildItem'
 $StartProcess = 'Start-Process'
