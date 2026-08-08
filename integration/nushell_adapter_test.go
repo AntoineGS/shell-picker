@@ -64,21 +64,45 @@ func runNushellPickerFake(args []string) int {
 }
 
 type nushellState struct {
-	Buffer             string   `json:"buffer"`
-	Cursor             int      `json:"cursor"`
-	PWD                string   `json:"pwd"`
-	Home               string   `json:"home"`
-	Edits              []string `json:"edits"`
-	Decoded            []string `json:"decoded"`
-	TabBefore          string   `json:"tab_before"`
-	TabAfter           string   `json:"tab_after"`
-	ControlSpaceBefore string   `json:"control_space_before"`
-	ControlSpaceAfter  string   `json:"control_space_after"`
-	UnrelatedBefore    string   `json:"unrelated_before"`
-	UnrelatedAfter     string   `json:"unrelated_after"`
-	FirstBindings      string   `json:"first_bindings"`
-	SecondBindings     string   `json:"second_bindings"`
-	OwnCount           int      `json:"own_count"`
+	Buffer                     string   `json:"buffer"`
+	Cursor                     int      `json:"cursor"`
+	PWD                        string   `json:"pwd"`
+	Home                       string   `json:"home"`
+	Edits                      []string `json:"edits"`
+	Decoded                    []string `json:"decoded"`
+	TabBefore                  string   `json:"tab_before"`
+	TabAfter                   string   `json:"tab_after"`
+	ControlSpaceBefore         string   `json:"control_space_before"`
+	ControlSpaceAfter          string   `json:"control_space_after"`
+	UnrelatedBefore            string   `json:"unrelated_before"`
+	UnrelatedAfter             string   `json:"unrelated_after"`
+	FirstBindings              string   `json:"first_bindings"`
+	SecondBindings             string   `json:"second_bindings"`
+	PostRestoreBindings        string   `json:"post_restore_bindings"`
+	OwnCount                   int      `json:"own_count"`
+	OwnAfterSetup              int      `json:"own_after_setup"`
+	FirstClosureCount          int      `json:"first_closure_count"`
+	FirstRestoreCount          int      `json:"first_restore_count"`
+	SecondClosureCount         int      `json:"second_closure_count"`
+	SecondRestoreCount         int      `json:"second_restore_count"`
+	FirstHookOrder             []string `json:"first_hook_order"`
+	SecondHookOrder            []string `json:"second_hook_order"`
+	SuspendedHookOrder         []string `json:"suspended_hook_order"`
+	FirstResumeHookOrder       []string `json:"first_resume_hook_order"`
+	SecondResumeHookOrder      []string `json:"second_resume_hook_order"`
+	PostRestoreHookOrder       []string `json:"post_restore_hook_order"`
+	FirstClosureResults        []string `json:"first_closure_results"`
+	SecondClosureResults       []string `json:"second_closure_results"`
+	SuspendedClosureResults    []string `json:"suspended_closure_results"`
+	FirstResumeClosureResults  []string `json:"first_resume_closure_results"`
+	SecondResumeClosureResults []string `json:"second_resume_closure_results"`
+	PostRestoreClosureResults  []string `json:"post_restore_closure_results"`
+	OwnAfterSpace              int      `json:"own_after_space"`
+	OwnAfterFirstHook          int      `json:"own_after_first_hook"`
+	OwnAfterSecondHook         int      `json:"own_after_second_hook"`
+	OwnAfterNewPrompt          int      `json:"own_after_new_prompt"`
+	BufferAfterSpace           string   `json:"buffer_after_space"`
+	BufferAfterNewPrompt       string   `json:"buffer_after_new_prompt"`
 }
 
 type nushellFixture struct {
@@ -264,8 +288,22 @@ func TestNushellAdapter(t *testing.T) {
 		if state.TabBefore != state.TabAfter || state.ControlSpaceBefore != state.ControlSpaceAfter || state.UnrelatedBefore != state.UnrelatedAfter {
 			t.Fatalf("unrelated binding bytes changed: %+v", state)
 		}
-		if state.FirstBindings != state.SecondBindings || state.OwnCount != 1 {
+		if state.FirstBindings != state.SecondBindings || state.OwnAfterSetup != 1 || state.OwnCount != 1 {
 			t.Fatalf("binding is not idempotent: own=%d", state.OwnCount)
+		}
+		if state.FirstBindings != state.PostRestoreBindings {
+			t.Fatalf("restoring Space changed bindings: first=%q restored=%q", state.FirstBindings, state.PostRestoreBindings)
+		}
+		if state.FirstClosureCount != 1 || state.FirstRestoreCount != 1 || state.SecondClosureCount != 1 || state.SecondRestoreCount != 1 {
+			t.Fatalf("pre_prompt hooks were not preserved and idempotently configured: %+v", state)
+		}
+		wantHookOrder := []string{"closure", "string:unrelated_pre_prompt", "string:_shell_picker_restore_space_binding"}
+		wantClosureResults := []string{"retained closure"}
+		if !reflect.DeepEqual(state.FirstHookOrder, wantHookOrder) || !reflect.DeepEqual(state.SecondHookOrder, wantHookOrder) || !reflect.DeepEqual(state.SuspendedHookOrder, wantHookOrder) || !reflect.DeepEqual(state.FirstResumeHookOrder, wantHookOrder) || !reflect.DeepEqual(state.SecondResumeHookOrder, wantHookOrder) || !reflect.DeepEqual(state.PostRestoreHookOrder, wantHookOrder) || !reflect.DeepEqual(state.FirstClosureResults, wantClosureResults) || !reflect.DeepEqual(state.SecondClosureResults, wantClosureResults) || !reflect.DeepEqual(state.SuspendedClosureResults, wantClosureResults) || !reflect.DeepEqual(state.FirstResumeClosureResults, wantClosureResults) || !reflect.DeepEqual(state.SecondResumeClosureResults, wantClosureResults) || !reflect.DeepEqual(state.PostRestoreClosureResults, wantClosureResults) {
+			t.Fatalf("pre_prompt hook order or closure behavior changed: %+v", state)
+		}
+		if state.BufferAfterSpace != "curl.exe " || state.OwnAfterSpace != 0 || state.OwnAfterFirstHook != 0 || state.OwnAfterSecondHook != 0 || state.BufferAfterNewPrompt != "" || state.OwnAfterNewPrompt != 1 {
+			t.Fatalf("ordinary Space did not suspend and restore its binding: %+v", state)
 		}
 		fixture.assertNoPicker(t)
 	})

@@ -48,6 +48,16 @@ func TestEnabledUsesPlatformSpecificNameMatching(t *testing.T) {
 	if runtime.GOOS == "windows" && !Enabled([]string{"=C:=C:\\work", ActivationVariable + "=1"}) {
 		t.Fatal("Enabled() = false in the presence of a valid Windows drive entry")
 	}
+	if runtime.GOOS == "windows" && !Enabled([]string{"=::=::\\", ActivationVariable + "=1"}) {
+		t.Fatal("Enabled() = false in the presence of Nushell's Windows pseudo-drive entry")
+	}
+	if runtime.GOOS == "windows" {
+		for _, malformed := range []string{"=::=::", "=::=C:\\", "=::=::\\extra"} {
+			if Enabled([]string{malformed, ActivationVariable + "=1"}) {
+				t.Fatalf("Enabled() = true in the presence of malformed pseudo-drive entry %q", malformed)
+			}
+		}
+	}
 }
 
 func TestEnabledRejectsMalformedEntriesAndDoesNotMutateInput(t *testing.T) {

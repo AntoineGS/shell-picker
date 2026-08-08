@@ -58,6 +58,38 @@ def assert_one_picker_call [operation: string, cwd: string] {
   assert equal $calls.0.home $nu.home-dir
 }
 
+def pre_prompt_hook_order [] {
+  $env.config.hooks.pre_prompt | each {|hook|
+    try {
+      if ($hook | describe) == "closure" {
+        "closure"
+      } else if ($hook | describe) == "string" {
+        $"string:($hook)"
+      } else {
+        "other"
+      }
+    } catch {
+      "unreadable"
+    }
+  }
+}
+
+def pre_prompt_closure_results [] {
+  $env.config.hooks.pre_prompt
+  | where {|hook| try { ($hook | describe) == "closure" } catch { false } }
+  | each {|hook| try { do $hook } catch { "closure-failed" } }
+}
+
+def --env invoke_registered_restore_hook [] {
+  let registered = (
+    $env.config.hooks.pre_prompt
+    | where {|hook| try { $hook == "_shell_picker_restore_space_binding" } catch { false } }
+    | first
+  )
+  assert equal $registered "_shell_picker_restore_space_binding"
+  _shell_picker_restore_space_binding
+}
+
 def test_supported_version [] {
   let parts = ((version).version | split row "." | first 3 | each {|part| $part | into int })
   let supported = ($parts.0 > 0 or ($parts.0 == 0 and ($parts.1 > 113 or ($parts.1 == 113 and $parts.2 >= 1))))
@@ -65,6 +97,7 @@ def test_supported_version [] {
 }
 
 def --env test_space_trigger_matrix [] {
+  shell-picker-bind-nushell
   for case in [
     {buffer: "cd", cursor: 2, picker: "cd", expected: "cd "},
     {buffer: "cp", cursor: 2, picker: "cp", expected: "cp "},
@@ -83,11 +116,14 @@ def --env test_space_trigger_matrix [] {
       assert equal $env.SHELL_PICKER_TEST_BUFFER $case.expected
       assert equal ($calls | length) 0
       assert equal $env.SHELL_PICKER_TEST_EDITS [insert]
+      assert equal (($env.config.keybindings | where name == _shell_picker_space) | length) 0
     } else {
       assert equal $env.SHELL_PICKER_TEST_BUFFER ($case.buffer + " ")
+      assert equal (($env.config.keybindings | where name == _shell_picker_space) | length) 1
       assert_one_picker_call $case.picker $cwd
       assert equal $env.SHELL_PICKER_TEST_EDITS [insert]
     }
+    assert not ("_SHELL_PICKER_SPACE_SUSPENDED" in $env)
     assert equal $env.SHELL_PICKER_TEST_CURSOR ($case.cursor + 1)
   }
 }
@@ -222,12 +258,24 @@ def --env test_binding_is_targeted_and_idempotent [] {
   let unrelated = {name: unrelated, modifier: shift, keycode: char_x, mode: emacs, event: {edit: undo}}
   let old_one = {name: _shell_picker_space, modifier: none, keycode: space, mode: emacs, event: {edit: complete}}
   let old_two = {name: _shell_picker_space, modifier: shift, keycode: space, mode: vi_insert, event: {edit: undo}}
-  $env.config = {keybindings: [$tab $control_space $unrelated $old_one $old_two]}
+  let retained_pre_prompt = { "retained closure" }
+  $env.config = {
+    keybindings: [$tab $control_space $unrelated $old_one $old_two]
+    hooks: {pre_prompt: [$retained_pre_prompt "unrelated_pre_prompt"]}
+  }
   let tab_before = (($env.config.keybindings | where keycode == tab | first) | to nuon --raw)
   let control_space_before = (($env.config.keybindings | where name == ide_completion_menu | first) | to nuon --raw)
 
   shell-picker-bind-nushell
+  assert not ("_SHELL_PICKER_SPACE_SUSPENDED" in $env)
   let first = ($env.config.keybindings | to nuon --raw)
+  let first_pre_prompt = $env.config.hooks.pre_prompt
+  let first_closure_count = ($first_pre_prompt | where {|hook| try { ($hook | describe) == "closure" } catch { false } } | length)
+  let first_restore_count = ($first_pre_prompt | where {|hook| try { $hook == "_shell_picker_restore_space_binding" } catch { false } } | length)
+  assert equal $first_closure_count 1
+  assert equal (pre_prompt_closure_results) ["retained closure"]
+  assert equal $first_restore_count 1
+  assert equal (pre_prompt_hook_order) ["closure" "string:unrelated_pre_prompt" "string:_shell_picker_restore_space_binding"]
   let own = ($env.config.keybindings | where name == _shell_picker_space)
   assert equal ($own | length) 1
   assert equal $own.0.modifier none
@@ -241,6 +289,39 @@ def --env test_binding_is_targeted_and_idempotent [] {
   shell-picker-bind-nushell
   assert equal ($env.config.keybindings | to nuon --raw) $first
   assert equal (($env.config.keybindings | where name == _shell_picker_space) | length) 1
+  assert not ("_SHELL_PICKER_SPACE_SUSPENDED" in $env)
+  let second_pre_prompt = $env.config.hooks.pre_prompt
+  let second_closure_count = ($second_pre_prompt | where {|hook| try { ($hook | describe) == "closure" } catch { false } } | length)
+  let second_restore_count = ($second_pre_prompt | where {|hook| try { $hook == "_shell_picker_restore_space_binding" } catch { false } } | length)
+  assert equal $second_closure_count 1
+  assert equal (pre_prompt_closure_results) ["retained closure"]
+  assert equal $second_restore_count 1
+  assert equal (pre_prompt_hook_order) ["closure" "string:unrelated_pre_prompt" "string:_shell_picker_restore_space_binding"]
+
+  reset_editor "curl.exe" 8
+  _shell_picker_space
+  assert equal $env.SHELL_PICKER_TEST_BUFFER "curl.exe "
+  assert equal (($env.config.keybindings | where name == _shell_picker_space) | length) 0
+  assert not ("_SHELL_PICKER_SPACE_SUSPENDED" in $env)
+  assert equal (($env.config.hooks.pre_prompt | where {|hook| try { $hook == "_shell_picker_restore_space_binding" } catch { false } } | length)) 1
+  assert equal (pre_prompt_closure_results) ["retained closure"]
+  assert equal (pre_prompt_hook_order) ["closure" "string:unrelated_pre_prompt" "string:_shell_picker_restore_space_binding"]
+  invoke_registered_restore_hook
+  assert equal (($env.config.keybindings | where name == _shell_picker_space) | length) 0
+  assert not ("_SHELL_PICKER_SPACE_SUSPENDED" in $env)
+  assert equal (pre_prompt_closure_results) ["retained closure"]
+  assert equal (pre_prompt_hook_order) ["closure" "string:unrelated_pre_prompt" "string:_shell_picker_restore_space_binding"]
+  invoke_registered_restore_hook
+  assert equal (($env.config.keybindings | where name == _shell_picker_space) | length) 0
+  assert not ("_SHELL_PICKER_SPACE_SUSPENDED" in $env)
+  assert equal (pre_prompt_closure_results) ["retained closure"]
+  assert equal (pre_prompt_hook_order) ["closure" "string:unrelated_pre_prompt" "string:_shell_picker_restore_space_binding"]
+  reset_editor "" 0
+  invoke_registered_restore_hook
+  assert equal (($env.config.keybindings | where name == _shell_picker_space) | length) 1
+  assert not ("_SHELL_PICKER_SPACE_SUSPENDED" in $env)
+  assert equal (pre_prompt_closure_results) ["retained closure"]
+  assert equal (pre_prompt_hook_order) ["closure" "string:unrelated_pre_prompt" "string:_shell_picker_restore_space_binding"]
 }
 
 let test_root = (($env.TMPDIR? | default $nu.temp-dir) | path join $"shell-picker-nushell-(random uuid)")

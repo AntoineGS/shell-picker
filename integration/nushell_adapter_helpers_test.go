@@ -277,6 +277,40 @@ def --env "commandline edit" [text: string, --append, --insert, --replace] {
 
 source __ADAPTER__
 
+def pre_prompt_hook_order [] {
+  $env.config.hooks.pre_prompt | each {|hook|
+    try {
+      if ($hook | describe) == "closure" {
+        "closure"
+      } else if ($hook | describe) == "string" {
+        $"string:($hook)"
+      } else {
+        "other"
+      }
+    } catch {
+      "unreadable"
+    }
+  }
+}
+
+def pre_prompt_closure_results [] {
+  $env.config.hooks.pre_prompt
+  | where {|hook| try { ($hook | describe) == "closure" } catch { false } }
+  | each {|hook| try { do $hook } catch { "closure-failed" } }
+}
+
+def --env invoke_registered_restore_hook [] {
+  let registered = (
+    $env.config.hooks.pre_prompt
+    | where {|hook| try { $hook == "_shell_picker_restore_space_binding" } catch { false } }
+    | first
+  )
+  if $registered != "_shell_picker_restore_space_binding" {
+    error make {msg: "restore hook is not registered exactly once"}
+  }
+  _shell_picker_restore_space_binding
+}
+
 $env.SHELL_PICKER_TEST_BUFFER = $env.SHELL_PICKER_NUSHELL_BUFFER
 $env.SHELL_PICKER_TEST_CURSOR = ($env.SHELL_PICKER_NUSHELL_CURSOR | into int)
 $env.SHELL_PICKER_TEST_EDITS = []
@@ -287,13 +321,54 @@ let state = if $env.SHELL_PICKER_NUSHELL_SCENARIO == "binding" {
   let unrelated = {name: unrelated, modifier: shift, keycode: char_x, mode: emacs, event: {edit: undo}}
   let old_one = {name: _shell_picker_space, modifier: none, keycode: space, mode: emacs, event: {edit: complete}}
   let old_two = {name: _shell_picker_space, modifier: shift, keycode: space, mode: vi_insert, event: {edit: undo}}
-  $env.config = {keybindings: [$tab $control_space $unrelated $old_one $old_two]}
+  let retained_pre_prompt = { "retained closure" }
+  $env.config = {
+    keybindings: [$tab $control_space $unrelated $old_one $old_two]
+    hooks: {pre_prompt: [$retained_pre_prompt "unrelated_pre_prompt"]}
+  }
   let tab_before = (($env.config.keybindings | where keycode == tab | first) | to nuon --raw)
   let control_space_before = (($env.config.keybindings | where name == ide_completion_menu | first) | to nuon --raw)
   let unrelated_before = (($env.config.keybindings | where name == unrelated | first) | to nuon --raw)
   shell-picker-bind-nushell
   let first = ($env.config.keybindings | to nuon --raw)
+  let own_after_setup = (($env.config.keybindings | where name == _shell_picker_space) | length)
+  let first_pre_prompt = $env.config.hooks.pre_prompt
+  let first_closure_count = ($first_pre_prompt | where {|hook| try { ($hook | describe) == "closure" } catch { false } } | length)
+  let first_restore_count = ($first_pre_prompt | where {|hook| try { $hook == "_shell_picker_restore_space_binding" } catch { false } } | length)
+  let first_hook_order = (pre_prompt_hook_order)
+  let first_closure_results = (pre_prompt_closure_results)
   shell-picker-bind-nushell
+  let second = ($env.config.keybindings | to nuon --raw)
+  let second_pre_prompt = $env.config.hooks.pre_prompt
+  let second_closure_count = ($second_pre_prompt | where {|hook| try { ($hook | describe) == "closure" } catch { false } } | length)
+  let second_restore_count = ($second_pre_prompt | where {|hook| try { $hook == "_shell_picker_restore_space_binding" } catch { false } } | length)
+  let second_hook_order = (pre_prompt_hook_order)
+  let second_closure_results = (pre_prompt_closure_results)
+  $env.SHELL_PICKER_TEST_BUFFER = "curl.exe"
+  $env.SHELL_PICKER_TEST_CURSOR = 8
+  $env.SHELL_PICKER_TEST_EDITS = []
+  _shell_picker_space
+  let own_after_space = (($env.config.keybindings | where name == _shell_picker_space) | length)
+  let buffer_after_space = $env.SHELL_PICKER_TEST_BUFFER
+  let suspended_hook_order = (pre_prompt_hook_order)
+  let suspended_closure_results = (pre_prompt_closure_results)
+  invoke_registered_restore_hook
+  let own_after_first_hook = (($env.config.keybindings | where name == _shell_picker_space) | length)
+  let first_resume_hook_order = (pre_prompt_hook_order)
+  let first_resume_closure_results = (pre_prompt_closure_results)
+  invoke_registered_restore_hook
+  let own_after_second_hook = (($env.config.keybindings | where name == _shell_picker_space) | length)
+  let second_resume_hook_order = (pre_prompt_hook_order)
+  let second_resume_closure_results = (pre_prompt_closure_results)
+  $env.SHELL_PICKER_TEST_BUFFER = ""
+  $env.SHELL_PICKER_TEST_CURSOR = 0
+  $env.SHELL_PICKER_TEST_EDITS = []
+  invoke_registered_restore_hook
+  let own_after_new_prompt = (($env.config.keybindings | where name == _shell_picker_space) | length)
+  let post_restore_bindings = ($env.config.keybindings | to nuon --raw)
+  let buffer_after_new_prompt = $env.SHELL_PICKER_TEST_BUFFER
+  let post_restore_hook_order = (pre_prompt_hook_order)
+  let post_restore_closure_results = (pre_prompt_closure_results)
   {
     buffer: "", cursor: 0, pwd: $env.PWD, home: $nu.home-dir, edits: [], decoded: [],
     tab_before: $tab_before,
@@ -303,8 +378,32 @@ let state = if $env.SHELL_PICKER_NUSHELL_SCENARIO == "binding" {
     unrelated_before: $unrelated_before,
     unrelated_after: (($env.config.keybindings | where name == unrelated | first) | to nuon --raw),
     first_bindings: $first,
-    second_bindings: ($env.config.keybindings | to nuon --raw),
+    second_bindings: $second,
+    post_restore_bindings: $post_restore_bindings,
     own_count: (($env.config.keybindings | where name == _shell_picker_space) | length),
+    own_after_setup: $own_after_setup,
+    first_closure_count: $first_closure_count,
+    first_restore_count: $first_restore_count,
+    second_closure_count: $second_closure_count,
+    second_restore_count: $second_restore_count,
+    first_hook_order: $first_hook_order,
+    second_hook_order: $second_hook_order,
+    suspended_hook_order: $suspended_hook_order,
+    first_resume_hook_order: $first_resume_hook_order,
+    second_resume_hook_order: $second_resume_hook_order,
+    post_restore_hook_order: $post_restore_hook_order,
+    first_closure_results: $first_closure_results,
+    second_closure_results: $second_closure_results,
+    suspended_closure_results: $suspended_closure_results,
+    first_resume_closure_results: $first_resume_closure_results,
+    second_resume_closure_results: $second_resume_closure_results,
+    post_restore_closure_results: $post_restore_closure_results,
+    own_after_space: $own_after_space,
+    own_after_first_hook: $own_after_first_hook,
+    own_after_second_hook: $own_after_second_hook,
+    own_after_new_prompt: $own_after_new_prompt,
+    buffer_after_space: $buffer_after_space,
+    buffer_after_new_prompt: $buffer_after_new_prompt,
   }
 } else {
   _shell_picker_space
@@ -323,6 +422,12 @@ let state = if $env.SHELL_PICKER_NUSHELL_SCENARIO == "binding" {
     decoded: $decoded,
     tab_before: "", tab_after: "", control_space_before: "", control_space_after: "",
     unrelated_before: "", unrelated_after: "", first_bindings: "", second_bindings: "", own_count: 0,
+    post_restore_bindings: "",
+    first_closure_count: 0, first_restore_count: 0, second_closure_count: 0, second_restore_count: 0,
+    first_hook_order: [], second_hook_order: [], suspended_hook_order: [], first_resume_hook_order: [], second_resume_hook_order: [], post_restore_hook_order: [],
+    first_closure_results: [], second_closure_results: [], suspended_closure_results: [], first_resume_closure_results: [], second_resume_closure_results: [], post_restore_closure_results: [],
+    own_after_setup: 0, own_after_space: 0, own_after_first_hook: 0, own_after_second_hook: 0, own_after_new_prompt: 0,
+    buffer_after_space: $env.SHELL_PICKER_TEST_BUFFER, buffer_after_new_prompt: $env.SHELL_PICKER_TEST_BUFFER,
   }
 }
 

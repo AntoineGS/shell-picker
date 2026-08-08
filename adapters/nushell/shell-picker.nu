@@ -96,22 +96,32 @@ def --env _shell_picker_pick_cp [] {
   commandline edit --replace $"cp ($encoded.value)"
 }
 
+def --env _shell_picker_remove_space_binding [] {
+  $env.config.keybindings = (
+    $env.config.keybindings
+    | where {|existing| try { $existing.name != "_shell_picker_space" } catch { true } }
+  )
+}
+
 def --env _shell_picker_space [] {
   let buffer = (commandline)
   let cursor = (commandline get-cursor)
   commandline edit --insert " "
 
   if $cursor != 2 {
+    _shell_picker_remove_space_binding
     return
   }
   if $buffer == "cd" {
     _shell_picker_pick_cd
   } else if $buffer == "cp" {
     _shell_picker_pick_cp
+  } else {
+    _shell_picker_remove_space_binding
   }
 }
 
-def --env shell-picker-bind-nushell [] {
+def --env _shell_picker_install_space_binding [] {
   let binding = {
     name: _shell_picker_space
     modifier: none
@@ -123,5 +133,26 @@ def --env shell-picker-bind-nushell [] {
     $env.config.keybindings
     | where {|existing| try { $existing.name != "_shell_picker_space" } catch { true } }
     | append $binding
+  )
+}
+
+def --env _shell_picker_restore_space_binding [] {
+  let buffer = (commandline)
+  let own = (
+    $env.config.keybindings
+    | where {|existing| try { $existing.name == "_shell_picker_space" } catch { false } }
+  )
+  if ($own | is-empty) and ($buffer | is-not-empty) {
+    return
+  }
+  _shell_picker_install_space_binding
+}
+
+def --env shell-picker-bind-nushell [] {
+  _shell_picker_install_space_binding
+  $env.config.hooks.pre_prompt = (
+    $env.config.hooks.pre_prompt
+    | where {|existing| try { $existing != "_shell_picker_restore_space_binding" } catch { true } }
+    | append "_shell_picker_restore_space_binding"
   )
 }

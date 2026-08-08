@@ -71,6 +71,9 @@ func splitActivationEnvironmentEntry(entry string, windows bool) (name, value st
 }
 
 func validActivationDriveEnvironmentEntry(name, value string) bool {
+	if name == "=::" {
+		return value == "::\\"
+	}
 	if len(name) != 3 || name[0] != '=' || !activationASCIILetter(name[1]) || name[2] != ':' || len(value) < 3 {
 		return false
 	}
