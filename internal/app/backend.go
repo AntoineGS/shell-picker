@@ -77,7 +77,7 @@ func (backend *pickerBackend) LoadGeneration(ctx context.Context, request sessio
 		return nil, cause
 	}
 	if backend.enrichment != nil {
-		if err := backend.enrichment.ValidateLoad(request); err != nil {
+		if err := backend.enrichment.ValidateLoad(ctx, request); err != nil {
 			return nil, err
 		}
 	}

@@ -5,11 +5,65 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/fzf"
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
 )
+
+func TestInitialEnrichmentLoadWaitsForEventFinalization(t *testing.T) {
+	actor := newEnrichmentActor(t, protocol.ModeInsert)
+	source := &controlledInitialZoxideSource{
+		started: make(chan struct{}), finished: make(chan struct{}), release: make(chan struct{}),
+		ignoreCtx: true, result: enrichmentSource("/late"),
+	}
+	defer close(source.release)
+	enrichment := newTestEnrichment(t, context.Background(), actor, source, fzf.NewInputStream(nil))
+	if err := enrichment.Activate(1); err != nil {
+		t.Fatalf("Activate: %v", err)
+	}
+	result, err := enrichment.HandleEvent(context.Background(), protocol.Event{Opcode: protocol.OpParent})
+	if err != nil {
+		t.Fatalf("HandleEvent: %v", err)
+	}
+
+	backend := &pickerBackend{actor: actor, enrichment: enrichment, metrics: &pickerMetrics{}}
+	loadDone := make(chan error, 1)
+	go func() {
+		_, loadErr := backend.LoadGeneration(context.Background(), sessionipc.LoadRequest{
+			Generation: result.Effect.ReloadGeneration,
+			EventID:    result.EventID,
+		})
+		loadDone <- loadErr
+	}()
+
+	select {
+	case loadErr := <-loadDone:
+		t.Fatalf("load returned before event finalization: %v", loadErr)
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := enrichment.FinalizeEvent(context.Background(), sessionipc.EventFinalizeRequest{
+		EventID: result.EventID,
+		Applied: true,
+	}); err != nil {
+		t.Fatalf("FinalizeEvent: %v", err)
+	}
+	select {
+	case loadErr := <-loadDone:
+		if loadErr != nil {
+			t.Fatalf("LoadGeneration: %v", loadErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("load remained blocked after event finalization")
+	}
+	if err := enrichment.FinalizeLoad(context.Background(), sessionipc.LoadFinalizeRequest{
+		EventID: result.EventID,
+		Applied: true,
+	}); err != nil {
+		t.Fatalf("FinalizeLoad: %v", err)
+	}
+}
 
 func TestInitialEnrichmentLoadRequiresExactEventAndGenerationAndFinalization(t *testing.T) {
 	actor := newEnrichmentActor(t, protocol.ModeInsert)

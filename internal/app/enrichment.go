@@ -540,8 +540,8 @@ func (enrichment *initialEnrichment) FinalizeEvent(_ context.Context, request se
 		if enrichment.inFlight > 0 {
 			enrichment.inFlight--
 		}
-		enrichment.signalLocked()
 	}
+	enrichment.signalLocked()
 	enrichment.gate.Unlock()
 	return nil
 }
@@ -561,13 +561,32 @@ func (enrichment *initialEnrichment) BeginLoad(request sessionipc.LoadRequest) e
 	return nil
 }
 
-func (enrichment *initialEnrichment) ValidateLoad(request sessionipc.LoadRequest) error {
+func (enrichment *initialEnrichment) ValidateLoad(ctx context.Context, request sessionipc.LoadRequest) error {
 	if enrichment == nil {
 		return nil
 	}
-	enrichment.gate.Lock()
-	defer enrichment.gate.Unlock()
-	return enrichment.validateLoadLocked(request)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		enrichment.gate.Lock()
+		pending, ok := enrichment.pendingEvents[request.EventID]
+		if !ok || request.EventID == 0 || request.Generation == 0 || pending.generation != request.Generation || pending.loadRequested {
+			enrichment.gate.Unlock()
+			return errInitialEnrichmentLoadReservation
+		}
+		if pending.finalized && pending.applied {
+			enrichment.gate.Unlock()
+			return nil
+		}
+		changed := enrichment.stateChanged
+		enrichment.gate.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
 }
 
 func (enrichment *initialEnrichment) validateLoadLocked(request sessionipc.LoadRequest) error {
