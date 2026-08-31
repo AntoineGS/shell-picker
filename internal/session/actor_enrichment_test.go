@@ -38,7 +38,7 @@ func TestActorEnrichPublishesClonedSnapshotWithoutEffect(t *testing.T) {
 		t.Fatalf("metrics = %+v, want source metrics and durations", result.Metrics)
 	}
 
-	key := records[0].FullKey()
+	key := records[0].Wire().Bytes()
 	records[0].Path[0] = 'X'
 	records[0].Target.Path[0] = 'X'
 	records[0].Payload = "mutated-input"
@@ -46,7 +46,8 @@ func TestActorEnrichPublishesClonedSnapshotWithoutEffect(t *testing.T) {
 	resultRecords[0].Path[0] = 'Y'
 	resultRecords[0].Target.Path[0] = 'Y'
 	resultRecords[0].Payload = "mutated-output"
-	result.Snapshot.byFullRecord[key][0] = 99
+	framed := result.Snapshot.FramedRecords()
+	framed[0] = 'X'
 
 	current, err := actor.Current(context.Background())
 	if err != nil {
@@ -59,8 +60,8 @@ func TestActorEnrichPublishesClonedSnapshotWithoutEffect(t *testing.T) {
 		string(got.Target.Path) != "/enriched" || got.Payload != protocol.EncodePath([]byte("/enriched")) {
 		t.Fatalf("current record = %+v, input/output alias leaked", got)
 	}
-	if positions := current.byFullRecord[key]; len(positions) != 1 || positions[0] != 0 {
-		t.Fatalf("current index[%q] = %v, want [0]", key, positions)
+	if _, err := actor.ResolveCurrent(context.Background(), key); err != nil {
+		t.Fatalf("ResolveCurrent() after output mutation: %v", err)
 	}
 }
 
@@ -193,7 +194,7 @@ func TestActorEnrichRejectsAtGenerationLimitWithoutPublication(t *testing.T) {
 	if !errors.Is(err, errGenerationLimit) {
 		t.Fatalf("Enrich(at generation limit) = %v, want %v", err, errGenerationLimit)
 	}
-	if result.Snapshot.Generation() != 0 || len(result.Snapshot.records) != 0 ||
+	if result.Snapshot.Generation() != 0 || result.Snapshot.RecordCount() != 0 ||
 		result.Effect != (protocol.Effect{}) || result.Metrics != (TransitionMetrics{}) {
 		t.Fatalf("generation-limit result = %+v, want zero result", result)
 	}

@@ -1,31 +1,33 @@
 _shell_picker_cd() {
   emulate -L zsh
-  local saved=$BUFFER saved_cursor=$CURSOR output target record
-  integer picker_status=1 count=0 valid=1
+  local saved=$BUFFER saved_cursor=$CURSOR target
+  local -a records
+  integer picker_status=1 valid=1
 
-  output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-cd.${$}.XXXXXX") || {
-    zle redisplay
-    return 0
-  }
-  {
-    command shell-picker cd --cwd "$PWD" --home "$HOME" --output nul >| "$output"
+  records=("${(@0)$(
+    command shell-picker cd --cwd "$PWD" --home "$HOME" --output nul
     picker_status=$?
-    while true; do
-      record=
-      if IFS= read -r -d $'\0' record; then
-        [[ -n $record ]] || valid=0
-        target=$record
-        (( ++count ))
-      else
-        [[ -z $record ]] || valid=0
-        break
-      fi
-    done < "$output"
-  } always {
-    command rm -f -- "$output"
-  }
+    builtin print -rn -- $'\0\0'
+    exit $picker_status
+  )}")
+  picker_status=$?
+  if [[ ${records[-1]} == '' && ${records[-2]} == '' ]]; then
+    records[-1]=()
+    records[-1]=()
+  else
+    valid=0
+  fi
+  if [[ ${records[-1]} == '' ]]; then
+    records[-1]=()
+  else
+    valid=0
+  fi
+  (( ${#records} == 1 )) || valid=0
+  for target in "${records[@]}"; do
+    [[ -n $target ]] || valid=0
+  done
 
-  if (( picker_status != 0 || ! valid || count != 1 )); then
+  if (( picker_status != 0 || ! valid )); then
     BUFFER=$saved
     CURSOR=$saved_cursor
     zle redisplay
@@ -38,31 +40,32 @@ _shell_picker_cd() {
 
 _shell_picker_cp() {
   emulate -L zsh
-  local saved=$BUFFER saved_cursor=$CURSOR output selected word argument cluster option redirection
+  local saved=$BUFFER saved_cursor=$CURSOR selected word argument cluster option redirection
   local -a selected_paths quoted parsed_words command_words
   integer picker_status=1 valid=1 has_terminator=0 index option_index
   integer expect_redirection_operand=0 expect_option_argument=0
 
-  output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-cp.${$}.XXXXXX") || {
-    zle redisplay
-    return 0
-  }
-  {
-    command shell-picker cp --cwd "$PWD" --home "$HOME" --output nul >| "$output"
+  selected_paths=("${(@0)$(
+    command shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
     picker_status=$?
-    while true; do
-      selected=
-      if IFS= read -r -d $'\0' selected; then
-        [[ -n $selected ]] || valid=0
-        selected_paths+=("$selected")
-      else
-        [[ -z $selected ]] || valid=0
-        break
-      fi
-    done < "$output"
-  } always {
-    command rm -f -- "$output"
-  }
+    builtin print -rn -- $'\0\0'
+    exit $picker_status
+  )}")
+  picker_status=$?
+  if [[ ${selected_paths[-1]} == '' && ${selected_paths[-2]} == '' ]]; then
+    selected_paths[-1]=()
+    selected_paths[-1]=()
+  else
+    valid=0
+  fi
+  if [[ ${selected_paths[-1]} == '' ]]; then
+    selected_paths[-1]=()
+  else
+    valid=0
+  fi
+  for selected in "${selected_paths[@]}"; do
+    [[ -n $selected ]] || valid=0
+  done
 
   if (( picker_status != 0 || ! valid || ${#selected_paths} == 0 )); then
     BUFFER=$saved

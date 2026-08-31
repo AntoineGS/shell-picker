@@ -56,6 +56,17 @@ func newRecord(kind protocol.Kind, display string, path []byte) Record {
 	}
 }
 
+func newRecordFromString(kind protocol.Kind, display, path string) Record {
+	recordPath := []byte(path)
+	return Record{
+		Kind:    kind,
+		Display: display,
+		Path:    recordPath,
+		Payload: protocol.EncodePath(recordPath),
+		Target:  pathutil.Filesystem(recordPath),
+	}
+}
+
 func newVirtualDrivesRecord(display string) Record {
 	token := []byte(protocol.VirtualDrivesTarget)
 	return Record{

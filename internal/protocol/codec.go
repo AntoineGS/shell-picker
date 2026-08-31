@@ -133,6 +133,25 @@ func FrameRecords(records []WireRecord) []byte {
 	return framed
 }
 
+type wireRecordValue interface {
+	Wire() WireRecord
+}
+
+func FrameRecordValues[T wireRecordValue](records []T) []byte {
+	size := len(records)
+	for _, value := range records {
+		record := value.Wire()
+		size += len(record.Kind) + len(record.Display) + len(record.Payload) + 2
+	}
+
+	framed := make([]byte, 0, size)
+	for _, value := range records {
+		framed = appendRecord(framed, value.Wire())
+		framed = append(framed, 0)
+	}
+	return framed
+}
+
 func WriteFramedRecords(w io.Writer, records []WireRecord) error {
 	for _, record := range records {
 		if err := writeAll(w, record.Bytes()); err != nil {

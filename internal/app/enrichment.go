@@ -419,7 +419,7 @@ func (enrichment *initialEnrichment) beginCommit() bool {
 func (enrichment *initialEnrichment) finishCommit(result *session.TransitionResult, terminal error) {
 	if result != nil {
 		enrichment.recordTransition(*result)
-		enrichment.setTraceDecision("published", result.Snapshot.Generation(), len(result.Snapshot.Records()))
+		enrichment.setTraceDecision("published", result.Snapshot.Generation(), result.Snapshot.RecordCount())
 	} else if terminal == nil {
 		enrichment.setTraceDecision("discarded", 0, 0)
 	} else if context.Cause(enrichment.parent) != nil {

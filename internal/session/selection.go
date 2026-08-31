@@ -17,14 +17,14 @@ func ValidateCD(snapshot Snapshot, accepted [][]byte) (protocol.Outcome, error) 
 	if len(accepted) != 1 {
 		return protocol.Outcome{}, ErrInvalidSelection
 	}
-	if _, err := protocol.ParseRecord(accepted[0]); err != nil {
+	_, err := protocol.ParseRecord(accepted[0])
+	if err != nil {
 		return protocol.Outcome{}, ErrInvalidSelection
 	}
-	positions := snapshot.byFullRecord[string(accepted[0])]
-	if len(positions) == 0 {
+	record, ok := snapshot.lookupRecord(string(accepted[0]))
+	if !ok {
 		return protocol.Outcome{}, ErrUnknownSelection
 	}
-	record := snapshot.records[positions[0]]
 	if record.Kind == protocol.KindVirtual || record.Target.Kind != pathutil.KindFilesystem || !cdSelectionKind(record.Kind) {
 		return protocol.Outcome{}, ErrInvalidSelection
 	}
@@ -38,16 +38,17 @@ func ValidateCP(snapshot Snapshot, accepted [][]byte, base []byte) (protocol.Out
 	if len(accepted) == 0 {
 		return protocol.Outcome{}, ErrInvalidSelection
 	}
-	counts := make(map[string]int, len(accepted))
+	counts := make(map[protocol.WireRecord]int, len(accepted))
 	for _, raw := range accepted {
-		if _, err := protocol.ParseRecord(raw); err != nil {
+		key, err := protocol.ParseRecord(raw)
+		if err != nil {
 			return protocol.Outcome{}, ErrInvalidSelection
 		}
-		counts[string(raw)]++
+		counts[key]++
 	}
 	paths := make([][]byte, 0, len(accepted))
-	for _, record := range snapshot.records {
-		key := record.FullKey()
+	for _, record := range snapshot.recordValues() {
+		key := record.Wire()
 		if counts[key] == 0 {
 			continue
 		}

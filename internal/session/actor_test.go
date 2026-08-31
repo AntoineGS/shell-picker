@@ -404,6 +404,21 @@ func TestActorNilBuildRetainsGenerationRecordsAndResolvesCurrentMembership(t *te
 	}
 }
 
+func TestResolveCurrentMalformedHonorsContextAndActorLifecycle(t *testing.T) {
+	actor, _ := initializeActor(t)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := actor.ResolveCurrent(canceled, []byte("malformed")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ResolveCurrent(canceled malformed) = %v", err)
+	}
+	if err := actor.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := actor.ResolveCurrent(context.Background(), []byte("malformed")); !errors.Is(err, ErrClosed) {
+		t.Fatalf("ResolveCurrent(closed malformed) = %v", err)
+	}
+}
+
 func TestActorSessionCancellationWaitsForGenerationBeforeReplyAndRollback(t *testing.T) {
 	sessionCtx, stop := context.WithCancelCause(context.Background())
 	generator := newControlledGenerator()

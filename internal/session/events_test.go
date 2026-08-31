@@ -37,7 +37,7 @@ func eventSnapshot(picker protocol.Picker, mode protocol.Mode, location pathutil
 		Picker: picker, Mode: mode, Location: location,
 		Home: pathutil.Filesystem([]byte(sessionTestPath("/home/test"))), Prompt: prefix,
 	}
-	return Snapshot{generation: 7, state: state, records: records, byFullRecord: buildIndex(records)}
+	return Snapshot{generation: 7, state: state, records: cloneRecordSet(records)}
 }
 
 func TestModeAndQueryTransitionMatrix(t *testing.T) {
@@ -126,7 +126,7 @@ func TestPickerNavigationHeaderCompactsHome(t *testing.T) {
 
 	reduction, err := Reduce(snapshot, protocol.Event{
 		Opcode:      protocol.OpForward,
-		CurrentItem: []byte(snapshot.records[0].FullKey()),
+		CurrentItem: []byte(snapshot.records.values[0].FullKey()),
 	})
 	proposal := reduction.proposalForTest()
 	wantHeader := pathutil.PromptDisplayHome(pathutil.Filesystem([]byte(targetPath)), home)

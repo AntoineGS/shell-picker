@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -86,8 +85,16 @@ func TestEnumerateCDSkipsDanglingSymlink(t *testing.T) {
 }
 
 func TestDeterministicFoldedOrderUsesRawByteTie(t *testing.T) {
-	names := [][]byte{[]byte("a"), []byte("A"), []byte("ä"), []byte("Ä"), {'a', 0xff}, {'A', 0xff}}
-	sort.Slice(names, func(i, j int) bool { return lessFolded(names[i], names[j]) })
+	raw := [][]byte{[]byte("a"), []byte("A"), []byte("ä"), []byte("Ä"), {'a', 0xff}, {'A', 0xff}}
+	entries := make([]localEntry, len(raw))
+	for index, name := range raw {
+		entries[index] = localEntry{name: string(name), folded: foldString(string(name))}
+	}
+	sortLocalEntries(entries)
+	names := make([][]byte, len(entries))
+	for index, entry := range entries {
+		names[index] = []byte(entry.name)
+	}
 	want := [][]byte{[]byte("A"), []byte("a"), {'A', 0xff}, {'a', 0xff}, []byte("Ä"), []byte("ä")}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("ordered names = %q; want %q", names, want)

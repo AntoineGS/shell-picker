@@ -25,10 +25,9 @@ type GenerateFunc func(context.Context, candidate.BuildRequest) (candidate.Build
 type cleanupFunc func(*pathutil.CreatedTree) error
 
 type Snapshot struct {
-	generation   uint64
-	state        State
-	records      []candidate.Record
-	byFullRecord map[string][]int
+	generation uint64
+	state      State
+	records    *recordSet
 }
 
 type ProposedTransition struct {
@@ -153,7 +152,42 @@ func (snapshot Snapshot) State() State {
 }
 
 func (snapshot Snapshot) Records() []candidate.Record {
-	return cloneRecords(snapshot.records)
+	if snapshot.records == nil {
+		return nil
+	}
+	return cloneRecords(snapshot.records.values)
+}
+
+func (snapshot Snapshot) RecordCount() int {
+	if snapshot.records == nil {
+		return 0
+	}
+	return len(snapshot.records.values)
+}
+
+func (snapshot Snapshot) FramedRecords() []byte {
+	if snapshot.records == nil {
+		return nil
+	}
+	return protocol.FrameRecordValues(snapshot.records.values)
+}
+
+func (snapshot Snapshot) recordValues() []candidate.Record {
+	if snapshot.records == nil {
+		return nil
+	}
+	return snapshot.records.values
+}
+
+func (snapshot Snapshot) lookupRecord(key string) (candidate.Record, bool) {
+	if snapshot.records == nil {
+		return candidate.Record{}, false
+	}
+	position, ok := snapshot.records.byFullRecord[key]
+	if !ok {
+		return candidate.Record{}, false
+	}
+	return snapshot.records.values[position], true
 }
 
 func cloneState(state State) State {
@@ -258,22 +292,10 @@ func cloneAddIntent(intent AddIntent) AddIntent {
 
 func cloneSnapshot(snapshot Snapshot) Snapshot {
 	return Snapshot{
-		generation:   snapshot.generation,
-		state:        cloneState(snapshot.state),
-		records:      cloneRecords(snapshot.records),
-		byFullRecord: cloneIndex(snapshot.byFullRecord),
+		generation: snapshot.generation,
+		state:      cloneState(snapshot.state),
+		records:    snapshot.records,
 	}
-}
-
-func cloneIndex(index map[string][]int) map[string][]int {
-	if index == nil {
-		return nil
-	}
-	cloned := make(map[string][]int, len(index))
-	for key, positions := range index {
-		cloned[key] = append([]int(nil), positions...)
-	}
-	return cloned
 }
 
 func transitionResult(snapshot Snapshot, command *applyCommand, accepted time.Time, effect protocol.Effect, sources candidate.SourceMetrics) TransitionResult {
@@ -292,15 +314,6 @@ func enrichTransitionResult(snapshot Snapshot, command *enrichCommand, accepted 
 			Sources:           command.sources,
 		},
 	}
-}
-
-func buildIndex(records []candidate.Record) map[string][]int {
-	index := make(map[string][]int, len(records))
-	for position, record := range records {
-		key := record.FullKey()
-		index[key] = append(index[key], position)
-	}
-	return index
 }
 
 func rollback(created *pathutil.CreatedTree) error {

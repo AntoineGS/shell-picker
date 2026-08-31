@@ -52,7 +52,7 @@ func newActor(ctx context.Context, generate GenerateFunc, cleanup cleanupFunc) *
 
 func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 	defer close(actor.done)
-	current := Snapshot{byFullRecord: make(map[string][]int)}
+	current := Snapshot{records: ownRecordSet(nil)}
 	var pending *pendingTransition
 	var replacement *applyCommand
 	var closeReply chan error
@@ -173,12 +173,10 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 						replyEnrichError(command, errGenerationLimit)
 						continue
 					}
-					records := cloneRecords(command.records)
 					current = Snapshot{
-						generation:   generation,
-						state:        cloneState(current.state),
-						records:      records,
-						byFullRecord: buildIndex(records),
+						generation: generation,
+						state:      cloneState(current.state),
+						records:    ownRecordSet(command.records),
 					}
 					result := enrichTransitionResult(current, command, accepted)
 					command.reply <- enrichReply{result: result}
@@ -210,15 +208,14 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 					command.reply <- snapshotReply{snapshot: cloneSnapshot(current)}
 				}
 			case resolveCommand:
-				positions := current.byFullRecord[command.key]
 				if shutdownErr != nil {
 					command.reply <- resolveReply{err: shutdownErr}
 				} else if cause := context.Cause(command.ctx); cause != nil {
 					command.reply <- resolveReply{err: cause}
-				} else if len(positions) == 0 {
+				} else if record, found := current.lookupRecord(command.key); !found {
 					command.reply <- resolveReply{err: ErrUnknownRecord}
 				} else {
-					command.reply <- resolveReply{record: cloneRecord(current.records[positions[0]])}
+					command.reply <- resolveReply{record: cloneRecord(record)}
 				}
 			case completionCommand:
 				if pending == nil || command.id != pending.id {
@@ -237,12 +234,11 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 				} else if proposal.BaseGeneration != current.generation {
 					replyApplyError(pending.command, ErrStaleGeneration)
 				} else {
-					records := cloneRecords(command.result.Records)
 					effect := proposal.Effect
 					effect.ReloadGeneration = pending.id
 					current = Snapshot{
 						generation: pending.id,
-						state:      cloneState(proposal.State), records: records, byFullRecord: buildIndex(records),
+						state:      cloneState(proposal.State), records: cloneRecordSet(command.result.Records),
 					}
 					result := transitionResult(current, pending.command, pending.accepted, effect, command.result.Metrics)
 					pending.command.reply <- applyReply{result: result}

@@ -219,7 +219,7 @@ func exactImmediateChild(snapshot Snapshot, query []byte) (candidate.Record, boo
 	if state.Location.Kind != pathutil.KindFilesystem {
 		return candidate.Record{}, false
 	}
-	for _, record := range snapshot.records {
+	for _, record := range snapshot.recordValues() {
 		if record.Kind != protocol.KindLocal && record.Kind != protocol.KindDirectory {
 			continue
 		}
@@ -271,14 +271,15 @@ func resolveNavigationRecord(snapshot Snapshot, raw []byte) (candidate.Record, e
 }
 
 func resolveRecord(snapshot Snapshot, raw []byte) (candidate.Record, error) {
-	if _, err := protocol.ParseRecord(raw); err != nil {
+	_, err := protocol.ParseRecord(raw)
+	if err != nil {
 		return candidate.Record{}, fmt.Errorf("%w: malformed record: %v", ErrUnknownRecord, err)
 	}
-	positions := snapshot.byFullRecord[string(raw)]
-	if len(positions) == 0 {
+	record, ok := snapshot.lookupRecord(string(raw))
+	if !ok {
 		return candidate.Record{}, ErrUnknownRecord
 	}
-	return cloneRecord(snapshot.records[positions[0]]), nil
+	return cloneRecord(record), nil
 }
 
 func canNavigate(picker protocol.Picker, kind protocol.Kind) bool {

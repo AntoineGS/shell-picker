@@ -1,7 +1,6 @@
 package candidate
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"unicode"
 	"unicode/utf8"
@@ -35,9 +35,9 @@ var (
 )
 
 type localEntry struct {
-	name      []byte
-	folded    []byte
-	path      []byte
+	name      string
+	folded    string
+	path      string
 	hidden    bool
 	directory bool
 	symlink   bool
@@ -91,6 +91,7 @@ func enumerateFilesystem(ctx context.Context, picker protocol.Picker, location p
 
 func readLocalEntries(ctx context.Context, directory directoryReader, base []byte) ([]localEntry, error) {
 	entries := make([]localEntry, 0, localBatchSize)
+	basePath := string(base)
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -100,15 +101,14 @@ func readLocalEntries(ctx context.Context, directory directoryReader, base []byt
 			return nil, fmt.Errorf("read local directory %q: %w", base, readErr)
 		}
 		for _, directoryEntry := range batch {
-			name := []byte(directoryEntry.Name())
-			if bytes.IndexByte(name, 0) >= 0 {
+			name := directoryEntry.Name()
+			if strings.IndexByte(name, 0) >= 0 {
 				return nil, fmt.Errorf("local entry name contains NUL: %q", name)
 			}
-			path := []byte(filepath.Join(string(base), directoryEntry.Name()))
 			entries = append(entries, localEntry{
 				name:      name,
-				folded:    foldBytes(name),
-				path:      path,
+				folded:    foldString(name),
+				path:      filepath.Join(basePath, name),
 				hidden:    len(name) > 0 && name[0] == '.',
 				directory: directoryEntry.IsDir(),
 				symlink:   directoryEntry.Type()&os.ModeSymlink != 0,
@@ -130,13 +130,16 @@ func classifySymlinks(ctx context.Context, entries []localEntry, requestedWorker
 	if len(symlinkIndices) == 0 {
 		return ctx.Err()
 	}
+	if len(symlinkIndices) == 1 {
+		return classifySymlink(ctx, entries, symlinkIndices[0])
+	}
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	jobs := make(chan int)
 	errorsFound := make(chan error, 1)
 	var workers sync.WaitGroup
-	for range localWorkerCount(requestedWorkers) {
+	for range min(localWorkerCount(requestedWorkers), len(symlinkIndices)) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
@@ -148,19 +151,14 @@ func classifySymlinks(ctx context.Context, entries []localEntry, requestedWorker
 					if !ok {
 						return
 					}
-					info, err := statLocalPath(string(entries[index].path))
-					if err != nil {
-						if errors.Is(err, os.ErrNotExist) {
-							continue
-						}
+					if err := classifySymlink(workerCtx, entries, index); err != nil {
 						select {
-						case errorsFound <- fmt.Errorf("stat local entry %q: %w", entries[index].path, err):
+						case errorsFound <- err:
 							cancel()
 						default:
 						}
 						return
 					}
-					entries[index].directory = info.IsDir()
 				}
 			}
 		}()
@@ -182,6 +180,21 @@ sendJobs:
 	default:
 		return ctx.Err()
 	}
+}
+
+func classifySymlink(ctx context.Context, entries []localEntry, index int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	info, err := statLocalPath(entries[index].path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat local entry %q: %w", entries[index].path, err)
+	}
+	entries[index].directory = info.IsDir()
+	return nil
 }
 
 func localWorkerCount(requested int) int {
@@ -218,14 +231,14 @@ func buildLocalRecords(picker protocol.Picker, location pathutil.Location, entri
 		records = grown
 	}
 	for _, entry := range directories {
-		display := protocol.EscapeDisplay(entry.name)
+		display := protocol.EscapeDisplay([]byte(entry.name))
 		if picker == protocol.PickerCP {
 			display += "/"
 		}
-		records = append(records, newRecord(directoryKind, display, entry.path))
+		records = append(records, newRecordFromString(directoryKind, display, entry.path))
 	}
 	for _, entry := range files {
-		records = append(records, newRecord(protocol.KindFile, protocol.EscapeDisplay(entry.name), entry.path))
+		records = append(records, newRecordFromString(protocol.KindFile, protocol.EscapeDisplay([]byte(entry.name)), entry.path))
 	}
 	return records
 }
@@ -250,33 +263,25 @@ func sortLocalEntries(entries []localEntry) {
 		if entries[left].hidden != entries[right].hidden {
 			return entries[left].hidden
 		}
-		if compared := bytes.Compare(entries[left].folded, entries[right].folded); compared != 0 {
-			return compared < 0
+		if entries[left].folded != entries[right].folded {
+			return entries[left].folded < entries[right].folded
 		}
-		return bytes.Compare(entries[left].name, entries[right].name) < 0
+		return entries[left].name < entries[right].name
 	})
 }
 
-func lessFolded(left, right []byte) bool {
-	foldedLeft := foldBytes(left)
-	foldedRight := foldBytes(right)
-	if compared := bytes.Compare(foldedLeft, foldedRight); compared != 0 {
-		return compared < 0
-	}
-	return bytes.Compare(left, right) < 0
-}
-
-func foldBytes(value []byte) []byte {
-	folded := make([]byte, 0, len(value))
+func foldString(value string) string {
+	var folded strings.Builder
+	folded.Grow(len(value))
 	for len(value) > 0 {
-		r, size := utf8.DecodeRune(value)
+		r, size := utf8.DecodeRuneInString(value)
 		if r == utf8.RuneError && size == 1 {
-			folded = append(folded, value[0])
+			folded.WriteByte(value[0])
 			value = value[1:]
 			continue
 		}
-		folded = utf8.AppendRune(folded, unicode.ToLower(r))
+		folded.WriteRune(unicode.ToLower(r))
 		value = value[size:]
 	}
-	return folded
+	return folded.String()
 }

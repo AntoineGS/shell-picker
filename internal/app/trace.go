@@ -205,7 +205,7 @@ func zeroZoxideMetrics(source *candidate.SourceMetrics) {
 
 func traceGenerationTransition(trace *pickerTrace, policy candidate.ZoxidePolicy, result session.TransitionResult, path []byte, sources candidate.SourceMetrics) {
 	trace.event(integrationpkg.TraceEvent{Name: "generation.publish", Generation: result.Snapshot.Generation(),
-		CandidateCount: len(result.Snapshot.Records()), Outcome: "ok", Path: path, ZoxidePolicy: tracePolicy(policy),
+		CandidateCount: result.Snapshot.RecordCount(), Outcome: "ok", Path: path, ZoxidePolicy: tracePolicy(policy),
 		ZoxideAttempts: sources.ZoxideAttempts, ZoxideStarts: sources.ZoxideStarts,
 		ZoxideExits: sources.ZoxideExits, ZoxideProcesses: sources.ZoxideProcesses,
 		ZoxideLive: sources.ZoxideLive, ZoxideMaxLive: sources.ZoxideMaxLive,

@@ -86,7 +86,7 @@ func (backend *pickerBackend) LoadGeneration(ctx context.Context, request sessio
 	if err != nil {
 		return nil, err
 	}
-	data = frameCandidateRecords(snapshot.Records())
+	data = snapshot.FramedRecords()
 	if backend.enrichment != nil {
 		// Mark the exact reservation only after Snapshot and framing have copied
 		// the bytes returned to fzf. FinalizeLoad performs the release.

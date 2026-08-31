@@ -70,12 +70,15 @@ emit() { print -rn -- "$1"$'\0' }
 case $PICKER_MODE in
   abort) ;;
   error) exit 1 ;;
+  error-output) emit valid; exit 1 ;;
   cd-newline) emit $'line\n' ;;
   cd-double) emit one; emit two ;;
   cp-order) emit 'first path'; emit 'third path'; emit 'first path' ;;
   cp-leading) emit '-leading'; emit duplicate; emit duplicate ;;
   cp-special) emit '-leading'; emit 'trailing '; emit 'back\slash'; emit "apost'rophe"; emit $'nbsp\u00a0path'; emit $'tab\tpath'; emit $'line\npath' ;;
   malformed) emit 'first path'; print -rn -- unterminated ;;
+  malformed-newline) emit 'first path'; print -r -- trailing ;;
+  malformed-empty) emit 'first path'; emit ''; emit second ;;
   *) print -rn -- unknown; exit 0 ;;
 esac
 FAKE
@@ -148,7 +151,7 @@ test_cd_nul_quoting_and_immediate_accept() {
 
 test_cd_abort_error_and_malformed_restore() {
   local mode
-  for mode in abort error malformed cd-double unknown; do
+  for mode in abort error error-output malformed malformed-newline malformed-empty cd-double unknown; do
     reset_case
     PICKER_MODE=$mode
     BUFFER='keep cd state' CURSOR=4
@@ -182,7 +185,7 @@ test_cp_order_duplicates_and_special_bytes() {
 
 test_cp_abort_error_and_malformed_restore() {
   local mode
-  for mode in abort error malformed unknown; do
+  for mode in abort error error-output malformed malformed-newline malformed-empty unknown; do
     reset_case
     PICKER_MODE=$mode
     LBUFFER='cp original ' RBUFFER='suffix'
@@ -342,7 +345,7 @@ test_tab_current_command_parser() {
   assert_equal 1 "$fzf_completion_calls" 'RBUFFER did not use existing completion'
 }
 
-test_temp_cleanup_is_owned_and_soft() {
+test_output_transport_ignores_tmpdir() {
   reset_case
   local unrelated=$TMPDIR/shell-picker-cd.UNRELATED
   print -r -- keep >| "$unrelated"
@@ -350,18 +353,21 @@ test_temp_cleanup_is_owned_and_soft() {
   _shell_picker_cd
   [[ -f $unrelated ]] || fail 'widget cleanup deleted an unrelated temporary file'
   local -a leftovers=( $TMPDIR/shell-picker-(cd|cp).*(N) )
-  assert_equal 1 "${#leftovers}" 'widget leaked its temporary output'
+  assert_equal 1 "${#leftovers}" 'widget created an unexpected temporary output'
 
+  reset_case
   local saved_tmpdir=$TMPDIR
   TMPDIR=$test_root/missing
   BUFFER='mktemp state' CURSOR=6
   _shell_picker_cd 2>/dev/null
+  picker_call_count
   TMPDIR=$saved_tmpdir
-  assert_equal 'mktemp state' "$BUFFER" 'mktemp failure changed the buffer'
-  assert_equal 6 "$CURSOR" 'mktemp failure changed the cursor'
+  assert_equal 'mktemp state' "$BUFFER" 'missing TMPDIR changed the buffer'
+  assert_equal 6 "$CURSOR" 'missing TMPDIR changed the cursor'
+  assert_equal 1 "$REPLY" 'missing TMPDIR prevented picker execution'
 }
 
-test_temp_commands_ignore_hostile_functions() {
+test_output_transport_ignores_hostile_temp_functions() {
   reset_case
   local saved_tmpdir=$TMPDIR
   TMPDIR=$test_root/'-leading temp'/'space dir'
@@ -400,8 +406,8 @@ test_cp_option_terminator
 test_cp_terminator_context
 test_cp_zsh_redirection_families
 test_tab_current_command_parser
-test_temp_cleanup_is_owned_and_soft
-test_temp_commands_ignore_hostile_functions
+test_output_transport_ignores_tmpdir
+test_output_transport_ignores_hostile_temp_functions
 
 if (( failures != 0 )); then
   print -ru2 -- "$failures zsh adapter assertion(s) failed"

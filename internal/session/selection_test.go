@@ -107,3 +107,17 @@ func TestValidateCPRejectsNilAndEmptyBaseBeforeSelection(t *testing.T) {
 		t.Fatalf("nil base precedence error=%v", err)
 	}
 }
+
+func TestZeroSnapshotRejectsOtherwiseValidRecordsWithoutPanicking(t *testing.T) {
+	record := eventRecord(protocol.KindFile, "one", "/work/one")
+	raw := record.Wire().Bytes()
+	if _, err := ValidateCD(Snapshot{}, [][]byte{raw}); !errors.Is(err, ErrUnknownSelection) {
+		t.Fatalf("ValidateCD(zero snapshot) = %v", err)
+	}
+	if _, err := ValidateCP(Snapshot{}, [][]byte{raw}, []byte("/work")); !errors.Is(err, ErrUnknownSelection) {
+		t.Fatalf("ValidateCP(zero snapshot) = %v", err)
+	}
+	if _, err := resolveRecord(Snapshot{}, raw); !errors.Is(err, ErrUnknownRecord) {
+		t.Fatalf("resolveRecord(zero snapshot) = %v", err)
+	}
+}

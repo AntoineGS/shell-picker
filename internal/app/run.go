@@ -178,7 +178,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if dependencies.beforeInitialInputPublish != nil {
 		dependencies.beforeInitialInputPublish(input)
 	}
-	if err := input.Append(frameCandidateRecords(initial.Snapshot.Records())); err != nil {
+	if err := input.Append(initial.Snapshot.FramedRecords()); err != nil {
 		if cause := context.Cause(ctx); cause != nil {
 			return protocol.Outcome{}, cause
 		}
