@@ -8,13 +8,13 @@ DEVELOPMENT_GOFLAGS := $(GOFLAGS) -ldflags=-X=main.version=$(GIT_COMMIT)
 build:
 	mkdir -p bin
 	GOFLAGS="$(DEVELOPMENT_GOFLAGS)" go build -trimpath -o bin/shell-picker ./cmd/shell-picker
+
+install:
+	GOFLAGS="$(DEVELOPMENT_GOFLAGS)" go install -trimpath ./cmd/shell-picker
 	@if [ -f "$(SHELL_PICKER_SETUP_SCRIPT)" ]; then \
 		grep -q '^latest_commit=' "$(SHELL_PICKER_SETUP_SCRIPT)" || { printf 'missing latest_commit in %s\n' "$(SHELL_PICKER_SETUP_SCRIPT)" >&2; exit 1; }; \
 		sed -i 's/^latest_commit=.*/latest_commit="$(GIT_COMMIT)"/' "$(SHELL_PICKER_SETUP_SCRIPT)"; \
 	fi
-
-install:
-	GOFLAGS="$(DEVELOPMENT_GOFLAGS)" go install -trimpath ./cmd/shell-picker
 
 windows-native:
 	go run ./scripts/windowsnative
