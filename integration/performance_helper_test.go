@@ -29,7 +29,7 @@ func TestPerformanceHelperCompletesThroughProcessRunner(t *testing.T) {
 	environment := replaceEnvironment(os.Environ(), parityHelperEnvironment+"=performance", "GO_PERF_HELPER=fzf", "GO_PERF_ZOXIDE_MODE=empty", "PATH="+directory)
 	var stdout bytes.Buffer
 	if err := (process.Runner{}).Run(context.Background(), process.Spec{
-		Path: "perf-zoxide", Args: []string{"query", "--list"}, Env: environment,
+		Path: "perf-zoxide", Args: []string{"query", "--list", "--all"}, Env: environment,
 		Stdout: &stdout, Containment: process.ContainmentOwnTree, WaitDelay: time.Second,
 	}); err != nil {
 		t.Fatalf("performance helper: %v", err)

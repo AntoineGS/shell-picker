@@ -58,7 +58,7 @@ func buildPerformanceZoxideHelper(t *testing.T) string {
 
 func warmPerformanceZoxideHelper(t *testing.T, path string) {
 	t.Helper()
-	command := exec.Command(path, "query", "--list")
+	command := exec.Command(path, "query", "--list", "--all")
 	command.Env = replaceEnvironment(os.Environ(), "GO_PERF_ZOXIDE_MODE=empty")
 	command.Stdout, command.Stderr = io.Discard, io.Discard
 	if err := command.Run(); err != nil {

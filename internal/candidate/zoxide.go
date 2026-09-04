@@ -170,7 +170,7 @@ func (cache *ZoxideCache) load(ctx context.Context) {
 	limitedStdout := newZoxideLimitWriter(&stdout, MaxZoxideOutputBytes, MaxZoxideRows, MaxZoxideRowBytes, outputCancel)
 	runErr := runner.Run(runCtx, process.Spec{
 		Path:        cache.path,
-		Args:        []string{"query", "--list"},
+		Args:        []string{"query", "--list", "--all"},
 		Env:         process.SanitizeEnv(cache.environment, nil),
 		Stdout:      limitedStdout,
 		Containment: process.ContainmentOwnTree,

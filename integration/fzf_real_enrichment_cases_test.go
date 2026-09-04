@@ -14,7 +14,7 @@ func TestRealZoxideHelperPublishesOnlyAfterRelease(t *testing.T) {
 	root := t.TempDir()
 	started := filepath.Join(root, "started")
 	release := filepath.Join(root, "release")
-	command := exec.Command(os.Args[0], "query", "--list")
+	command := exec.Command(os.Args[0], "query", "--list", "--all")
 	command.Env = replaceEnvironment(os.Environ(),
 		parityHelperEnvironment+"="+realZoxideHelperMode,
 		realZoxideStartedEnvironment+"="+started,
@@ -48,7 +48,7 @@ func TestRealZoxideHelperPublishesOnlyAfterRelease(t *testing.T) {
 func TestRealZoxideHelperCanBeCancelledBeforeRelease(t *testing.T) {
 	root := t.TempDir()
 	started := filepath.Join(root, "started")
-	command := exec.Command(os.Args[0], "query", "--list")
+	command := exec.Command(os.Args[0], "query", "--list", "--all")
 	command.Env = replaceEnvironment(os.Environ(),
 		parityHelperEnvironment+"="+realZoxideHelperMode,
 		realZoxideStartedEnvironment+"="+started,

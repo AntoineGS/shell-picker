@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) != 3 || os.Args[1] != "query" || os.Args[2] != "--list" {
+	if len(os.Args) != 4 || os.Args[1] != "query" || os.Args[2] != "--list" || os.Args[3] != "--all" {
 		os.Exit(2)
 	}
 	switch os.Getenv("GO_PERF_ZOXIDE_MODE") {

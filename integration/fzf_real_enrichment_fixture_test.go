@@ -362,7 +362,7 @@ func writeRealZoxideMarker(path, contents string) error {
 }
 
 func runRealZoxideHelper() int {
-	if len(os.Args) != 3 || os.Args[1] != "query" || os.Args[2] != "--list" {
+	if len(os.Args) != 4 || os.Args[1] != "query" || os.Args[2] != "--list" || os.Args[3] != "--all" {
 		return 2
 	}
 	marker, err := currentProcessIdentityMarker()

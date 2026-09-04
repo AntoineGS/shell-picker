@@ -236,6 +236,23 @@ func TestZoxideEmptyOutputAndSanitizedEnvironment(t *testing.T) {
 			t.Fatalf("records=%+v", records)
 		}
 	})
+	t.Run("does-not-probe-directory-availability", func(t *testing.T) {
+		wantErr := errors.New("stop before process start")
+		var got process.Spec
+		cache, err := NewZoxideCache(process.Runner{BeforeStart: func(spec process.Spec) error {
+			got = spec
+			return wantErr
+		}}, "zoxide", nil, zoxideFixtureTimeout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cache.Load(context.Background()); !errors.Is(err, wantErr) {
+			t.Fatalf("Load error=%v, want %v", err, wantErr)
+		}
+		if want := []string{"query", "--list", "--all"}; !reflect.DeepEqual(got.Args, want) {
+			t.Fatalf("zoxide arguments=%q, want %q", got.Args, want)
+		}
+	})
 }
 
 func TestZoxidePreservesArbitraryPathBytes(t *testing.T) {

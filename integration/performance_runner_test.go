@@ -15,7 +15,7 @@ import (
 )
 
 func runPerformanceHelper() (int, bool) {
-	if len(os.Args) == 3 && os.Args[1] == "query" && os.Args[2] == "--list" && os.Getenv("GO_PERF_HELPER") != "" {
+	if len(os.Args) == 4 && os.Args[1] == "query" && os.Args[2] == "--list" && os.Args[3] == "--all" && os.Getenv("GO_PERF_HELPER") != "" {
 		switch os.Getenv("GO_PERF_ZOXIDE_MODE") {
 		case "timeout":
 			signals := make(chan os.Signal, 1)
