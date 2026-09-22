@@ -32,8 +32,16 @@ func TestRenderInvalidPathAndRestoreEffects(t *testing.T) {
 		t.Fatalf("invalid=%q err=%v", invalid, err)
 	}
 	restore, err := RenderEffect(protocol.Effect{RestoreGeneration: 7})
-	if err != nil || restore != "reload-sync(l:7)+change-preview(p)+unbind(change,result-final)" {
+	if err != nil || restore != "reload-sync(l:7)+wait+change-preview(p)+unbind(change,result-final)" {
 		t.Fatalf("restore=%q err=%v", restore, err)
+	}
+}
+
+func TestRenderRestoreWaitsWithoutResettingPosition(t *testing.T) {
+	got, err := RenderEffectForEvent(protocol.Effect{RestoreGeneration: 7}, 9)
+	want := "reload-sync(l:7:9)+wait+change-preview(p)+unbind(change,result-final)"
+	if err != nil || got != want {
+		t.Fatalf("got=%q want=%q err=%v", got, want, err)
 	}
 }
 

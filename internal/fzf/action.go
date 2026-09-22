@@ -310,8 +310,14 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 	if effect.Ignore {
 		actions = append(actions, ignore())
 	}
+	if effect.ReloadGeneration != 0 || effect.RestoreGeneration != 0 {
+		// A following query edit can overwrite fzf's queued reload request.
+		// Both reload paths must finish before accepting more input, or a
+		// coordinator reservation can remain held without a load callback.
+		actions = append(actions, wait())
+	}
 	if effect.ReloadGeneration != 0 {
-		actions = append(actions, wait(), first())
+		actions = append(actions, first())
 	}
 	if effect.ReloadGeneration != 0 || effect.RestoreGeneration != 0 {
 		actions = append(actions, changePreviewDefault(), keyAction("unbind", []string{"change", "result-final"}))
