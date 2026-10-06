@@ -135,7 +135,7 @@ func writeFakeTool(t *testing.T, directory, name string) {
 	if name == "fzf" {
 		body = "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '0.74.1\\n'; exit 0; fi\n" +
 			"printf '%s\\n' \"$*\" >> \"$HOME/fzf-invocations\"\n" +
-			"case \" $* \" in *\" --print-query \"*) printf '\\000';; esac\nexit 1\n"
+			"case \" $* \" in *\" --print-query \"*) printf '\\000';; esac\nexit 130\n"
 	}
 	if err := os.WriteFile(filepath.Join(directory, name), []byte(body), 0o755); err != nil {
 		t.Fatal(err)

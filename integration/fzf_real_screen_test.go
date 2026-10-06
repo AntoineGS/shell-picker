@@ -9,6 +9,13 @@ import (
 
 var currentListLabelPattern = regexp.MustCompile(`^[0-9]+/[0-9]+(?: \([1-9][0-9]*\))?$`)
 
+func TestCurrentListBorderLabelRecognizesRoundedBorders(t *testing.T) {
+	output := []byte("\x1b[2J\x1b[H╭─────5/5─────╮\r\n│ candidates │\r\n╰────────────╯")
+	if got, ok := currentListBorderLabel(output); !ok || got != "5/5" {
+		t.Fatalf("current list label=%q/%t; want rounded-border label 5/5", got, ok)
+	}
+}
+
 type terminalScreen struct {
 	cells       map[int]map[int]rune
 	row, column int
@@ -21,10 +28,12 @@ func currentListBorderLabel(output []byte) (string, bool) {
 	for row := 1; row <= screen.maxRow; row++ {
 		line := screen.line(row)
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "┌") && strings.HasSuffix(trimmed, "┐") {
-			label := strings.Trim(innerBorder(trimmed, "┌", "┐"), "─ ")
-			if currentListLabelPattern.MatchString(label) {
-				return label, true
+		for _, corners := range [][2]string{{"┌", "┐"}, {"╭", "╮"}} {
+			if strings.HasPrefix(trimmed, corners[0]) && strings.HasSuffix(trimmed, corners[1]) {
+				label := strings.Trim(innerBorder(trimmed, corners[0], corners[1]), "─ ")
+				if currentListLabelPattern.MatchString(label) {
+					return label, true
+				}
 			}
 		}
 		if len(trimmed) >= 2 && strings.HasPrefix(trimmed, "│") && strings.HasSuffix(trimmed, "│") {

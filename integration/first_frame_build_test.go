@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -239,20 +240,18 @@ func firstFrameSourceFingerprint() (string, string, error) {
 }
 
 func firstFrameRepositoryRoot() (string, error) {
-	current, err := os.Getwd()
+	output, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("locate repository root: %w", err)
 	}
-	for {
-		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
-			return current, nil
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", errors.New("could not locate repository root")
-		}
-		current = parent
+	root := strings.TrimSuffix(string(output), "\n")
+	if runtime.GOOS == "windows" {
+		root = strings.TrimSuffix(root, "\r")
 	}
+	if root == "" {
+		return "", errors.New("could not locate repository root")
+	}
+	return filepath.Clean(root), nil
 }
 
 func TestFirstFrameDiagnosticModeIsExplicitAndNeverInheritedByChildren(t *testing.T) {
@@ -360,6 +359,25 @@ if not defined output exit /b 2
 >"%output%" echo mock
 exit /b 0
 `)
+	if runtime.GOOS != "windows" {
+		fakeGo = filepath.Join(repository, "fake-bin", "go")
+		write("fake-bin/go", `#!/bin/sh
+if [ ! -f "$REPO/fake-bin/mutated.marker" ]; then
+  printf '// changed during build\n' >> "$REPO/cmd/shell-picker/main.go"
+  touch "$REPO/fake-bin/mutated.marker"
+fi
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then shift; output=$1; fi
+  shift
+done
+[ -n "$output" ] || exit 2
+printf 'mock\n' > "$output"
+`)
+		if err := os.Chmod(fakeGo, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	run := func(arguments ...string) {
 		t.Helper()
 		command := exec.Command(arguments[0], arguments[1:]...)
@@ -394,7 +412,7 @@ exit /b 0
 		}
 		environment = append(environment, entry)
 	}
-	environment = append(environment, "PATH="+filepath.Dir(fakeGo)+";"+os.Getenv("PATH"), "REPO="+repository)
+	environment = append(environment, "PATH="+filepath.Dir(fakeGo)+string(os.PathListSeparator)+os.Getenv("PATH"), "REPO="+repository)
 	command.Env = environment
 	command.Dir = repository
 	output, err := command.CombinedOutput()

@@ -4,6 +4,6 @@ package candidate
 
 import "path/filepath"
 
-func filesystemMergeKey(path string) string {
-	return filepath.Clean(path)
+func filesystemRecordKey(path []byte) string {
+	return filepath.Clean(string(path))
 }

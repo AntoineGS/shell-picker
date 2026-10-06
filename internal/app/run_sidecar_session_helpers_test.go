@@ -97,14 +97,18 @@ func newConcreteSidecarFactory(t *testing.T, mode concreteSidecarMode) (fzfSidec
 }
 
 type concreteSidecarObserver struct {
-	mu     sync.Mutex
-	events []fzfsidecar.ObserverEvent
+	mu            sync.Mutex
+	events        []fzfsidecar.ObserverEvent
+	postSucceeded chan string
 }
 
 func (observer *concreteSidecarObserver) Observe(event fzfsidecar.ObserverEvent) {
 	observer.mu.Lock()
 	observer.events = append(observer.events, event)
 	observer.mu.Unlock()
+	if observer.postSucceeded != nil && event.Kind == fzfsidecar.ObserverPostSuccess {
+		signalConcreteSidecarEvent(observer.postSucceeded, http.MethodPost)
+	}
 }
 
 func (observer *concreteSidecarObserver) Events() []fzfsidecar.ObserverEvent {

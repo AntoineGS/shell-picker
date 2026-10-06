@@ -7,7 +7,3 @@ type virtualRecordKey struct {
 	target string
 	wire   string
 }
-
-func filesystemRecordKey(path []byte) string {
-	return filesystemMergeKey(string(path))
-}

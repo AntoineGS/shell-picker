@@ -143,7 +143,7 @@ func TestRunPickerConcreteSidecarDoesNotForwardUnknownStateOrAPIKey(t *testing.T
 	factory, harness := newConcreteSidecarFactory(t, concreteSidecarReady)
 	harness.key = rawKey
 	harness.stateCanary = stateCanary
-	harness.observer = &concreteSidecarObserver{}
+	harness.observer = &concreteSidecarObserver{postSucceeded: make(chan string, 1)}
 	fixture.dependencies.newFZFSidecar = factory
 	var captured fzf.Config
 	var callbackOutput string
@@ -151,6 +151,7 @@ func TestRunPickerConcreteSidecarDoesNotForwardUnknownStateOrAPIKey(t *testing.T
 		captured = config
 		harness.callback = callbackClient(t, config)
 		waitForConcreteRequest(t, harness.active, "POST", harness)
+		waitForConcreteRequest(t, harness.observer.postSucceeded, "POST", harness)
 		response, err := harness.callback.Display(context.Background())
 		if err != nil {
 			t.Fatal(err)

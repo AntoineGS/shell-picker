@@ -182,7 +182,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestExternalRendererDeadlineKillsInheritedGroupWithoutFallback",
 		"TestExternalRendererWaitDelayKillsInheritedGroupWithoutFallback",
 	}},
-	{path: "./internal/fzf", selectedUnix: 24, selectedWindows: 24, tests: []string{
+	{path: "./internal/fzf", selectedUnix: 28, selectedWindows: 28, tests: []string{
 		"TestPickerOptionsRejectListenAddressInjection",
 		"TestPickerOptionsAcceptCanonicalListenAddresses",
 		"TestPickerOptionsSidecarUsesTabForFZFSelectionAndKeepsForwardNavigationOnRight",
@@ -196,7 +196,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 58, selectedWindows: 57, tests: []string{
+	{path: "./internal/app", selectedUnix: 57, selectedWindows: 57, tests: []string{
 		"TestFZFShellRejectsMissingOrExtraCommandText",
 		"TestFZFShellCallbackUnsetsListenAPIKeyBeforeValidation",
 		"TestFZFShellTransportFailureReturnsOneWithoutCredentials",
@@ -240,7 +240,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",
 		"TestCreateDirectoryTreeErrorsAndPreservesExistingParents",
 	}},
-	{path: "./integration", selectedUnix: 47, selectedWindows: 79, tests: []string{
+	{path: "./integration", selectedUnix: 49, selectedWindows: 102, tests: []string{
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
 		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",

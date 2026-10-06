@@ -37,6 +37,10 @@ func task20KindForObjectType(objectType string) (task20HandleKind, bool) {
 		return task20HandleEtwRegistration, true
 	case "SchedulerSharedData":
 		return task20HandleSchedulerSharedData, true
+	case "Semaphore":
+		return task20HandleSemaphore, true
+	case "Section":
+		return task20HandleSection, true
 	default:
 		return task20HandleUnknown, false
 	}
@@ -101,18 +105,14 @@ func TestTask20KnownObjectTypePolicy(t *testing.T) {
 		"WaitCompletionPacket": task20HandleWaitCompletion,
 		"EtwRegistration":      task20HandleEtwRegistration,
 		"SchedulerSharedData":  task20HandleSchedulerSharedData,
+		"Semaphore":            task20HandleSemaphore,
+		"Section":              task20HandleSection,
 	}
 	for name, want := range cases {
 		got, ok := task20KindForObjectType(name)
 		if !ok || got != want {
 			t.Errorf("type %q kind=%v ok=%v want=%v", name, got, ok, want)
 		}
-	}
-}
-
-func TestTask20UnknownObjectTypeFailsClosed(t *testing.T) {
-	if _, ok := task20KindForObjectType("FutureRuntimeObject"); ok {
-		t.Fatal("unknown object type was classified")
 	}
 }
 

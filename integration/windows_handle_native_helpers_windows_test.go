@@ -41,6 +41,8 @@ const (
 	task20HandleWaitCompletion
 	task20HandleEtwRegistration
 	task20HandleSchedulerSharedData
+	task20HandleSemaphore
+	task20HandleSection
 )
 
 func task20HandleKindName(kind task20HandleKind) string {
@@ -71,6 +73,10 @@ func task20HandleKindName(kind task20HandleKind) string {
 		return "EtwRegistration"
 	case task20HandleSchedulerSharedData:
 		return "SchedulerSharedData"
+	case task20HandleSemaphore:
+		return "Semaphore"
+	case task20HandleSection:
+		return "Section"
 	default:
 		return fmt.Sprintf("Unknown(%d)", uint8(kind))
 	}
@@ -89,7 +95,7 @@ type task20ResourceIdentity struct {
 
 func (identity task20ResourceIdentity) applicationOwned() (bool, error) {
 	switch identity.Kind {
-	case task20HandleFile, task20HandlePipe, task20HandleSocket, task20HandleProcess, task20HandleJob, task20HandleEtwRegistration:
+	case task20HandleFile, task20HandlePipe, task20HandleSocket, task20HandleProcess, task20HandleJob, task20HandleEtwRegistration, task20HandleSemaphore, task20HandleSection:
 		return true, nil
 	case task20HandleThread, task20HandleEvent, task20HandleTimer, task20HandleIOCompletion, task20HandleWaitCompletion, task20HandleSchedulerSharedData:
 		return false, nil

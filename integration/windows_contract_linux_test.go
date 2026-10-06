@@ -38,7 +38,7 @@ func parseWindowsContractSources(t *testing.T, names ...string) []*ast.File {
 }
 
 func TestWindowsTracePipeSourceUsesRandomRestrictedFirstInstance(t *testing.T) {
-	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go")
+	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go", "fzf_real_windows_cleanup_test.go", "fzf_real_windows_pipes_test.go")
 	for _, required := range []string{"rand.Read", "FILE_FLAG_FIRST_PIPE_INSTANCE", "FILE_FLAG_OVERLAPPED", "currentUserSecurityAttributes"} {
 		if !strings.Contains(source, required) {
 			t.Errorf("Windows trace pipe source lacks %s", required)
@@ -74,7 +74,7 @@ func TestWindowsRegistersNativePreviewLifecycleTests(t *testing.T) {
 }
 
 func TestWindowsOutputDrainUsesCancellableOverlappedIO(t *testing.T) {
-	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go")
+	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go", "fzf_real_windows_cleanup_test.go", "fzf_real_windows_pipes_test.go")
 	start := strings.Index(source, "func (session *windowsTerminalSession) drainOutput")
 	if start < 0 {
 		t.Fatal("cannot locate Windows output drain")
@@ -131,7 +131,7 @@ func TestWindowsByteDrainCreatesOverlappedPerRead(t *testing.T) {
 }
 
 func TestWindowsTerminalLifecycleSourceContract(t *testing.T) {
-	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go")
+	source := readWindowsContractSources(t, "fzf_real_windows_test.go", "fzf_real_windows_lifecycle_test.go", "fzf_real_windows_methods_test.go", "fzf_real_windows_cleanup_test.go", "fzf_real_windows_pipes_test.go")
 	for _, required := range []string{"waitErr", "waitDone", "DuplicateHandle", "ops.closeHandle(information.Thread)",
 		"cancelWorkerIO(&session.output", "cancelWorkerIO(&session.trace", "<-session.drainDone", "<-session.traceDone"} {
 		if !strings.Contains(source, required) {

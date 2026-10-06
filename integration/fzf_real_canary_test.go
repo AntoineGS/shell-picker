@@ -96,9 +96,7 @@ func TestRealFZFListenSidecarQueryCanaryDoesNotLeak(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCurrentListLabel(t, term, beforeClear, fmt.Sprintf("%d/%d", total, total))
-	if err := term.Send(keyEsc); err != nil {
-		t.Fatal(err)
-	}
+	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
 	if err := term.Send([]byte("q")); err != nil {
 		t.Fatal(err)
 	}
