@@ -147,8 +147,7 @@ func TestRealFZFListenSidecarCDTabSelectionPersistsAcrossFilter(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 	total := candidateCountForGeneration(t, term.TraceEvents(), 1)
 	waitForCurrentListLabel(t, term, 0, fmt.Sprintf("%d/%d", total, total))
-	previewBefore := traceCount(term.TraceEvents(), "preview.finished", "")
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: previewBefore + 1})
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	beforeMove := len(term.Output())
 	if err := term.Send(keyDown); err != nil {
 		t.Fatal(err)
@@ -165,12 +164,10 @@ func TestRealFZFListenSidecarCDTabSelectionPersistsAcrossFilter(t *testing.T) {
 	getSuccessBeforeQuery := traceCount(term.TraceEvents(), "sidecar.get", "success")
 	term.WaitBarrier(testContext(t), barrier{Event: "sidecar.get", Operation: "success", Count: getSuccessBeforeQuery + 1})
 	beforeQuery := len(term.Output())
-	previewBeforeQuery := traceCount(term.TraceEvents(), "preview.finished", "")
 	if err := term.Send([]byte("visible")); err != nil {
 		t.Fatal(err)
 	}
 	waitForTerminalTextAfter(t, term, beforeQuery, "visible")
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: previewBeforeQuery + 1})
 	waitForCurrentListLabel(t, term, beforeQuery, fmt.Sprintf("1/%d", total))
 	if err := term.Send(keyEnter); err != nil {
 		t.Fatal(err)

@@ -90,7 +90,7 @@ func TestInitialEnrichmentRestoreDiscardsActiveSourceAndRestoresExactGeneration(
 	}
 
 	invalid, err := fzf.RenderEffect(protocol.Effect{Put: "/", InvalidPath: true})
-	if err != nil || invalid != "put(/)+reload-sync(l:empty)+change-preview(p:invalid)+rebind(result-final)" {
+	if err != nil || invalid != "put(/)+reload-sync(l:empty)+wait+change-preview(p:invalid)+rebind(change)" {
 		t.Fatalf("invalid transient action=%q err=%v", invalid, err)
 	}
 	oldGeneration := currentEnrichmentSnapshot(t, actor).Generation()
@@ -106,7 +106,7 @@ func TestInitialEnrichmentRestoreDiscardsActiveSourceAndRestoresExactGeneration(
 		t.Fatalf("render restore: %v", err)
 	}
 	if !strings.Contains(action, fmt.Sprintf("reload-sync(l:%d:%d)", oldGeneration, restore.EventID)) || !strings.Contains(action, "change-preview(p)") ||
-		!strings.Contains(action, "unbind(change,result-final)") {
+		!strings.Contains(action, "unbind(change)") {
 		t.Fatalf("restore action=%q, want exact reload and transient reset", action)
 	}
 	if err := enrichment.FinalizeEvent(context.Background(), sessionipc.EventFinalizeRequest{EventID: restore.EventID, Applied: true}); err != nil {
@@ -132,27 +132,17 @@ func TestInitialEnrichmentRestoreDiscardsActiveSourceAndRestoresExactGeneration(
 	}()
 	select {
 	case got := <-streamDone:
-		t.Fatalf("input closed before exact load finalization: data=%q err=%v", got.data, got.err)
-	case <-time.After(25 * time.Millisecond):
+		if got.err != nil || bytes.Contains(got.data, []byte("late-restore")) {
+			t.Fatalf("initial input after delivered restore: data=%q err=%v", got.data, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial input remained open, preventing fzf from starting restore load")
 	}
 	if err := enrichment.FinalizeLoad(context.Background(), sessionipc.LoadFinalizeRequest{EventID: restore.EventID, Applied: true}); err != nil {
 		t.Fatalf("FinalizeLoad: %v", err)
 	}
 	if err := awaitEnrichmentWait(t, enrichment); err != nil {
 		t.Fatalf("restore discard wait: %v", err)
-	}
-	var streamData []byte
-	select {
-	case result := <-streamDone:
-		if result.err != nil {
-			t.Fatalf("read restored stream: %v", result.err)
-		}
-		streamData = result.data
-	case <-time.After(2 * time.Second):
-		t.Fatal("input remained open after exact load finalization")
-	}
-	if bytes.Contains(streamData, []byte("late-restore")) {
-		t.Fatalf("late zoxide append after restore discard: %q", streamData)
 	}
 	if len(data) == 0 || !bytes.Contains(data, []byte("/base")) {
 		t.Fatalf("restore data=%q, want old generation records", data)

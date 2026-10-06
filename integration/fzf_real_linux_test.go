@@ -34,6 +34,7 @@ type linuxTerminalSession struct {
 
 	outputMu      sync.Mutex
 	output        bytes.Buffer
+	result        bytes.Buffer
 	firstOutputAt time.Time
 	outputChanged chan struct{}
 	eventMu       sync.Mutex
@@ -117,10 +118,13 @@ func newTerminalSession(t *testing.T, config terminalConfig) terminalSession {
 	go session.drainPTY()
 	go session.drainTrace()
 
-	args := append(append([]string(nil), config.Args...), "--trace", tracePath)
+	args := append([]string(nil), config.Args...)
+	if !config.DisablePickerTrace {
+		args = append(args, "--trace", tracePath)
+	}
 	command := exec.Command(config.Path, args...)
 	command.Dir, command.Env = config.Directory, config.Environment
-	command.Stdin, command.Stdout, command.Stderr = slave, slave, slave
+	command.Stdin, command.Stdout, command.Stderr = slave, linuxResultWriter{session}, slave
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err := startLinuxTerminalCommand(session, command, slave); err != nil {
 		t.Fatalf("start picker in PTY: %v", err)
@@ -352,7 +356,11 @@ func (session *linuxTerminalSession) Output() []byte {
 	return bytes.Clone(session.output.Bytes())
 }
 
-func (session *linuxTerminalSession) ResultBytes() []byte { return session.Output() }
+func (session *linuxTerminalSession) ResultBytes() []byte {
+	session.outputMu.Lock()
+	defer session.outputMu.Unlock()
+	return bytes.Clone(session.result.Bytes())
+}
 
 func (session *linuxTerminalSession) WaitOutputAfter(ctx context.Context, before int) {
 	session.t.Helper()

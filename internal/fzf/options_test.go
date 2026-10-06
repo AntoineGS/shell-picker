@@ -331,7 +331,6 @@ func wantOptionSnapshotForPlatform(config OptionsConfig, goos string) []string {
 		"--bind=,:preview-half-page-up",
 		"--bind=.:preview-half-page-down",
 		"--bind=change:transform(e:rs)",
-		"--bind=result-final:rebind(change)+unbind(result-final)",
 	)
 	start := "--bind=start:" + startUnbind().text
 	if config.ListenAddress == "" && goos != "windows" {

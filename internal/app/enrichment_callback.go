@@ -45,9 +45,8 @@ func (enrichment *initialEnrichment) HandleEvent(ctx context.Context, event prot
 	}
 	enrichment.recordCallback(duration)
 	if stopSource {
-		// Navigation and invalid-view restore cancel the source immediately, but
-		// do not close the stream. They need the stream for their matching load;
-		// terminal actions leave closure to the fzf process exit.
+		// Cancel stale enrichment immediately. Reload action finalization closes
+		// the initial stream; terminal actions leave closure to process exit.
 		enrichment.cancelSource(stopCause)
 	}
 	if err != nil {
@@ -95,6 +94,7 @@ func (enrichment *initialEnrichment) FinalizeEvent(_ context.Context, request se
 	}
 	pending.finalized = true
 	pending.applied = true
+	closeInput := pending.closeInput
 	if pending.generation == 0 {
 		delete(enrichment.pendingEvents, request.EventID)
 		if enrichment.inFlight > 0 {
@@ -103,6 +103,12 @@ func (enrichment *initialEnrichment) FinalizeEvent(_ context.Context, request se
 	}
 	enrichment.signalLocked()
 	enrichment.gate.Unlock()
+	if closeInput {
+		// fzf waits for EOF on its initial reader before launching a reload.
+		// The load uses its own callback stdout, not this initial stream. Keep
+		// the event reservation until that exact load is finalized.
+		_ = enrichment.input.Close()
+	}
 	return nil
 }
 

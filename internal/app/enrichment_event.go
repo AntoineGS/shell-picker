@@ -82,13 +82,14 @@ func (enrichment *initialEnrichment) resolveEvent(event protocol.Event, eventID 
 		generation = result.Effect.RestoreGeneration
 	}
 	restore := event.Opcode == protocol.OpRestoreView && result.Effect.RestoreGeneration != 0
+	invalid := result.Effect.InvalidPath
 	enrichment.pendingEvents[eventID] = &pendingEvent{generation: generation,
-		closeInput: result.Effect.ReloadGeneration != 0 || restore}
+		closeInput: result.Effect.ReloadGeneration != 0 || restore || invalid}
 	var stopCause error
 	stopSource := false
 	terminalEvent := err == nil && (result.Effect.Accept || result.Effect.Abort)
 	navigation := err == nil && result.Effect.ReloadGeneration != 0
-	restoreDiscard := err == nil && restore && enrichment.active
+	restoreDiscard := err == nil && (restore || invalid) && enrichment.active
 	var otherEvents []context.CancelCauseFunc
 	if terminalEvent {
 		enrichment.terminal = true

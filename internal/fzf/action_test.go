@@ -11,7 +11,7 @@ func TestRenderNavigationEffectEndsWithHeader(t *testing.T) {
 	effect := protocol.Effect{Mode: protocol.ModeNormal, Prompt: "[N] ", Header: `a\)b/`,
 		ClearMulti: true, ClearQuery: true, ReloadGeneration: 7}
 	got, err := RenderEffect(effect)
-	want := `clear-multi+reload-sync(l:7)+clear-query+wait+first+change-preview(p)+unbind(change,result-final)+change-prompt([N] )+change-header:a\)b/`
+	want := `clear-multi+reload-sync(l:7)+clear-query+wait+first+change-preview(p)+unbind(change)+change-prompt([N] )+change-header:a\)b/`
 	if err != nil || got != want {
 		t.Fatalf("got=%q want=%q err=%v", got, want, err)
 	}
@@ -20,7 +20,7 @@ func TestRenderNavigationEffectEndsWithHeader(t *testing.T) {
 func TestRenderReloadCarriesExactLoadEventID(t *testing.T) {
 	effect := protocol.Effect{ReloadGeneration: 7}
 	got, err := RenderEffectForEvent(effect, 9)
-	want := "reload-sync(l:7:9)+wait+first+change-preview(p)+unbind(change,result-final)"
+	want := "reload-sync(l:7:9)+wait+first+change-preview(p)+unbind(change)"
 	if err != nil || got != want {
 		t.Fatalf("got=%q want=%q err=%v", got, want, err)
 	}
@@ -28,18 +28,18 @@ func TestRenderReloadCarriesExactLoadEventID(t *testing.T) {
 
 func TestRenderInvalidPathAndRestoreEffects(t *testing.T) {
 	invalid, err := RenderEffect(protocol.Effect{Put: "/", InvalidPath: true})
-	if err != nil || invalid != "put(/)+reload-sync(l:empty)+change-preview(p:invalid)+rebind(result-final)" {
+	if err != nil || invalid != "put(/)+reload-sync(l:empty)+wait+change-preview(p:invalid)+rebind(change)" {
 		t.Fatalf("invalid=%q err=%v", invalid, err)
 	}
 	restore, err := RenderEffect(protocol.Effect{RestoreGeneration: 7})
-	if err != nil || restore != "reload-sync(l:7)+wait+change-preview(p)+unbind(change,result-final)" {
+	if err != nil || restore != "reload-sync(l:7)+wait+change-preview(p)+unbind(change)" {
 		t.Fatalf("restore=%q err=%v", restore, err)
 	}
 }
 
 func TestRenderRestoreWaitsWithoutResettingPosition(t *testing.T) {
 	got, err := RenderEffectForEvent(protocol.Effect{RestoreGeneration: 7}, 9)
-	want := "reload-sync(l:7:9)+wait+change-preview(p)+unbind(change,result-final)"
+	want := "reload-sync(l:7:9)+wait+change-preview(p)+unbind(change)"
 	if err != nil || got != want {
 		t.Fatalf("got=%q want=%q err=%v", got, want, err)
 	}

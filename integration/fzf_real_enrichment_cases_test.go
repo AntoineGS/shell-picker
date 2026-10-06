@@ -152,8 +152,13 @@ func TestRealFZFNavigationDiscardsBlockedEnrichment(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewDispatchBeforeQuery + 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: previewFinishedBeforeQuery + 1})
 	waitForTerminalTextAfter(t, term, beforeQuery, "local-child")
+	waitForTerminalTextAfter(t, term, beforeQuery, "1/3")
+	beforeNavigation := len(term.Output())
 	sendAndWait(t, term, keyRight, barrier{Event: "generation.publish", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Operation: "ok", Generation: 2, Count: 1})
+	// Preview can show child contents before fzf applies the navigation
+	// reload. The location header is emitted after its wait barrier.
+	waitForTerminalTextAfter(t, term, beforeNavigation, "local-child"+string(os.PathSeparator))
 	waitForTerminalText(t, term, "inside-child")
 	tracked := term.TrackLiveDescendants(t)
 

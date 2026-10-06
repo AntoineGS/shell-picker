@@ -91,7 +91,7 @@ func changedNavigationMarker(output []byte, prefix string, previous int) (int, b
 }
 
 func latestSelectedNavigationItem(output []byte) (string, bool) {
-	marker := regexp.MustCompile(`▌ (item-[0-9]{2}\.txt)`)
+	marker := regexp.MustCompile(`▌ (item-[0-9]{2}\.txt|\.\.?)(?:\s|$)`)
 	matches := marker.FindAllSubmatch(output, -1)
 	if len(matches) == 0 {
 		return "", false

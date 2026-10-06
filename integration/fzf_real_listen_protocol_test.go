@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +32,6 @@ func TestRealFZFListenProtocol(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := startDirectFZF(t, fzfPath)
-			server.writeInput(t, "alpha\nbeta\n")
 			server.waitReady(t)
 
 			for range 8 {
@@ -100,12 +98,10 @@ func TestListenProtocolFakeBusyResponseIsBounded(t *testing.T) {
 }
 
 type directFZFServer struct {
-	address string
-	apiKey  string
-	command *exec.Cmd
-	input   io.WriteCloser
-	stderr  *boundedBuffer
-	client  *http.Client
+	address  string
+	apiKey   string
+	terminal terminalSession
+	client   *http.Client
 }
 
 func startDirectFZF(t *testing.T, path string) *directFZFServer {
@@ -119,28 +115,19 @@ func startDirectFZF(t *testing.T, path string) *directFZFServer {
 		t.Fatal(err)
 	}
 	apiKey := randomDirectFZFKey(t)
-	command := exec.Command(path, "--listen="+address, "--height=10", "--no-clear")
-	command.Env = process.SanitizeEnv(os.Environ(), map[string]string{
+	_, helper := cachedRealBinaries(t)
+	environment := process.SanitizeEnv(os.Environ(), map[string]string{
 		"FZF_API_KEY": apiKey,
 		"TERM":        "xterm-256color",
 	})
-	command.Stdout = io.Discard
-	command.Stderr = &boundedBuffer{limit: directFZFResponseLimit}
-	input, err := command.StdinPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := command.Start(); err != nil {
-		_ = input.Close()
-		t.Fatal(err)
-	}
-	stderr := command.Stderr.(*boundedBuffer)
+	terminal := newTerminalSession(t, terminalConfig{
+		Path: helper, Args: []string{"direct-fzf", path, "--listen=" + address, "--list-border=rounded"},
+		Environment: environment, Columns: 80, Lines: 24, DisablePickerTrace: true, ExpectedFZFPath: path,
+	})
 	server := &directFZFServer{
-		address: address,
-		apiKey:  apiKey,
-		command: command,
-		input:   input,
-		stderr:  stderr,
+		address:  address,
+		apiKey:   apiKey,
+		terminal: terminal,
 		client: &http.Client{Timeout: time.Second, Transport: &http.Transport{
 			Proxy: nil,
 			// Reuse the client, but not fzf's fragile idle TCP connections.
@@ -151,23 +138,12 @@ func startDirectFZF(t *testing.T, path string) *directFZFServer {
 		}},
 	}
 	t.Cleanup(func() {
-		_ = server.input.Close()
-		if command.Process != nil {
-			_ = command.Process.Kill()
+		if err := terminal.Close(); err != nil {
+			t.Errorf("close direct fzf terminal: %v", err)
 		}
-		_ = command.Wait()
-		if server.stderr.Len() > 0 {
-			t.Logf("direct fzf stderr=%q", server.stderr.String())
-		}
+		server.client.CloseIdleConnections()
 	})
 	return server
-}
-
-func (server *directFZFServer) writeInput(t *testing.T, input string) {
-	t.Helper()
-	if _, err := io.WriteString(server.input, input); err != nil {
-		t.Fatalf("write direct fzf input: %v", err)
-	}
 }
 
 func (server *directFZFServer) waitReady(t *testing.T) {
@@ -186,12 +162,10 @@ func (server *directFZFServer) waitReady(t *testing.T) {
 				return
 			}
 		}
-		if server.command.ProcessState != nil && server.command.ProcessState.Exited() {
-			t.Fatalf("direct fzf exited before readiness: %v", server.command.ProcessState)
-		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("direct fzf did not become ready at %s; last request error=%v", server.address, lastErr)
+	t.Fatalf("direct fzf did not become ready at %s; last request error=%v; screen=%q; result=%q",
+		server.address, lastErr, server.terminal.Output(), server.terminal.ResultBytes())
 }
 
 func (server *directFZFServer) request(t *testing.T, method, query string, body []byte) (int, []byte, string, error) {

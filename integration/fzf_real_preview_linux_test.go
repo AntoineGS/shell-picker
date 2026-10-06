@@ -131,13 +131,21 @@ func (controller *previewController) waitGrandchild(ctx context.Context, parent 
 }
 
 func (controller *previewController) release(pid int) error {
+	return controller.command(pid, "release")
+}
+
+func (controller *previewController) startOverflow(pid int) error {
+	return controller.command(pid, "start-overflow")
+}
+
+func (controller *previewController) command(pid int, event string) error {
 	controller.mu.Lock()
 	connection := controller.clients[pid]
 	controller.mu.Unlock()
 	if connection == nil {
 		return errors.New("renderer connection unavailable")
 	}
-	return writeControlFrame(connection, controlEvent{Event: "release", Nonce: controller.nonce})
+	return writeControlFrame(connection, controlEvent{Event: event, Nonce: controller.nonce})
 }
 
 func (controller *previewController) snapshot() []controlEvent {

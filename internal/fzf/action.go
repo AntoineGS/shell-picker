@@ -87,7 +87,7 @@ func unbind(mode protocol.Mode) action {
 }
 
 func startUnbind() action {
-	return keyAction("unbind", appendKeys(normalKeys, []string{"change", "result-final"}))
+	return keyAction("unbind", appendKeys(normalKeys, []string{"change"}))
 }
 
 func keyAction(name string, keys []string) action {
@@ -299,7 +299,9 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 		actions = append(actions, putAction)
 	}
 	if effect.InvalidPath {
-		actions = append(actions, reloadEmpty(), changePreviewInvalid(), keyAction("rebind", []string{"result-final"}))
+		// Arm restore only after this empty reload finishes. A result-final
+		// binding can fire for an older search and be consumed too early.
+		actions = append(actions, reloadEmpty(), wait(), changePreviewInvalid(), keyAction("rebind", []string{"change"}))
 	}
 	if effect.Abort {
 		actions = append(actions, abort())
@@ -320,7 +322,7 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 		actions = append(actions, first())
 	}
 	if effect.ReloadGeneration != 0 || effect.RestoreGeneration != 0 {
-		actions = append(actions, changePreviewDefault(), keyAction("unbind", []string{"change", "result-final"}))
+		actions = append(actions, changePreviewDefault(), keyAction("unbind", []string{"change"}))
 	}
 	if effect.Prompt != "" {
 		prompt, err := changeModePrompt(effect.Prompt)

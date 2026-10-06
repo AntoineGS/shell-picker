@@ -176,6 +176,7 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: 1})
 	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	waitForTerminalText(t, term, "[N]")
 	if err := term.Send([]byte("q")); err != nil {
 		t.Fatal(err)
 	}
@@ -188,11 +189,15 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 
 func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	fixture := newBlockingPreviewFixture(t, requireRealFZF(t))
+	// Directory previews may restart while initial input arrives. Observe
+	// image renderers separately so an eza restart cannot satisfy a chafa gate.
+	imageFixture := *fixture
+	imageFixture.controller = newPreviewController(t)
 	repository, err := filepath.Abs("..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ldflags := "-X=main.helperPath=" + fixture.helper + " -X=main.controller=" + fixture.controller.address() + " -X=main.nonce=" + fixture.controller.nonce
+	ldflags := "-X=main.helperPath=" + fixture.helper + " -X=main.controller=" + imageFixture.controller.address() + " -X=main.nonce=" + imageFixture.controller.nonce
 	buildCommand(t, repository, filepath.Join(fixture.fakeBin, "chafa"), "-ldflags", ldflags, "./integration/testhelper/delegate")
 	for _, name := range []string{"image-a.png", "image-b.png", "image-c.png"} {
 		if err := os.WriteFile(filepath.Join(fixture.cwd, name), []byte("\x89PNG\r\n\x1a\nfixture"), 0o600); err != nil {
@@ -208,8 +213,10 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	if err := term.Send([]byte("image")); err != nil {
 		t.Fatal(err)
 	}
-	first := fixture.waitTree(t, 2)
+	first := imageFixture.waitTree(t, 1)
 	defer first.close()
+	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Renderer: "chafa", Operation: "ok", Count: 1})
+	waitForTerminalText(t, term, "3/8")
 	if err := waitTreeExit(testContext(t), initial); err != nil {
 		t.Fatalf("initial directory preview tree did not exit: %v", err)
 	}
@@ -221,7 +228,7 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	if err := term.Send(keyDown); err != nil {
 		t.Fatal(err)
 	}
-	second := fixture.waitTree(t, 3)
+	second := imageFixture.waitTree(t, 2)
 	defer second.close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Renderer: "chafa", Operation: "ok", Count: 2})
 	beforeResize = len(term.Output())
@@ -232,17 +239,17 @@ func TestRealFZFResizeUpdatesPreviewDimensions(t *testing.T) {
 	if err := term.Send([]byte{0x1b, '[', 'A'}); err != nil {
 		t.Fatal(err)
 	}
-	third := fixture.waitTree(t, 4)
+	third := imageFixture.waitTree(t, 3)
 	defer third.close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Renderer: "chafa", Operation: "ok", Count: 3})
 	assertStackedPreviewDimensions(t, first.Columns, first.Lines, 120, 35)
 	assertStackedPreviewDimensions(t, second.Columns, second.Lines, 101, 37)
 	assertStackedPreviewDimensions(t, third.Columns, third.Lines, 83, 29)
 	assertPreviewTraceCount(t, term.TraceEvents(), "preview.dispatch", "chafa", "ok", 3)
-	if err := fixture.controller.release(third.RendererPID); err != nil {
+	if err := imageFixture.controller.release(third.RendererPID); err != nil {
 		t.Fatal(err)
 	}
-	finished := fixture.controller.wait(testContext(t), "renderer-exit", 1)
+	finished := imageFixture.controller.wait(testContext(t), "renderer-exit", 1)
 	if finished.PID != third.RendererPID {
 		t.Fatalf("renderer exit=%+v want pid %d", finished, third.RendererPID)
 	}
@@ -280,6 +287,11 @@ func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
 			term.AssertProcessTopology(t)
 			tree := fixture.waitTree(t, 1)
 			defer tree.close()
+			if test.mode == "overflow-renderer" {
+				if err := fixture.controller.startOverflow(tree.RendererPID); err != nil {
+					t.Fatal(err)
+				}
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), test.bound)
 			defer cancel()
 			if err := waitTreeExit(ctx, tree); err != nil {
@@ -295,8 +307,9 @@ func TestRealFZFPreviewTerminalFailuresKillWholeTree(t *testing.T) {
 					t.Fatalf("terminal renderer claimed normal completion: %+v", event)
 				}
 			}
-			sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-			if err := term.Send([]byte("q")); err != nil {
+			// Abort directly: switching modes reloads the list and legitimately
+			// starts another preview, invalidating this single-tree assertion.
+			if err := term.Send([]byte{0x03}); err != nil {
 				t.Fatal(err)
 			}
 			if err := term.Wait(testContext(t)); err != nil {

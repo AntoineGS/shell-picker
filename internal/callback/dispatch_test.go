@@ -237,7 +237,7 @@ func TestEventInvalidDimensionsStillRendersRemainingEffect(t *testing.T) {
 	if err := Dispatch(context.Background(), mustParse(t, "e:en"), deps); err != nil {
 		t.Fatal(err)
 	}
-	want := "reload-sync(l:2)+wait+first+change-preview(p)+unbind(change,result-final)+change-prompt([N] )"
+	want := "reload-sync(l:2)+wait+first+change-preview(p)+unbind(change)+change-prompt([N] )"
 	if stdout.String() != want {
 		t.Fatalf("stdout=%q want=%q", stdout.String(), want)
 	}

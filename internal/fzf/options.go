@@ -85,7 +85,6 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		binding(",", previewHalfPageUp()),
 		binding(".", previewHalfPageDown()),
 		binding("change", transformEvent(protocol.OpRestoreView)),
-		binding("result-final", keyAction("rebind", []string{"change"}), keyAction("unbind", []string{"result-final"})),
 	)
 	start := []action{startUnbind()}
 	if !listenEnabled && goos != "windows" {

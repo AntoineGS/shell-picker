@@ -30,7 +30,8 @@ func (fixture *realFZFFixture) startSizedWithZoxideTimeout(t *testing.T, picker 
 		"--zoxide-policy", "cached", "--zoxide-timeout", timeout}
 	environment := replaceEnvironment(os.Environ(),
 		"FZF_DEFAULT_OPTS=--bind=start:abort", "FZF_DEFAULT_COMMAND=printf forged",
-		"SHELL_PICKER_ADDR=http://127.0.0.1:1", "SHELL_PICKER_TOKEN=forged", "TERM=xterm-256color")
+		"SHELL_PICKER_ADDR=http://127.0.0.1:1", "SHELL_PICKER_TOKEN=forged", "TERM=xterm-256color",
+		"_ZO_DATA_DIR="+fixture.home)
 	environment = replaceEnvironment(environment, extraEnvironment...)
 	return newTerminalSession(t, terminalConfig{Path: fixture.picker, Args: args, Environment: environment,
 		Directory: fixture.cwd, Columns: columns, Lines: lines})
@@ -148,12 +149,16 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 		sendAndWait(t, term, keyEnter, barrier{Event: "callback.event", Operation: "en", Count: 1})
 		waitForTerminalTextAfter(t, term, beforeAddError, "[A!]")
 		assertModePathSeparated(t, term, beforeAddError, "[A!] ", fixture.cwd, retainedPathTail)
+		beforeNormal = len(term.Output())
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
+		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
 		beforeInsert := len(term.Output())
 		sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
 		waitForTerminalTextAfter(t, term, beforeInsert, "[I]")
 		assertModePathSeparated(t, term, beforeInsert, "[I] ", fixture.cwd, retainedPathTail)
+		beforeNormal = len(term.Output())
 		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
+		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
 		beforeNavigation := len(term.Output())
 		sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 2, Count: 1})
 		waitForTerminalTextAfter(t, term, beforeNavigation, "header-prefix-")

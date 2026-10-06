@@ -101,9 +101,10 @@ func TestInstalledFZFInvalidPathRestoreArmingOrder(t *testing.T) {
 set -eu
 printf '%s\n' "$*" >>"$TRACE_LOG"
 case "${1-}" in
-	l:empty) printf 'reloaded\n' ;;
+	l:empty) : ;;
 	p:invalid) printf 'invalid preview\n' ;;
-	e:rs) printf 'restore\n' >>"$RESTORE_LOG" ;;
+	e:rs) printf 'restore\n' >>"$RESTORE_LOG"; printf 'unbind(change)' ;;
+	p) printf 'initial preview\n' ;;
 	*) exit 64 ;;
 esac
 `
@@ -122,8 +123,9 @@ esac
 		"--style=minimal", "--no-info", "--no-scrollbar", "--no-mouse", "--layout=reverse",
 		"--with-shell="+shellPath,
 		binding("change", transformEvent(protocol.OpRestoreView)),
-		binding("result-final", keyAction("rebind", []string{"change"}), keyAction("unbind", []string{"result-final"})),
-		binding("start", keyAction("unbind", []string{"change"}), action{text: invalid}),
+		binding("start", startUnbind()),
+		binding("/", action{text: invalid}),
+		"--preview=p",
 		binding("esc", abort()),
 	)
 	cmd.Env = processpkg.SanitizeEnv(os.Environ(), map[string]string{
@@ -145,6 +147,14 @@ esac
 
 	updates := make(chan terminalSnapshot, 8)
 	go readTerminalSnapshots(master, updates)
+	waitForTerminalText(t, updates, "initial preview", tracePath)
+	if _, err := master.Write([]byte("candidate")); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalText(t, updates, "candidate", tracePath)
+	if _, err := master.Write([]byte("/")); err != nil {
+		t.Fatal(err)
+	}
 	waitForTerminalText(t, updates, "invalid preview", tracePath)
 	if got := restoreCount(t, logPath); got != 0 {
 		t.Fatalf("invalid action fired change %d times before a query edit", got)

@@ -41,9 +41,25 @@ func main() {
 		os.Exit(0)
 	case "prompt-return":
 		os.Exit(runPromptReturn(os.Args[2], os.Args[3], os.Args[4:]))
+	case "direct-fzf":
+		os.Exit(runDirectFZF(os.Args[2], os.Args[3:]))
 	default:
 		os.Exit(2)
 	}
+}
+
+func runDirectFZF(path string, args []string) int {
+	command := exec.Command(path, args...)
+	command.Stdin = strings.NewReader("alpha\nbeta\n")
+	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	if err := command.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
+		}
+		return 126
+	}
+	return 0
 }
 
 func runPromptReturn(path, sentinel string, args []string) int {
@@ -106,6 +122,14 @@ func runRenderer(address, nonce string, overflow bool) int {
 		return 12
 	}
 	if overflow {
+		// Let the controller capture live process identities for the complete
+		// tree before overflowing output can cause the picker to kill it.
+		var command message
+		if err := readFrame(connection, &command); err != nil || command.Event != "start-overflow" || command.Nonce != nonce {
+			_ = grandchild.Process.Kill()
+			_ = grandchild.Wait()
+			return 14
+		}
 		chunk := make([]byte, 64<<10)
 		for range 80 {
 			if _, err := os.Stdout.Write(chunk); err != nil {

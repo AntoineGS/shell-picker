@@ -76,6 +76,7 @@ func testRealFZFInvalidSlashRestore(t *testing.T) {
 	sendAndWait(t, term, []byte{'/'}, barrier{Event: "callback.event", Operation: "sl", Count: 1})
 	waitForTerminalTextAfter(t, term, beforeSlash, "[Invalid")
 	waitForTerminalTextAfter(t, term, beforeSlash, "Path]")
+	waitForTerminalTextAfter(t, term, beforeSlash, "0/0")
 	assertTraceCount(t, term.TraceEvents(), "callback.event", "rs", restoreBefore)
 
 	previewBefore := traceCount(term.TraceEvents(), "preview.dispatch", "")
@@ -354,11 +355,13 @@ func testRealFZFNormalFirstLast(t *testing.T) {
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
-	waitForTerminalTextAfter(t, term, beforeFirst, "LIST-PREVIEW-00")
+	// Normal disables filtering while retaining the query for Insert. The
+	// first unfiltered candidate is '.', not the first matching item file.
+	waitForTerminalTextAfter(t, term, beforeFirst, "Directory:")
 	resizeAndWaitForRedraw(t, term, 82, 18)
-	assertLatestModePromptAfter(t, term, beforeFirst, "[N] item-", "LIST-PREVIEW-00")
-	if item, ok := latestSelectedNavigationItem(visibleTerminalOutput(term.Output()[beforeFirst:])); !ok || item != "item-00.txt" {
-		t.Fatalf("gg selected item=%q/%t, want item-00.txt/true", item, ok)
+	assertLatestModePromptAfter(t, term, beforeFirst, "[N] item-", "Directory:")
+	if item, ok := latestSelectedNavigationItem(visibleTerminalOutput(term.Output()[beforeFirst:])); !ok || item != "." {
+		t.Fatalf("gg selected item=%q/%t, want ./true", item, ok)
 	}
 }
 

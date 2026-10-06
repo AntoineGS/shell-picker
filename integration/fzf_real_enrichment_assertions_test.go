@@ -48,6 +48,7 @@ func waitForRealFZFResultFinal(t *testing.T, term terminalSession, generation ui
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.event", Operation: "sl", Count: slashCallbacks + 1})
 	waitForTerminalTextAfter(t, term, beforeSlash, "[Invalid Path]")
+	waitForTerminalTextAfter(t, term, beforeSlash, "0/0")
 
 	beforeRestore := len(term.Output())
 	restoreCallbacks := traceCount(term.TraceEvents(), "callback.event", "rs")
@@ -68,7 +69,7 @@ type resultFinalTerminalStub struct {
 
 func (term *resultFinalTerminalStub) Send(input []byte) error {
 	if bytes.Equal(input, []byte{'/'}) {
-		term.output = append(term.output, []byte("[Invalid Path]")...)
+		term.output = append(term.output, []byte("[Invalid Path] 0/0")...)
 	}
 	return nil
 }
