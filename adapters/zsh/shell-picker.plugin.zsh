@@ -1,33 +1,31 @@
 _shell_picker_cd() {
   emulate -L zsh
-  local saved=$BUFFER saved_cursor=$CURSOR target
-  local -a records
-  integer picker_status=1 valid=1
+  local saved=$BUFFER saved_cursor=$CURSOR output target record
+  integer picker_status=1 count=0 valid=1
 
-  records=("${(@0)$(
-    command shell-picker cd --cwd "$PWD" --home "$HOME" --output nul
+  output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-cd.${$}.XXXXXX") || {
+    zle redisplay
+    return 0
+  }
+  {
+    command shell-picker cd --cwd "$PWD" --home "$HOME" --output nul >| "$output"
     picker_status=$?
-    builtin print -rn -- $'\0\0'
-    exit $picker_status
-  )}")
-  picker_status=$?
-  if [[ ${records[-1]} == '' && ${records[-2]} == '' ]]; then
-    records[-1]=()
-    records[-1]=()
-  else
-    valid=0
-  fi
-  if [[ ${records[-1]} == '' ]]; then
-    records[-1]=()
-  else
-    valid=0
-  fi
-  (( ${#records} == 1 )) || valid=0
-  for target in "${records[@]}"; do
-    [[ -n $target ]] || valid=0
-  done
+    while true; do
+      record=
+      if IFS= read -r -d '' record; then
+        [[ -n $record ]] || valid=0
+        target=$record
+        (( ++count ))
+      else
+        [[ -z $record ]] || valid=0
+        break
+      fi
+    done < "$output"
+  } always {
+    command rm -f -- "$output"
+  }
 
-  if (( picker_status != 0 || ! valid )); then
+  if (( picker_status != 0 || ! valid || count != 1 )); then
     BUFFER=$saved
     CURSOR=$saved_cursor
     zle redisplay
@@ -40,32 +38,31 @@ _shell_picker_cd() {
 
 _shell_picker_cp() {
   emulate -L zsh
-  local saved=$BUFFER saved_cursor=$CURSOR selected word argument cluster option redirection
+  local saved=$BUFFER saved_cursor=$CURSOR output selected word argument cluster option redirection
   local -a selected_paths quoted parsed_words command_words
   integer picker_status=1 valid=1 has_terminator=0 index option_index
   integer expect_redirection_operand=0 expect_option_argument=0
 
-  selected_paths=("${(@0)$(
-    command shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
+  output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-cp.${$}.XXXXXX") || {
+    zle redisplay
+    return 0
+  }
+  {
+    command shell-picker cp --cwd "$PWD" --home "$HOME" --output nul >| "$output"
     picker_status=$?
-    builtin print -rn -- $'\0\0'
-    exit $picker_status
-  )}")
-  picker_status=$?
-  if [[ ${selected_paths[-1]} == '' && ${selected_paths[-2]} == '' ]]; then
-    selected_paths[-1]=()
-    selected_paths[-1]=()
-  else
-    valid=0
-  fi
-  if [[ ${selected_paths[-1]} == '' ]]; then
-    selected_paths[-1]=()
-  else
-    valid=0
-  fi
-  for selected in "${selected_paths[@]}"; do
-    [[ -n $selected ]] || valid=0
-  done
+    while true; do
+      selected=
+      if IFS= read -r -d '' selected; then
+        [[ -n $selected ]] || valid=0
+        selected_paths+=("$selected")
+      else
+        [[ -z $selected ]] || valid=0
+        break
+      fi
+    done < "$output"
+  } always {
+    command rm -f -- "$output"
+  }
 
   if (( picker_status != 0 || ! valid || ${#selected_paths} == 0 )); then
     BUFFER=$saved
@@ -128,6 +125,88 @@ _shell_picker_cp() {
   return 0
 }
 
+_shell_picker_search_context_supported() {
+  emulate -L zsh
+  local quote='' character
+  integer index
+
+  for (( index = 1; index <= ${#LBUFFER}; ++index )); do
+    character=$LBUFFER[index]
+    case $character in
+      $'\\' | '$' | '`' | '(' | ')') return 1 ;;
+    esac
+    if [[ $quote == "'" ]]; then
+      [[ $character == "'" ]] && quote=''
+    elif [[ $quote == '"' ]]; then
+      [[ $character == '"' ]] && quote=''
+    else
+      case $character in
+        "'") quote="'" ;;
+        '"') quote='"' ;;
+      esac
+    fi
+  done
+  [[ -z $quote ]]
+}
+
+_shell_picker_search() {
+  emulate -L zsh
+  local saved=$BUFFER saved_cursor=$CURSOR output selected insertion
+  local -a selected_paths quoted
+  integer picker_status=1 valid=1
+
+  if ! _shell_picker_search_context_supported; then
+    zle -M 'Search insertion declined: move the cursor outside quotes, escapes, and shell expansions'
+    return 0
+  fi
+
+  output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-search.${$}.XXXXXX") || {
+    BUFFER=$saved
+    CURSOR=$saved_cursor
+    zle redisplay
+    return 0
+  }
+  {
+    command shell-picker search --cwd "$PWD" --home "$HOME" --output nul >| "$output"
+    picker_status=$?
+    while true; do
+      selected=
+      if IFS= read -r -d '' selected; then
+        if [[ -n $selected && $selected == /* ]]; then
+          selected_paths+=("$selected")
+        else
+          valid=0
+        fi
+      else
+        [[ -z $selected ]] || valid=0
+        break
+      fi
+    done < "$output"
+  } always {
+    command rm -f -- "$output"
+  }
+
+  if (( picker_status != 0 || ! valid || ${#selected_paths} == 0 )); then
+    BUFFER=$saved
+    CURSOR=$saved_cursor
+    zle redisplay
+    return 0
+  fi
+  for selected in "${selected_paths[@]}"; do
+    quoted+=("${(q)selected}")
+  done
+  insertion="${(j: :)quoted}"
+  if [[ -n $LBUFFER && $LBUFFER[-1] != [[:space:]] ]]; then
+    insertion=" $insertion"
+  fi
+  if [[ -n $RBUFFER && $RBUFFER[1] != [[:space:]] ]]; then
+    insertion+=" "
+  fi
+  LBUFFER+="$insertion"
+  zle redisplay
+  return 0
+}
+
 _shell_picker_tab() {
   emulate -L zsh
   local word marker="__shell_picker_cp_marker_${$}_${RANDOM}__"
@@ -165,9 +244,13 @@ _shell_picker_space() {
 shell-picker-bind-zsh() {
   bindkey ' ' _shell_picker_space
   bindkey '^I' _shell_picker_tab
+  bindkey -M emacs '^F' _shell_picker_search
+  bindkey -M viins '^F' _shell_picker_search
+  bindkey -M vicmd '^F' _shell_picker_search
 }
 
 zle -N _shell_picker_cd
 zle -N _shell_picker_cp
+zle -N _shell_picker_search
 zle -N _shell_picker_tab
 zle -N _shell_picker_space
