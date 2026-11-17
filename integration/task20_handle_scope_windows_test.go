@@ -94,6 +94,8 @@ func TestWindowsTask20ScopePolicyIsTypeExact(t *testing.T) {
 		task20HandleWaitCompletion,
 		task20HandleEtwRegistration,
 		task20HandleSchedulerSharedData,
+		task20HandleKey,
+		task20HandleDirectory,
 	}
 	for _, phase := range []string{"server", "process/job", "unknown"} {
 		for _, kind := range kinds {

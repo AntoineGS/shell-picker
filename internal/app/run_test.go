@@ -168,13 +168,18 @@ func TestIndependentRunPickerFreshSessionsQueryConcurrently(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX executable fixture")
 	}
-	started, release := make(chan struct{}, 2), make(chan struct{}, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started, release := make(chan struct{}, 2), make(chan struct{})
 	counts := newProcessCounts()
 	observer := func(event process.ProcessEvent) {
 		counts.observe(event)
 		if event.Phase == "start" {
 			started <- struct{}{}
-			<-release
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
 		}
 	}
 	done := make(chan error, 2)
@@ -183,22 +188,47 @@ func TestIndependentRunPickerFreshSessionsQueryConcurrently(t *testing.T) {
 		fixture.options.ZoxidePolicy = candidate.ZoxideFresh
 		fixture.dependencies.ZoxidePath = zoxideFixture(t, fixture.cwd)
 		fixture.dependencies.ProcessRunner.Observe = observer
+		source, err := sessionBuilder(fixture.options, &fixture.dependencies)
+		if err != nil {
+			t.Fatal(err)
+		}
+		launched := make(chan struct{})
+		fixture.dependencies.loadInitialZoxide = func(ctx context.Context) (candidate.InitialZoxideResult, error) {
+			// Exercise a source scheduled after the local-first UI is ready.
+			select {
+			case <-launched:
+			case <-ctx.Done():
+				return candidate.InitialZoxideResult{}, ctx.Err()
+			}
+			return source.LoadInitialZoxide(ctx)
+		}
 		fixture.dependencies.launchFZF = func(context.Context, fzf.Config) (fzf.Result, error) {
-			return fzf.Result{Aborted: true, ExitCode: 130}, nil
+			close(launched)
+			// Keep the session alive until both fresh queries have started.
+			// An immediate abort can cancel a source before it emits "start".
+			select {
+			case <-release:
+				return fzf.Result{Aborted: true, ExitCode: 130}, nil
+			case <-ctx.Done():
+				return fzf.Result{}, ctx.Err()
+			}
 		}
 		go func() {
-			_, err := RunPicker(context.Background(), fixture.options, fixture.dependencies)
+			_, err := RunPicker(ctx, fixture.options, fixture.dependencies)
 			done <- err
 		}()
 	}
 	for range 2 {
-		<-started
+		select {
+		case <-started:
+		case <-ctx.Done():
+			t.Fatal("fresh sessions did not both start zoxide before cancellation")
+		}
 	}
 	if _, starts, maxLive := counts.values(); starts != 2 || maxLive != 2 {
 		t.Fatalf("starts=%d maxLive=%d", starts, maxLive)
 	}
-	release <- struct{}{}
-	release <- struct{}{}
+	close(release)
 	for range 2 {
 		if err := <-done; err != nil {
 			t.Fatal(err)

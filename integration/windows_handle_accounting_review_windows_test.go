@@ -41,11 +41,13 @@ func TestTask20ClassifyHandleRecognizesNativeObjectTypes(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		objectType string
-		kind       task20HandleKind
+		kindName   string
 		owned      bool
 	}{
-		{name: "EtwRegistration", objectType: "EtwRegistration", kind: task20HandleEtwRegistration, owned: true},
-		{name: "SchedulerSharedData", objectType: "SchedulerSharedData", kind: task20HandleSchedulerSharedData, owned: false},
+		{name: "EtwRegistration", objectType: "EtwRegistration", kindName: "EtwRegistration", owned: true},
+		{name: "SchedulerSharedData", objectType: "SchedulerSharedData", kindName: "SchedulerSharedData", owned: false},
+		{name: "Key", objectType: "Key", kindName: "Key", owned: true},
+		{name: "Directory", objectType: "Directory", kindName: "Directory", owned: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			identity := task20HandleIdentity{Value: 0x1234, Object: 0x5678}
@@ -63,13 +65,19 @@ func TestTask20ClassifyHandleRecognizesNativeObjectTypes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("classify %s: %v", test.objectType, err)
 			}
-			want := task20ResourceIdentity{Identity: identity, Type: test.objectType, Kind: test.kind}
-			if got != want {
-				t.Fatalf("classification=%+v want=%+v", got, want)
+			if got.Identity != identity || got.Type != test.objectType || task20HandleKindName(got.Kind) != test.kindName {
+				t.Fatalf("classification=%+v; want exact identity, type=%s kind=%s", got, test.objectType, test.kindName)
 			}
 			owned, err := got.applicationOwned()
 			if err != nil || owned != test.owned {
 				t.Fatalf("ownership=%v err=%v want=%v", owned, err, test.owned)
+			}
+			application, err := task20ApplicationHandles(map[task20HandleIdentity]task20ResourceIdentity{identity: got})
+			if err != nil || (test.owned && len(application) != 1) || (!test.owned && len(application) != 0) {
+				t.Fatalf("application handles=%+v err=%v; want owned=%v", application, err, test.owned)
+			}
+			if test.owned && application[identity] != got {
+				t.Fatalf("application handles=%+v; lost exact identity %+v", application, got)
 			}
 		})
 	}

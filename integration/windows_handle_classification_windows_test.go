@@ -15,37 +15,6 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func task20KindForObjectType(objectType string) (task20HandleKind, bool) {
-	switch objectType {
-	case "Process":
-		return task20HandleProcess, true
-	case "Job":
-		return task20HandleJob, true
-	case "Thread":
-		return task20HandleThread, true
-	case "Event":
-		return task20HandleEvent, true
-	case "Timer":
-		return task20HandleTimer, true
-	case "IRTimer":
-		return task20HandleTimer, true
-	case "IoCompletion":
-		return task20HandleIOCompletion, true
-	case "WaitCompletionPacket":
-		return task20HandleWaitCompletion, true
-	case "EtwRegistration":
-		return task20HandleEtwRegistration, true
-	case "SchedulerSharedData":
-		return task20HandleSchedulerSharedData, true
-	case "Semaphore":
-		return task20HandleSemaphore, true
-	case "Section":
-		return task20HandleSection, true
-	default:
-		return task20HandleUnknown, false
-	}
-}
-
 type task20HandleClassificationAPI struct {
 	queryObjectType func(windows.Handle) (string, error)
 	getsockname     func(windows.Handle) (windows.Sockaddr, error)
@@ -107,6 +76,8 @@ func TestTask20KnownObjectTypePolicy(t *testing.T) {
 		"SchedulerSharedData":  task20HandleSchedulerSharedData,
 		"Semaphore":            task20HandleSemaphore,
 		"Section":              task20HandleSection,
+		"Key":                  task20HandleKey,
+		"Directory":            task20HandleDirectory,
 	}
 	for name, want := range cases {
 		got, ok := task20KindForObjectType(name)

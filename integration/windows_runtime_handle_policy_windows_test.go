@@ -8,6 +8,39 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func task20KindForObjectType(objectType string) (task20HandleKind, bool) {
+	switch objectType {
+	case "Process":
+		return task20HandleProcess, true
+	case "Job":
+		return task20HandleJob, true
+	case "Thread":
+		return task20HandleThread, true
+	case "Event":
+		return task20HandleEvent, true
+	case "Timer", "IRTimer":
+		return task20HandleTimer, true
+	case "IoCompletion":
+		return task20HandleIOCompletion, true
+	case "WaitCompletionPacket":
+		return task20HandleWaitCompletion, true
+	case "EtwRegistration":
+		return task20HandleEtwRegistration, true
+	case "SchedulerSharedData":
+		return task20HandleSchedulerSharedData, true
+	case "Semaphore":
+		return task20HandleSemaphore, true
+	case "Section":
+		return task20HandleSection, true
+	case "Key":
+		return task20HandleKey, true
+	case "Directory":
+		return task20HandleDirectory, true
+	default:
+		return task20HandleUnknown, false
+	}
+}
+
 func TestTask20UnknownObjectTypeFailsClosed(t *testing.T) {
 	if _, ok := task20KindForObjectType("FutureRuntimeObject"); ok {
 		t.Fatal("unknown object type was classified")
