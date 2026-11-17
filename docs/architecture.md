@@ -4,6 +4,36 @@
 
 Each session owns one *candidate.Builder, configures it before use, and it must not be copied after first use. Startup is local-first streaming startup: the local generation is published to the input stream first, fzf begins live query filtering, and one asynchronous zoxide source resolves without blocking that publication. Only the initial CD view may admit the source records; an initial-view-only discard leaves the active/base generation unchanged. Its fresh and cached policy and timeout apply only to that source, which overlaps its single attempt with local enumeration; fresh plus timeout zero is authoritative only there. Every later navigation generation is local-only, including a return to the launch path, and reports zoxide_outcome `not-run` with zero zoxide counters. Direct concurrent initial fresh calls remain protected by the shared builder's cancellation-aware permit: a cancelled waiter returns its context cause without factory or attempt. Independent sessions may query concurrently because there is no package-global mutex. By design, CP never invokes zoxide.
 
+Indexed search is a separate candidate source, not an interaction mode. A
+session-local lazy loader decodes one saved FSearch 6.0 snapshot on standalone
+search or the first Ctrl+F source switch, then reuses it for later switches.
+Ordinary cd/cp startup never opens the database. Indexed rows preserve their
+authoritative path bytes and are not statted during generation; cd filters
+out files. A failed or canceled read is retryable and leaves the current
+browser generation published. The database's saved timestamp is shown in the
+FSearch header. The snapshot is only as fresh as FSearch's last save, and
+matching is performed by fzf.
+The callback transport exposes the focused authenticated record and caches
+mark toggles per source, because fzf's selection-file placeholder contains
+only rows visible under the current query. A nonempty cache is authoritative
+at acceptance, including when every marked row is filtered out and fzf has no
+focused row; the focused-row fallback applies only when the active source's
+cache is empty. The fallback never seeds a cache during source changes.
+Callback-first Space, Ctrl-Space, btab, and mouse bindings keep native
+selection synchronized with session state. For cd, the cache has single-mark
+semantics: selecting another directory replaces the prior mark, and acceptance
+uses that marked directory even if filtering hides it. Browser navigation
+clears browser marks, while indexed marks remain isolated in their source
+context.
+Source changes restore matching positions and retain paths that are filtered
+out. Indexed Parent navigation is intentionally a no-op: the index is global,
+so navigating to a parent would misrepresent a browser generation.
+
+Indexed candidate framing is preflighted against the same 256 MiB limit used
+by the authenticated load response before a transition can publish. Each
+cp/search source supports up to 4,096 cached marks; a rejected toggle does not
+change native selection.
+
 The source has one terminal lifecycle record, whether it publishes a new actor generation, finds only duplicates, is discarded by navigation/input close/terminal shutdown, or fails. Picker shutdown closes the input stream, cancels the source, closes IPC, closes the actor, and joins the source before returning; this is the shutdown and join guarantee for every started source.
 
 Candidate records carry an authoritative target independently of their wire payload: filesystem targets may preview or become final output; a Windows root virtual `..` targets Drives for navigation only. Drives has no dot record.

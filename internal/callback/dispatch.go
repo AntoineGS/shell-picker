@@ -83,10 +83,15 @@ func recordTrace(dependencies Dependencies, event integrationpkg.TraceEvent) {
 
 func dispatchEvent(ctx context.Context, command Command, dependencies Dependencies) (err error) {
 	key := dependencies.LookupEnv("FZF_KEY")
+	selectedRecords, err := encodeSelectedRecords(command.SelectedRecords)
+	if err != nil {
+		return err
+	}
 	response, err := dependencies.Client.Event(ctx, sessionipc.EventRequest{
 		Opcode: command.Opcode, Key: key,
-		QueryBase64:       base64.StdEncoding.EncodeToString([]byte(dependencies.LookupEnv("FZF_QUERY"))),
-		CurrentItemBase64: base64.StdEncoding.EncodeToString([]byte(dependencies.LookupEnv("FZF_CURRENT_ITEM"))),
+		QueryBase64:           base64.StdEncoding.EncodeToString([]byte(dependencies.LookupEnv("FZF_QUERY"))),
+		CurrentItemBase64:     base64.StdEncoding.EncodeToString([]byte(dependencies.LookupEnv("FZF_CURRENT_ITEM"))),
+		SelectedRecordsBase64: selectedRecords,
 	})
 	if err != nil {
 		return err

@@ -50,7 +50,7 @@ func TestClientBoundsEveryResponseClassAtLimitAndLimitPlusOne(t *testing.T) {
 		atLimitErr  error
 	}{
 		{
-			name: "event JSON", limit: 64 << 10, status: http.StatusOK, contentType: "application/json",
+			name: "event JSON", limit: maxEventResponseBytes, status: http.StatusOK, contentType: "application/json",
 			prefix: `{"effect":{}}`, fill: ' ',
 			call: func(ctx context.Context, client *Client) (int, error) {
 				_, err := client.Event(ctx, eventRequest())
@@ -74,7 +74,7 @@ func TestClientBoundsEveryResponseClassAtLimitAndLimitPlusOne(t *testing.T) {
 			},
 		},
 		{
-			name: "JSON error", limit: 64 << 10, status: http.StatusUnauthorized, contentType: "application/json",
+			name: "JSON error", limit: maxEventResponseBytes, status: http.StatusUnauthorized, contentType: "application/json",
 			prefix: `{"error":"Unauthorized"}`, fill: ' ',
 			call: func(ctx context.Context, client *Client) (int, error) {
 				_, err := client.Event(ctx, eventRequest())
@@ -83,8 +83,9 @@ func TestClientBoundsEveryResponseClassAtLimitAndLimitPlusOne(t *testing.T) {
 			atLimitErr: ErrUnauthorized,
 		},
 		{
-			name: "load octet stream", limit: 64 << 20, status: http.StatusOK, contentType: "application/octet-stream",
+			name: "load octet stream", limit: 64 << 10, status: http.StatusOK, contentType: "application/octet-stream",
 			call: func(ctx context.Context, client *Client) (int, error) {
+				client.loadResponseLimit = 64 << 10
 				data, err := client.Load(ctx, LoadRequest{Generation: 1})
 				return len(data), err
 			},

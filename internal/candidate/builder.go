@@ -13,6 +13,7 @@ import (
 type BuildRequest struct {
 	Generation  uint64
 	Picker      protocol.Picker
+	Source      protocol.Source
 	Location    pathutil.Location
 	StatWorkers int
 	Initial     bool
@@ -128,7 +129,7 @@ func validateBuildRequest(ctx context.Context, request BuildRequest) error {
 	if err := validateContext(ctx); err != nil {
 		return err
 	}
-	if request.Picker != protocol.PickerCD && request.Picker != protocol.PickerCP {
+	if request.Picker != protocol.PickerCD && request.Picker != protocol.PickerCP && request.Picker != protocol.PickerSearch {
 		return fmt.Errorf("unsupported picker %q", request.Picker)
 	}
 	return nil

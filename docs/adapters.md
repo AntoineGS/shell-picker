@@ -2,6 +2,16 @@
 
 The Zsh plugin binds Space: after `cd ` it launches the `cd` picker; Tab dispatches `cp` completion only when the parsed command position is appropriate. It uses Zsh parsing and `${(q)...}` quoting, preserves the buffer/cursor on failure, and inserts `--` before paths unless an existing `--` terminator was parsed. Uninstall by removing the source line and bindings.
 
+The Zsh Ctrl+F widget invokes `shell-picker search` outside a picker and
+switches sources inside cd/cp. Standalone search inserts shell-quoted absolute
+paths at the cursor; it does not execute the line or add cp's `--` prefix.
+FSearch data comes from the last saved database snapshot, so recent filesystem
+changes may not be present. Missing, busy, unsupported, or malformed indexes
+are reported without discarding the current command buffer.
+For safe insertion, the widget declines to launch when the cursor is inside an
+open quote, after a dangling escape, or inside a shell-expansion context;
+`BUFFER` and `CURSOR` remain unchanged in those cases.
+
 The Nushell 0.113.1 adapter inserts Space at the exact cursor position, recognizes only `cd` or `cp`, invokes `%cd` inside `try`, parses NUON inside `try`, replaces `cd` input only after a successful directory change, and emits NUON-quoted `cp` paths with no trailing Space. Tab is unchanged. Windows backslash, spaces, and cross-volume `%cd` behavior are exercised rather than rewritten by the adapter.
 
 The recommended low-latency Windows adapter is PowerShell 7.4.7+ with PSReadLine 2.3.6+. Install and register it with:

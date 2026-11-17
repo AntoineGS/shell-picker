@@ -17,6 +17,7 @@ type pickerBackend struct {
 	metrics    *pickerMetrics
 	trace      *pickerTrace
 	enrichment *initialEnrichment
+	indexed    *indexedSource
 	stat       func(string) (os.FileInfo, error)
 }
 
@@ -31,7 +32,15 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 		backend.trace.event(integrationpkg.TraceEvent{Name: "callback.event", Outcome: outcome, CallbackIPC: time.Since(started), Timestamp: time.Now()})
 	}()
 	if backend.enrichment != nil {
-		return backend.enrichment.HandleEvent(ctx, event)
+		result, handleErr := backend.enrichment.HandleEvent(ctx, event)
+		if handleErr == nil && event.Opcode == protocol.OpSourceToggle &&
+			result.Effect.ReloadGeneration != 0 && backend.indexed != nil {
+			state, stateErr := backend.actor.CurrentState(ctx)
+			if stateErr == nil && state.Source == protocol.SourceIndexed {
+				result.Effect.Header = backend.indexed.header(state.Picker)
+			}
+		}
+		return result, handleErr
 	}
 	if cause := context.Cause(ctx); cause != nil {
 		return sessionipc.EventResult{}, cause
@@ -40,8 +49,11 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 	duration := time.Since(started)
 	if handleErr == nil {
 		backend.metrics.recordTransition(transition)
+		state := transition.Snapshot.State()
+		if event.Opcode == protocol.OpSourceToggle && state.Source == protocol.SourceIndexed && backend.indexed != nil {
+			transition.Effect.Header = backend.indexed.header(state.Picker)
+		}
 		if transition.Effect.ReloadGeneration != 0 {
-			state := transition.Snapshot.State()
 			traceTransition(backend.trace, backend.metrics.policy, transition, state.Location.Path)
 		}
 	}
@@ -113,6 +125,9 @@ func (backend *pickerBackend) CurrentHeader(ctx context.Context) (header string,
 	state, err := backend.actor.CurrentState(ctx)
 	if err != nil {
 		return "", err
+	}
+	if state.Source == protocol.SourceIndexed && backend.indexed != nil {
+		return backend.indexed.header(state.Picker), nil
 	}
 	return pathutil.PromptDisplayHome(state.Location, state.Home), nil
 }

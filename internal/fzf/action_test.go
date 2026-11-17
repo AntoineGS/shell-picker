@@ -17,6 +17,28 @@ func TestRenderNavigationEffectEndsWithHeader(t *testing.T) {
 	}
 }
 
+func TestRenderEffectRestoresQueryWithoutActionInjection(t *testing.T) {
+	action, err := RenderEffect(protocol.Effect{SetQuery: true, Query: `a)b\c`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if action != `change-query:a)b\c` {
+		t.Fatalf("action = %q", action)
+	}
+}
+
+func TestRenderEffectRestoresSelectionsAfterReloadAndQuery(t *testing.T) {
+	effect := protocol.Effect{RestoreGeneration: 9, RestorePositions: "2,4", SetQuery: true, Query: `a)b\c`}
+	action, err := RenderEffectForEvent(effect, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `reload-sync(l:9:7)+wait+change-preview(p)+unbind(change)+change-query()+wait+pos(2)+select+pos(4)+select+change-query:a)b\c`
+	if action != want {
+		t.Fatalf("action = %q, want %q", action, want)
+	}
+}
+
 func TestRenderReloadCarriesExactLoadEventID(t *testing.T) {
 	effect := protocol.Effect{ReloadGeneration: 7}
 	got, err := RenderEffectForEvent(effect, 9)
@@ -49,6 +71,13 @@ func TestRenderAbortEffect(t *testing.T) {
 	got, err := RenderEffect(protocol.Effect{Abort: true})
 	if err != nil || got != "cancel+abort" {
 		t.Fatalf("got=%q err=%v, want fzf's default interrupt for the abort exit", got, err)
+	}
+}
+
+func TestRenderMarkToggleOnlyAfterAuthoritativeCallback(t *testing.T) {
+	got, err := RenderEffect(protocol.Effect{ToggleSelection: true})
+	if err != nil || got != "toggle" {
+		t.Fatalf("mark callback action=%q err=%v", got, err)
 	}
 }
 

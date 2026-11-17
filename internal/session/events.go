@@ -15,6 +15,7 @@ import (
 var (
 	ErrInvalidEvent      = errors.New("invalid session event")
 	ErrInvalidNavigation = errors.New("invalid navigation target")
+	ErrTooManySelections = errors.New("selection limit exceeded")
 )
 
 func Handle(ctx context.Context, actor *Actor, event protocol.Event) (TransitionResult, error) {
@@ -33,7 +34,16 @@ func Handle(ctx context.Context, actor *Actor, event protocol.Event) (Transition
 		return TransitionResult{}, err
 	}
 	if proposal, ok := reduction.proposalValue(); ok {
-		return actor.Apply(ctx, proposal)
+		result, applyErr := actor.Apply(ctx, proposal)
+		if applyErr != nil && event.Opcode == protocol.OpSourceToggle && context.Cause(ctx) == nil {
+			return TransitionResult{Snapshot: snapshot, Effect: protocol.Effect{
+				Header: "FSearch unavailable — Ctrl+F to retry", ErrorPrompt: true,
+			}}, nil
+		}
+		if applyErr == nil && event.Opcode == protocol.OpSourceToggle {
+			result.Effect.RestorePositions = savedSelectionPositions(result.Snapshot)
+		}
+		return result, applyErr
 	}
 	intent, ok := reduction.addIntentValue()
 	if !ok {
@@ -67,6 +77,10 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 		if state.Mode != protocol.ModeNormal {
 			return Reduction{}, fmt.Errorf("%w: add mode is unbound in %s", ErrInvalidEvent, state.Mode)
 		}
+		if state.Source == protocol.SourceIndexed {
+			proposal.Effect.Ignore = true
+			break
+		}
 		setMode(&proposal, protocol.ModeAdd, true)
 	case protocol.OpEscape:
 		reduceEscape(&proposal)
@@ -79,6 +93,10 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 		if err != nil {
 			return Reduction{}, err
 		}
+		if state.Source == protocol.SourceIndexed && record.Kind == protocol.KindFile {
+			proposal.Effect.Ignore = true
+			break
+		}
 		if !canNavigate(state.Picker, record.Kind) {
 			return Reduction{}, fmt.Errorf("%w: %s cannot navigate %s", ErrInvalidNavigation, state.Picker, record.Kind)
 		}
@@ -86,14 +104,38 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 		if err != nil {
 			return Reduction{}, err
 		}
+		fromIndexed := state.Source == protocol.SourceIndexed
+		if fromIndexed {
+			if proposal.State.Indexed == nil {
+				proposal.State.Indexed = &IndexedContext{}
+			}
+			proposal.State.Indexed.Query = bytes.Clone(event.Query)
+			proposal.State.Source = protocol.SourceBrowser
+			proposal.State.Browser = &BrowserContext{
+				Location: cloneLocation(target), Mode: state.Mode, Query: bytes.Clone(event.Query),
+				SelectedPaths: [][]byte{},
+			}
+		}
 		setNavigationUnchecked(&proposal, target)
 	case protocol.OpParent:
 		if state.Mode == protocol.ModeAdd {
 			proposal.Effect.Ignore = true
 			break
 		}
+		if state.Source == protocol.SourceIndexed {
+			proposal.Effect.Ignore = true
+			break
+		}
 		setNavigationUnchecked(&proposal, pathutil.Parent(state.Location))
 	case protocol.OpSlash:
+		if state.Source == protocol.SourceIndexed {
+			if state.Mode == protocol.ModeInsert {
+				proposal.Effect.Put = "/"
+			} else {
+				proposal.Effect.Ignore = true
+			}
+			break
+		}
 		if state.Mode == protocol.ModeAdd {
 			proposal.Effect.Put = "/"
 			break
@@ -117,6 +159,14 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 			proposal.Effect.Ignore = true
 		}
 	case protocol.OpHome:
+		if state.Source == protocol.SourceIndexed {
+			if state.Mode == protocol.ModeInsert {
+				proposal.Effect.Put = "~"
+			} else {
+				proposal.Effect.Ignore = true
+			}
+			break
+		}
 		if state.Mode == protocol.ModeAdd || (state.Mode == protocol.ModeInsert && len(event.Query) != 0) {
 			proposal.Effect.Put = "~"
 		} else if state.Mode == protocol.ModeNormal && len(event.Query) != 0 {
@@ -128,6 +178,14 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 		return reduceEnter(snapshot, proposal, event)
 	case protocol.OpRestoreView:
 		proposal.Effect = protocol.Effect{RestoreGeneration: snapshot.generation}
+	case protocol.OpSourceToggle:
+		if err := toggleSource(snapshot, &proposal, event); err != nil {
+			return Reduction{}, err
+		}
+	case protocol.OpMarkToggle:
+		if err := toggleMarkedPath(snapshot, &proposal, event); err != nil {
+			return Reduction{}, err
+		}
 	default:
 		return Reduction{}, fmt.Errorf("%w: unknown opcode %q", ErrInvalidEvent, event.Opcode)
 	}
@@ -246,19 +304,6 @@ func navigationTarget(record candidate.Record) (pathutil.Location, error) {
 	return cloneLocation(record.Target), nil
 }
 
-func setNavigationUnchecked(proposal *ProposedTransition, target pathutil.Location) {
-	proposal.State.Location = cloneLocation(target)
-	if proposal.State.Mode == protocol.ModeAdd {
-		proposal.State.Mode = protocol.ModeNormal
-	}
-	proposal.State.AddError = false
-	proposal.State.Prompt = modePrompt(proposal.State.Mode, false)
-	proposal.Build = &candidate.BuildRequest{Picker: proposal.State.Picker, Location: cloneLocation(target)}
-	proposal.Effect = modeEffect(proposal.State, true, 0)
-	proposal.Effect.Header = pathutil.PromptDisplayHome(target, proposal.State.Home)
-	proposal.Effect.ClearMulti = true
-}
-
 func resolveNavigationRecord(snapshot Snapshot, raw []byte) (candidate.Record, error) {
 	if len(raw) == 0 {
 		return candidate.Record{}, fmt.Errorf("%w: empty current item", ErrInvalidNavigation)
@@ -287,5 +332,6 @@ func canNavigate(picker protocol.Picker, kind protocol.Kind) bool {
 		return kind == protocol.KindLocal || kind == protocol.KindDirectory || kind == protocol.KindZoxide ||
 			kind == protocol.KindDrive || kind == protocol.KindVirtual
 	}
-	return picker == protocol.PickerCP && (kind == protocol.KindDirectory || kind == protocol.KindDrive || kind == protocol.KindVirtual)
+	return (picker == protocol.PickerCP || picker == protocol.PickerSearch) &&
+		(kind == protocol.KindDirectory || kind == protocol.KindDrive || kind == protocol.KindVirtual)
 }

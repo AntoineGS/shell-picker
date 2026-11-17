@@ -320,7 +320,7 @@ func TestServerEnforcesMethodContentTypeAndStrictJSON(t *testing.T) {
 
 func TestServerAppliesHardBodyLimit(t *testing.T) {
 	server, _ := startServer(t, benignBackend())
-	response := rawRequest(t, server.Address()+"/v1/event", fixedToken(7), http.MethodPost, "application/json", bytes.Repeat([]byte{'x'}, (64<<10)+1))
+	response := rawRequest(t, server.Address()+"/v1/event", fixedToken(7), http.MethodPost, "application/json", bytes.Repeat([]byte{'x'}, maxEventBody+1))
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status=%d", response.StatusCode)

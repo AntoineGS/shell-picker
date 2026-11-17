@@ -39,6 +39,25 @@ func TestValidateCDRequiresOneExactFilesystemDirectoryRecord(t *testing.T) {
 	}
 }
 
+func TestValidateCDPrefersCachedMarkWhenMarkedDirectoryIsNotVisible(t *testing.T) {
+	marked := eventRecord(protocol.KindDirectory, "marked", "/work/marked")
+	focused := eventRecord(protocol.KindDirectory, "focused", "/work/focused")
+	snapshot := eventSnapshot(protocol.PickerCD, protocol.ModeNormal,
+		pathutil.Filesystem([]byte(sessionTestPath("/work"))), marked, focused)
+	snapshot.state.Browser = &BrowserContext{
+		Location: cloneLocation(snapshot.state.Location), Mode: protocol.ModeNormal,
+		SelectedPaths: [][]byte{[]byte(sessionTestPath("/work/marked"))},
+	}
+
+	for _, accepted := range [][][]byte{[][]byte{[]byte(focused.FullKey())}, nil} {
+		outcome, err := ValidateCD(snapshot, accepted)
+		if err != nil || outcome.Status != protocol.StatusAccepted || len(outcome.Paths) != 1 ||
+			!bytes.Equal(outcome.Paths[0], []byte(sessionTestPath("/work/marked"))) {
+			t.Fatalf("accepted=%q outcome=%+v err=%v", accepted, outcome, err)
+		}
+	}
+}
+
 func TestValidateCPRestoresVisibleOrderAndDuplicateMultiplicity(t *testing.T) {
 	one := eventRecord(protocol.KindFile, "one", "/work/one")
 	two := eventRecord(protocol.KindDirectory, "two", "/work/two")
@@ -105,6 +124,50 @@ func TestValidateCPRejectsNilAndEmptyBaseBeforeSelection(t *testing.T) {
 	}
 	if _, err := ValidateCP(snapshot, nil, nil); !errors.Is(err, ErrInvalidBase) {
 		t.Fatalf("nil base precedence error=%v", err)
+	}
+}
+
+func TestValidateSearchUsesOnlyCachedMarksWhenPresent(t *testing.T) {
+	alpha := eventRecord(protocol.KindFile, "alpha", "/work/alpha")
+	beta := eventRecord(protocol.KindFile, "beta", "/work/beta")
+	snapshot := eventSnapshot(protocol.PickerSearch, protocol.ModeInsert,
+		pathutil.Filesystem([]byte(sessionTestPath("/work"))), alpha, beta)
+	snapshot.state.Source = protocol.SourceIndexed
+	snapshot.state.Indexed = &IndexedContext{SelectedPaths: [][]byte{[]byte(sessionTestPath("/work/beta"))}}
+
+	outcome, err := ValidateSearch(snapshot, [][]byte{[]byte(alpha.FullKey())})
+	if err != nil || outcome.Status != protocol.StatusAccepted ||
+		len(outcome.Paths) != 1 || !bytes.Equal(outcome.Paths[0], []byte(sessionTestPath("/work/beta"))) {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+}
+
+func TestValidateSearchAcceptsCachedMarksWithNoVisibleOrFocusedRows(t *testing.T) {
+	beta := eventRecord(protocol.KindFile, "beta", "/work/beta")
+	snapshot := eventSnapshot(protocol.PickerSearch, protocol.ModeInsert,
+		pathutil.Filesystem([]byte(sessionTestPath("/work"))), beta)
+	snapshot.state.Source = protocol.SourceIndexed
+	snapshot.state.Indexed = &IndexedContext{SelectedPaths: [][]byte{[]byte(sessionTestPath("/work/beta"))}}
+
+	outcome, err := ValidateSearch(snapshot, nil)
+	if err != nil || outcome.Status != protocol.StatusAccepted || len(outcome.Paths) != 1 ||
+		!bytes.Equal(outcome.Paths[0], []byte(sessionTestPath("/work/beta"))) {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
+	}
+}
+
+func TestValidateSearchFallsBackToFocusedRecordWhenCacheIsEmpty(t *testing.T) {
+	alpha := eventRecord(protocol.KindFile, "alpha", "/work/alpha")
+	beta := eventRecord(protocol.KindFile, "beta", "/work/beta")
+	snapshot := eventSnapshot(protocol.PickerSearch, protocol.ModeInsert,
+		pathutil.Filesystem([]byte(sessionTestPath("/work"))), alpha, beta)
+	snapshot.state.Source = protocol.SourceIndexed
+	snapshot.state.Indexed = &IndexedContext{SelectedPaths: [][]byte{}}
+
+	outcome, err := ValidateSearch(snapshot, [][]byte{[]byte(beta.FullKey())})
+	if err != nil || outcome.Status != protocol.StatusAccepted || len(outcome.Paths) != 1 ||
+		!bytes.Equal(outcome.Paths[0], []byte(sessionTestPath("/work/beta"))) {
+		t.Fatalf("outcome=%+v err=%v", outcome, err)
 	}
 }
 

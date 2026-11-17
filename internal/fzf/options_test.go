@@ -23,6 +23,76 @@ func TestPickerOptions(t *testing.T) {
 	}
 }
 
+func TestCtrlFTogglesCandidateSource(t *testing.T) {
+	options, err := Options(OptionsConfig{Picker: protocol.PickerCP, Prompt: "[I] ", Header: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "--bind=ctrl-f:transform(e:sf)"
+	for _, option := range options {
+		if option == want {
+			return
+		}
+	}
+	t.Fatalf("options do not contain %q", want)
+}
+
+func TestStandaloneSearchUsesMultiSelection(t *testing.T) {
+	options, err := Options(OptionsConfig{Picker: protocol.PickerSearch, Prompt: "[I] ", Header: "FSearch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(options, "--multi") || !slices.Contains(options, "--no-sort") ||
+		!slices.Contains(options, "--bind=ctrl-f:transform(e:sf)") {
+		t.Fatalf("search options lack expected selection/source bindings: %q", options)
+	}
+}
+
+func TestMarkControlsCallSessionBeforeNativeToggle(t *testing.T) {
+	options, err := Options(OptionsConfig{Picker: protocol.PickerCP, Prompt: "[I] ", Header: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--bind=space:transform(e:mk)",
+		"--bind=ctrl-space:transform(e:mk)",
+		"--bind=btab:transform(e:mk)+up",
+		"--bind=right-click,shift-right-click:transform(e:mk)",
+		"--bind=shift-left-click:ignore",
+	} {
+		if !slices.Contains(options, want) {
+			t.Errorf("options lack mark binding %q: %q", want, options)
+		}
+	}
+	for _, option := range options {
+		if strings.Contains(option, "toggle+transform(e:mk)") {
+			t.Fatalf("native toggle runs before callback: %q", option)
+		}
+	}
+}
+
+func TestCDMarkControlsUseCallbackBackedSingleSelection(t *testing.T) {
+	options, err := Options(OptionsConfig{Picker: protocol.PickerCD, Prompt: "[N] ", Header: "/work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--bind=space:transform(e:mk)",
+		"--bind=ctrl-space:transform(e:mk)",
+		"--bind=btab:transform(e:mk)+up",
+		"--bind=right-click,shift-right-click:transform(e:mk)",
+		"--bind=shift-left-click:ignore",
+		"--multi=1",
+	} {
+		if !slices.Contains(options, want) {
+			t.Errorf("cd options lack %q: %q", want, options)
+		}
+	}
+	if slices.Contains(options, "--bind=space:clear-multi+toggle") {
+		t.Fatal("cd Space must update authoritative selection state through the callback")
+	}
+}
+
 func TestPickerOptionsSidecarSnapshot(t *testing.T) {
 	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
 		config := OptionsConfig{
@@ -185,7 +255,7 @@ func TestInsertAndAddUnbindFullNormalOnlySet(t *testing.T) {
 	ignored := make([]string, 0, 83)
 	active := map[rune]bool{
 		'h': true, 'j': true, 'k': true, 'l': true, 'i': true, 'a': true, 'q': true,
-		'g': true, 'G': true,
+		'g': true, 'G': true, ' ': true,
 		'/': true, '~': true, ',': true, '.': true,
 	}
 	for key := '!'; key <= '~'; key++ {
@@ -311,6 +381,7 @@ func wantOptionSnapshotForPlatform(config OptionsConfig, goos string) []string {
 		"--preview=p",
 		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
 		"--bind=enter:transform(e:en)",
+		"--bind=ctrl-f:transform(e:sf)",
 		"--bind=esc:transform(e:es)",
 		"--bind=i:transform(e:mi)",
 		"--bind=a:transform(e:ma)",
@@ -344,9 +415,21 @@ func wantOptionSnapshotForPlatform(config OptionsConfig, goos string) []string {
 		options = append(options, "--bind="+key+":ignore")
 	}
 	if config.Picker == protocol.PickerCD {
-		return append(options, "--bind=space:clear-multi+toggle", "--sort", "--print-query", "--multi=1")
+		return append(options,
+			"--bind=space:transform(e:mk)",
+			"--bind=ctrl-space:transform(e:mk)",
+			"--bind=btab:transform(e:mk)+up",
+			"--bind=right-click,shift-right-click:transform(e:mk)",
+			"--bind=shift-left-click:ignore",
+			"--sort", "--print-query", "--multi=1")
 	}
-	return append(options, "--bind=space:toggle", "--no-sort", "--multi")
+	return append(options,
+		"--bind=space:transform(e:mk)",
+		"--bind=ctrl-space:transform(e:mk)",
+		"--bind=btab:transform(e:mk)+up",
+		"--bind=right-click,shift-right-click:transform(e:mk)",
+		"--bind=shift-left-click:ignore",
+		"--no-sort", "--multi")
 }
 
 func optionSnapshotPrintableKeys() []string {

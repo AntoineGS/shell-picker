@@ -8,14 +8,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
 
-const task20FocusedPattern = `^Test(Actor|Handle|Reduce|NormalEscape|Validate|Server|Client|FinishedTelemetry|CachedPolicy|Fresh|IndependentFresh|CPNever|CallerCancellation|BuilderZoxide|Zoxide|EnumerateReadDir|Kqueue|RejectsNonIdentifiable|WaitDelay|WaitIs|CancellationCloses|ExitErrorPrecedesBlocking|OrdinaryCompletion|Foreground|RestoreForeground|RetainedInherited|CancelKills|InheritedTree|Preview|Archive|Zip|Cache|Converter|Renderer|ExternalRenderer|Terminal|SessionSpec|PickerOptions|PrepareSession|Run|ParseOutput|ActionArgument|TokenCanary|PickerBackend|FZFShell|CreateDirectory|SecurityGate|Forged|CancelledNavigation|ResourceSnapshot|ParityPreview|RealFZF|Windows|CreateProcess|RunnerBeforeStart|RunnerNilBeforeStart|Enabled|NewProvides|DefaultTransport|ReadBody|Post|GetState|DecodeState|ActionBody|TypedState|Session|StopAndWait|Concurrent|ParentCancellation|Sidecar)`
+const task20FocusedPattern = `^Test(Actor|Handle|Reduce|NormalEscape|Validate|Server|Client|FinishedTelemetry|CachedPolicy|Fresh|IndependentFresh|CPNever|CallerCancellation|BuilderZoxide|Zoxide|EnumerateReadDir|Kqueue|RejectsNonIdentifiable|WaitDelay|WaitIs|CancellationCloses|ExitErrorPrecedesBlocking|OrdinaryCompletion|Foreground|RestoreForeground|RetainedInherited|CancelKills|InheritedTree|Preview|Archive|Zip|Cache|Converter|Renderer|ExternalRenderer|Terminal|SessionSpec|PickerOptions|PrepareSession|Run|ParseOutput|RenderMark|Mark|CDMarkToggle|CDSourceRoundTrip|CDSourceSwitch|SourceToggle|BrowserNavigation|InjectedIndexed|ActionArgument|TokenCanary|PickerBackend|FZFShell|CreateDirectory|SecurityGate|Forged|CancelledNavigation|ResourceSnapshot|ParityPreview|RealFZF|Windows|CreateProcess|RunnerBeforeStart|RunnerNilBeforeStart|Enabled|NewProvides|DefaultTransport|ReadBody|Post|GetState|DecodeState|ActionBody|TypedState|Session|StopAndWait|Concurrent|ParentCancellation|Sidecar)`
 
 const task20ManifestPackages = `./internal/session ./internal/sessionipc ./internal/candidate ./internal/process ./internal/callback ./internal/fzfsidecar ./internal/preview ./internal/fzf ./internal/app ./internal/pathutil ./integration`
 
@@ -28,7 +27,7 @@ type task20GatePackage struct {
 }
 
 var task20GateManifest = []task20GatePackage{
-	{path: "./internal/session", selectedUnix: 42, selectedWindows: 45, tests: []string{
+	{path: "./internal/session", selectedUnix: 54, selectedWindows: 57, tests: []string{
 		"TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically",
 		"TestActorAssignsMonotonicGenerationOwnershipAcrossQueuedReplacement",
 		"TestActorCreatedTreeDiscardOrdering",
@@ -41,11 +40,20 @@ var task20GateManifest = []task20GatePackage{
 		"TestNormalEscapeAbortsWithoutChangingState",
 		"TestValidateCDRequiresOneExactFilesystemDirectoryRecord",
 		"TestValidateCPRejectsMalformedUnknownResidualAndVirtual",
+		"TestValidateSearchUsesOnlyCachedMarksWhenPresent",
+		"TestValidateSearchAcceptsCachedMarksWithNoVisibleOrFocusedRows",
+		"TestSourceToggleDoesNotPromoteFocusedFallbackToASelection",
+		"TestBrowserNavigationClearsBrowserMarksWithNativeMultiSelection",
+		"TestMarkToggleCachesSelectionsIndependentlyFromTheFZFQuery",
+		"TestCDMarkToggleReplacesSingleSelection",
+		"TestCDSourceRoundTripPreservesOneMarkedDirectoryPerSource",
+		"TestCDSourceSwitchRestoresNativeSelectionForEachSource",
+		"TestValidateCDPrefersCachedMarkWhenMarkedDirectoryIsNotVisible",
 	}},
 	{path: "./internal/sessionipc", selectedUnix: 19, selectedWindows: 19, tests: []string{
 		"TestServerRejectsNoncanonicalRouteTargetsBeforeBackend",
 		"TestServerAcceptsOnlyOneExactRawAuthorizationValue",
-		"TestServerRejectsChunkedRequestAt64KiBPlusOne",
+		"TestServerRejectsChunkedEventRequestAtLimitPlusOne",
 		"TestServerRejectsSeventeenthHandlerAndCloseCancelsAndJoins",
 		"TestServerCloseCancelsCooperativeBackend",
 		"TestClientBoundsEveryResponseClassAtLimitAndLimitPlusOne",
@@ -97,7 +105,9 @@ var task20GateManifest = []task20GatePackage{
 		"TestRestoreForegroundPGRRestoresMaskOnIoctlError",
 		"TestRetainedInheritedTreeKillsGroupAfterChildWait",
 	}},
-	{path: "./internal/callback", selectedUnix: 8, selectedWindows: 8, tests: []string{
+	{path: "./internal/callback", selectedUnix: 10, selectedWindows: 10, tests: []string{
+		"TestMarkMutationControlsAreAuthorized",
+		"TestSourceToggleRequiresCtrlF",
 		"TestPreviewRejectsVirtualAndRelativeBeforeRenderer",
 		"TestPreviewTerminalResourceSkipsFinishedTelemetry",
 		"TestPreviewAggregatesSequentialChildTelemetry",
@@ -182,7 +192,10 @@ var task20GateManifest = []task20GatePackage{
 		"TestExternalRendererDeadlineKillsInheritedGroupWithoutFallback",
 		"TestExternalRendererWaitDelayKillsInheritedGroupWithoutFallback",
 	}},
-	{path: "./internal/fzf", selectedUnix: 28, selectedWindows: 28, tests: []string{
+	{path: "./internal/fzf", selectedUnix: 31, selectedWindows: 31, tests: []string{
+		"TestMarkControlsCallSessionBeforeNativeToggle",
+		"TestRenderMarkToggleOnlyAfterAuthoritativeCallback",
+		"TestParseOutputNoVisibleRowsPreservesAcceptanceForCachedMarks",
 		"TestPickerOptionsRejectListenAddressInjection",
 		"TestPickerOptionsAcceptCanonicalListenAddresses",
 		"TestPickerOptionsSidecarUsesTabForFZFSelectionAndKeepsForwardNavigationOnRight",
@@ -196,7 +209,8 @@ var task20GateManifest = []task20GatePackage{
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 57, selectedWindows: 57, tests: []string{
+	{path: "./internal/app", selectedUnix: 59, selectedWindows: 59, tests: []string{
+		"TestInjectedIndexedFrameLimitRejectsBeforeSourceCommit",
 		"TestFZFShellRejectsMissingOrExtraCommandText",
 		"TestFZFShellCallbackUnsetsListenAPIKeyBeforeValidation",
 		"TestFZFShellTransportFailureReturnsOneWithoutCredentials",
@@ -240,7 +254,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",
 		"TestCreateDirectoryTreeErrorsAndPreservesExistingParents",
 	}},
-	{path: "./integration", selectedUnix: 49, selectedWindows: 102, tests: []string{
+	{path: "./integration", selectedUnix: 53, selectedWindows: 106, tests: []string{
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
 		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",
@@ -249,6 +263,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestResourceSnapshotDetectsDescriptorFreeBlockedGoroutine",
 		"TestResourceSnapshotDetectsSameSignatureGoroutineReplacement",
 		"TestRealFZFPreviewReplacementKillsWholeTree",
+		"TestRealFZFCDSpaceUsesAuthoritativeMarkedDirectory",
 		"TestRealFZFPreviewTerminalFailuresKillWholeTree",
 		"TestRealFZFAdversarialPromptCannotInjectAction",
 		"TestRealFZFPickerNavigationAndNormalMode",
@@ -421,45 +436,6 @@ func TestSecurityGateRejectsUnsafeArgumentsAndForwardsSafeArguments(t *testing.T
 				t.Fatalf("environment injection ran marker command: %v", err)
 			}
 		})
-	}
-}
-
-func TestSecurityGateManifestSelectsEveryRequiredTest(t *testing.T) {
-	root, err := filepath.Abs("..")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pattern := regexp.MustCompile(task20FocusedPattern)
-	for _, pkg := range task20GateManifest {
-		required := append([]string(nil), pkg.tests...)
-		if runtime.GOOS == "windows" {
-			required = append(required, pkg.windows...)
-		} else {
-			required = append(required, pkg.unix...)
-		}
-		listed := listPackageTests(t, root, pkg.path)
-		selected := 0
-		for name := range listed {
-			if pattern.MatchString(name) {
-				selected++
-			}
-		}
-		t.Logf("%s selected=%d", pkg.path, selected)
-		expectedSelected := pkg.selectedUnix
-		if runtime.GOOS == "windows" {
-			expectedSelected = pkg.selectedWindows
-		}
-		if selected != expectedSelected {
-			t.Errorf("%s: documented focused regex selected=%d want=%d", pkg.path, selected, expectedSelected)
-		}
-		for _, name := range required {
-			if _, ok := listed[name]; !ok {
-				t.Errorf("%s: required test %s is absent", pkg.path, name)
-			}
-			if !pattern.MatchString(name) {
-				t.Errorf("%s: documented focused regex omits %s", pkg.path, name)
-			}
-		}
 	}
 }
 

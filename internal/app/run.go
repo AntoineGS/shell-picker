@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/callback"
@@ -48,6 +47,7 @@ type Dependencies struct {
 	listenIPC                 func(context.Context, sessionipc.Token, sessionipc.Backend) (*sessionipc.Server, error)
 	buildLocal                func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error)
 	loadInitialZoxide         func(context.Context) (candidate.InitialZoxideResult, error)
+	IndexLoader               IndexLoader
 	beforeInitialInputPublish func(*fzf.InputStream)
 }
 
@@ -87,18 +87,8 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if buildLocal == nil {
 		buildLocal = builder.BuildLocal
 	}
-	generate := func(generateCtx context.Context, request candidate.BuildRequest) (candidate.BuildResult, error) {
-		trace.event(integrationpkg.TraceEvent{Name: "generation.start", Generation: request.Generation, Outcome: "ok"})
-		result, buildErr := buildLocal(generateCtx, request)
-		if buildErr == nil {
-			candidate.CompactHomeDisplays(result.Records, options.Home)
-		}
-		if buildErr != nil {
-			trace.event(integrationpkg.TraceEvent{Name: "generation.discard", Generation: request.Generation,
-				Outcome: traceDiscardOutcome(buildErr)})
-		}
-		return result, buildErr
-	}
+	indexed := newIndexedSource(string(options.Home), dependencies.Environment, dependencies.IndexLoader)
+	generate := sessionGenerator(options, buildLocal, indexed, trace)
 	actorCtx, cancelActor := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer cancelActor(nil)
 	actor := session.New(actorCtx, generate)
@@ -149,11 +139,24 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 
 	initialLocation := pathutil.Filesystem(options.CWD)
 	initialPrompt := "[I] "
+	initialSource := protocol.SourceBrowser
+	if options.Picker == protocol.PickerSearch {
+		initialSource = protocol.SourceIndexed
+	}
 	initialState := session.State{
-		Picker: options.Picker, Mode: protocol.ModeInsert,
+		Picker: options.Picker, Source: initialSource, Mode: protocol.ModeInsert,
 		Location: initialLocation, Home: pathutil.Filesystem(options.Home), Prompt: initialPrompt,
+		Browser: &session.BrowserContext{
+			Location: initialLocation, Mode: protocol.ModeInsert, SelectedPaths: [][]byte{},
+		},
+	}
+	if options.Picker == protocol.PickerSearch {
+		initialState.Indexed = &session.IndexedContext{SelectedPaths: [][]byte{}}
 	}
 	initialHeader := pathutil.PromptDisplayHome(initialLocation, initialState.Home)
+	if initialSource == protocol.SourceIndexed {
+		initialHeader = indexed.header(options.Picker)
+	}
 	if options.Picker == protocol.PickerCD {
 		var source initialZoxideLoader = builder
 		if dependencies.loadInitialZoxide != nil {
@@ -166,7 +169,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	}
 	initial, err := actor.Apply(ctx, session.ProposedTransition{
 		State: initialState,
-		Build: &candidate.BuildRequest{Picker: options.Picker, Location: initialState.Location, Initial: true},
+		Build: &candidate.BuildRequest{Picker: options.Picker, Source: initialSource, Location: initialState.Location, Initial: initialSource == protocol.SourceBrowser},
 		Effect: protocol.Effect{Mode: protocol.ModeInsert, Prompt: initialState.Prompt, Search: "on",
 			Rebind: protocol.ModeInsert, Cursor: protocol.CursorLine},
 	})
@@ -175,6 +178,9 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	}
 	traceInitialTransition(trace, options.ZoxidePolicy, options.Picker, initial, initialState.Location.Path)
 	metrics.recordTransition(initial)
+	if initialSource == protocol.SourceIndexed {
+		initialHeader = indexed.header(options.Picker)
+	}
 	if dependencies.beforeInitialInputPublish != nil {
 		dependencies.beforeInitialInputPublish(input)
 	}
@@ -199,7 +205,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
-	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace, enrichment: coordinator}
+	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace, enrichment: coordinator, indexed: indexed}
 	var listenedServer *sessionipc.Server
 	listenIPC := dependencies.listenIPC
 	if listenIPC == nil {
@@ -268,6 +274,8 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 				err = currentErr
 			} else if options.Picker == protocol.PickerCD {
 				outcome, err = session.ValidateCD(current, result.Records)
+			} else if options.Picker == protocol.PickerSearch {
+				outcome, err = session.ValidateSearch(current, result.Records)
 			} else {
 				outcome, err = session.ValidateCP(current, result.Records, options.CWD)
 			}
@@ -299,48 +307,4 @@ func selectLifecycleError(selected, actorClose, parentCause error) error {
 		return actorClose
 	}
 	return parentCause
-}
-
-func traceDiscardOutcome(err error) string {
-	switch {
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded), errors.Is(err, session.ErrClosed):
-		return "cancelled"
-	case errors.Is(err, session.ErrStaleGeneration):
-		return "stale"
-	case errors.Is(err, session.ErrSuperseded):
-		return "superseded"
-	default:
-		return "error"
-	}
-}
-
-func validatePickerOptions(ctx context.Context, options PickerOptions) error {
-	if ctx == nil {
-		return errors.New("run picker: nil context")
-	}
-	if options.Picker != protocol.PickerCD && options.Picker != protocol.PickerCP {
-		return fmt.Errorf("run picker: invalid picker %q", options.Picker)
-	}
-	if options.Output != protocol.OutputNUL && options.Output != protocol.OutputNUON {
-		return fmt.Errorf("run picker: invalid output %q", options.Output)
-	}
-	if options.ZoxidePolicy != candidate.ZoxideCached && options.ZoxidePolicy != candidate.ZoxideFresh {
-		return errors.New("run picker: invalid zoxide policy")
-	}
-	if options.ZoxideTimeout < 0 {
-		return errors.New("run picker: negative zoxide timeout")
-	}
-	if !filepath.IsAbs(string(options.ExecutablePath)) {
-		return errors.New("run picker: executable path must be absolute")
-	}
-	for name, path := range map[string][]byte{"cwd": options.CWD, "home": options.Home} {
-		if !filepath.IsAbs(string(path)) {
-			return fmt.Errorf("run picker: %s must be absolute", name)
-		}
-		info, err := os.Stat(string(path))
-		if err != nil || !info.IsDir() {
-			return fmt.Errorf("run picker: %s must be an existing directory", name)
-		}
-	}
-	return context.Cause(ctx)
 }

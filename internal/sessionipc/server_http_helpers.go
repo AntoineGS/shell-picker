@@ -21,9 +21,9 @@ func canonicalRoute(request *http.Request) (string, bool) {
 	}
 }
 
-func readRequestBody(response http.ResponseWriter, request *http.Request) ([]byte, error) {
+func readRequestBody(response http.ResponseWriter, request *http.Request, limit int64) ([]byte, error) {
 	defer request.Body.Close()
-	return io.ReadAll(http.MaxBytesReader(response, request.Body, maxRequestBody))
+	return io.ReadAll(http.MaxBytesReader(response, request.Body, limit))
 }
 
 func writeBackendError(response http.ResponseWriter, err error) {

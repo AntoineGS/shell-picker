@@ -2,6 +2,7 @@ package sessionipc
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -18,10 +19,11 @@ const (
 )
 
 type EventRequest struct {
-	Opcode            protocol.Opcode `json:"opcode"`
-	Key               string          `json:"key"`
-	QueryBase64       string          `json:"query_base64"`
-	CurrentItemBase64 string          `json:"current_item_base64"`
+	Opcode                protocol.Opcode `json:"opcode"`
+	Key                   string          `json:"key"`
+	QueryBase64           string          `json:"query_base64"`
+	CurrentItemBase64     string          `json:"current_item_base64"`
+	SelectedRecordsBase64 string          `json:"selected_records_gzip_base64"`
 }
 
 type EventResponse struct {
@@ -121,6 +123,39 @@ func decodeBytes(encoded string) ([]byte, error) {
 		return nil, errors.New("invalid byte encoding")
 	}
 	return decoded, nil
+}
+
+func decodeSelectedRecords(encoded string) ([][]byte, error) {
+	if encoded == "" {
+		return nil, nil
+	}
+	compressed, err := decodeBytes(encoded)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(compressed))
+	if err != nil {
+		return nil, errors.New("invalid selected-record compression")
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(reader, maxSelectedData+1))
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || len(raw) > maxSelectedData ||
+		len(raw) == 0 || raw[len(raw)-1] != 0 {
+		return nil, errors.New("invalid selected-record data")
+	}
+	rows := bytes.Split(raw[:len(raw)-1], []byte{0})
+	if len(rows) > 1_000_000 {
+		return nil, errors.New("too many selected records")
+	}
+	for _, row := range rows {
+		if len(row) == 0 {
+			return nil, errors.New("empty selected record")
+		}
+		if _, err := protocol.ParseRecord(row); err != nil {
+			return nil, errors.New("malformed selected record")
+		}
+	}
+	return rows, nil
 }
 
 func validatePreview(request PreviewRequest) error {

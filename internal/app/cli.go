@@ -71,12 +71,12 @@ func runProbeCLI(ctx context.Context, args []string, streams Streams, build stri
 func runPickerCLI(ctx context.Context, args []string, streams Streams, executable string, dependencies *Dependencies) int {
 	options, err := parsePickerArgs(args, executable)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "usage: shell-picker cd|cp --cwd PATH --home PATH [--output nul|nuon] [--fzf PATH] [--zoxide-policy cached|fresh] [--zoxide-timeout DURATION] [--trace FILE]")
+		fmt.Fprintln(streams.Err, "usage: shell-picker cd|cp|search --cwd PATH --home PATH [--output nul|nuon] [--fzf PATH] [--zoxide-policy cached|fresh] [--zoxide-timeout DURATION] [--trace FILE]")
 		return 2
 	}
 	outcome, err := RunPicker(ctx, options, *dependencies)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "shell-picker: picker failed")
+		fmt.Fprintf(streams.Err, "shell-picker: picker failed: %v\n", err)
 		return 1
 	}
 	if err := protocol.EncodeOutcome(streams.Out, options.Output, outcome); err != nil {
@@ -87,7 +87,8 @@ func runPickerCLI(ctx context.Context, args []string, streams Streams, executabl
 }
 
 func parsePickerArgs(args []string, executable string) (PickerOptions, error) {
-	if len(args) == 0 || (args[0] != string(protocol.PickerCD) && args[0] != string(protocol.PickerCP)) {
+	if len(args) == 0 || (args[0] != string(protocol.PickerCD) && args[0] != string(protocol.PickerCP) &&
+		args[0] != string(protocol.PickerSearch)) {
 		return PickerOptions{}, errors.New("invalid picker command")
 	}
 	options := PickerOptions{Picker: protocol.Picker(args[0]), Output: protocol.OutputNUL, FZFPath: "fzf",
@@ -146,11 +147,23 @@ func parsePickerArgs(args []string, executable string) (PickerOptions, error) {
 
 func callbackMain(ctx context.Context, args []string, streams Streams) int {
 	_ = os.Unsetenv("FZF_API_KEY")
-	if len(args) != 2 {
+	selectedFileArgs := len(args) == 4 && args[1] == "e:sf" && args[2] == "--selected-file"
+	selectedFileTail := len(args) == 3 && args[1] == "e:sf" && strings.HasPrefix(args[2], "--selected-file ")
+	if len(args) != 2 && !selectedFileArgs && !selectedFileTail {
 		fmt.Fprintln(streams.Err, "invalid callback command")
 		return 2
 	}
-	command, err := callback.Parse(args[1])
+	var command callback.Command
+	var err error
+	if len(args) == 2 && strings.HasPrefix(args[1], "e:sf --selected-file ") {
+		command, err = callback.ParseSelectedFileArgument(args[1])
+	} else if selectedFileArgs {
+		command, err = callback.ParseSelectedFileCommand(args[1], args[3])
+	} else if selectedFileTail {
+		command, err = callback.ParseSelectedFileArgument(args[1] + " " + args[2])
+	} else {
+		command, err = callback.Parse(args[1])
+	}
 	if err != nil {
 		fmt.Fprintln(streams.Err, "invalid callback command")
 		return 2

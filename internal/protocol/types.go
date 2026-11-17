@@ -3,8 +3,18 @@ package protocol
 type Picker string
 
 const (
-	PickerCD Picker = "cd"
-	PickerCP Picker = "cp"
+	PickerCD     Picker = "cd"
+	PickerCP     Picker = "cp"
+	PickerSearch Picker = "search"
+)
+
+// Source identifies the candidate source independently of the interaction mode.
+// The zero value intentionally keeps existing sessions in the browser.
+type Source uint8
+
+const (
+	SourceBrowser Source = iota
+	SourceIndexed
 )
 
 type Mode string
@@ -38,22 +48,25 @@ const (
 type Opcode string
 
 const (
-	OpModeInsert  Opcode = "mi"
-	OpModeAdd     Opcode = "ma"
-	OpEscape      Opcode = "es"
-	OpForward     Opcode = "fw"
-	OpParent      Opcode = "up"
-	OpSlash       Opcode = "sl"
-	OpHome        Opcode = "hm"
-	OpEnter       Opcode = "en"
-	OpRestoreView Opcode = "rs"
+	OpModeInsert   Opcode = "mi"
+	OpModeAdd      Opcode = "ma"
+	OpEscape       Opcode = "es"
+	OpForward      Opcode = "fw"
+	OpParent       Opcode = "up"
+	OpSlash        Opcode = "sl"
+	OpHome         Opcode = "hm"
+	OpEnter        Opcode = "en"
+	OpRestoreView  Opcode = "rs"
+	OpSourceToggle Opcode = "sf"
+	OpMarkToggle   Opcode = "mk"
 )
 
 type Event struct {
-	Opcode      Opcode
-	Key         string
-	Query       []byte
-	CurrentItem []byte
+	Opcode          Opcode
+	Key             string
+	Query           []byte
+	CurrentItem     []byte
+	SelectedRecords [][]byte
 }
 
 type Effect struct {
@@ -61,9 +74,13 @@ type Effect struct {
 	Prompt            string      `json:"prompt"`
 	Header            string      `json:"header"`
 	Search            string      `json:"search"`
+	Query             string      `json:"query"`
+	SetQuery          bool        `json:"set_query"`
+	RestorePositions  string      `json:"restore_positions"`
 	Rebind            Mode        `json:"rebind"`
 	ClearQuery        bool        `json:"clear_query"`
 	ClearMulti        bool        `json:"clear_multi"`
+	ToggleSelection   bool        `json:"toggle_selection"`
 	Accept            bool        `json:"accept"`
 	Abort             bool        `json:"abort"`
 	Ignore            bool        `json:"ignore"`

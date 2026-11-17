@@ -25,7 +25,7 @@ shell-picker probe --json
 
 `probe --json` reports redacted paths, fzf readiness, optional zoxide and preview-tool availability, cache status, terminal status, adapter availability, and Windows Job/ConPTY capability. It is the appropriate diagnostic before filing an installation issue.
 
-`shell-picker --help` currently follows the command parser's usage-error path and prints the picker usage. The supported entry points are `version`, `probe --json`, `shell-picker cd`, and `shell-picker cp`.
+`shell-picker --help` currently follows the command parser's usage-error path and prints the picker usage. The supported entry points are `version`, `probe --json`, `shell-picker cd`, `shell-picker cp`, and `shell-picker search`.
 
 ## Use directly
 
@@ -35,6 +35,16 @@ Both picker commands require absolute `--cwd` and `--home`; output is `nul` by d
 shell-picker cd --cwd "$PWD" --home "$HOME" --output nul
 shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 ```
+
+Direct search invocation is `shell-picker search --cwd "$PWD" --home "$HOME" --output nul`.
+It starts with the saved FSearch index, returns selected absolute paths,
+and does not execute a command or perform a copy. It requires a readable
+FSearch 6.0 saved database at `$XDG_DATA_HOME/fsearch/fsearch.db` or
+`$HOME/.local/share/fsearch/fsearch.db`. The index is a snapshot from the last
+FSearch save; changes since that save are not reflected. Search uses fzf's
+matching semantics, not FSearch's query language; its header identifies the
+saved index as `FSearch · saved <timestamp>`. Ctrl+F switches between
+indexed results and the ordinary directory browser in an existing picker.
 
 The picker uses a two-line layout: the escaped current location is the header, while the prompt contains only the mode and query. Long headers are left-truncated to fit.
 The preview uses a right-side 50% split while that pane is at least 80 columns wide. On narrower terminals it moves below the result list at 50% height and returns to the right when resized wider.
@@ -48,13 +58,13 @@ For `cp`, the info text appends ` (N)` only while a selection is active. `cd` ne
 
 ### Picker keys
 
-The table is user-facing fzf behavior, not callback opcode names. In `cd`, Space clears any mark and toggles the single selection; in `cp`, Space toggles marks. `cd` sorts and has one selectable item; `cp` preserves source order and supports multiple items. Internal callback opcodes are specified only in [the protocol reference](docs/protocol.md).
+The table is user-facing fzf behavior, not callback opcode names. In Normal mode, Space toggles the current selection; in `cd`, marking a different directory replaces the previous single selection. In `cp` and `search`, Space marks only in Normal mode and remains text in Insert/Add; Ctrl-Space marks in every mode. Shift-Tab, right-click, and Shift-right-click also toggle marks; Shift-left-click range selection is disabled. `cd` sorts and has one selectable item; `cp` and `search` preserve source order and support multiple items. Internal callback opcodes are specified only in [the protocol reference](docs/protocol.md).
 
 | Mode | cd active fzf bindings | cp active fzf bindings |
 | --- | --- | --- |
-| Insert | `enter:transform(e:en)`<br>`esc:transform(e:es)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`ctrl-u:half-page-up`<br>`ctrl-d:half-page-down` | `enter:transform(e:en)`<br>`esc:transform(e:es)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`ctrl-u:half-page-up`<br>`ctrl-d:half-page-down` |
-| Normal | `enter:transform(e:en)`<br>`esc:transform(e:es)`<br>`i:transform(e:mi)`<br>`a:transform(e:ma)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`g:jump`<br>`G:last`<br>`jump:first`<br>`j:down`<br>`k:up`<br>`h:trigger(ctrl-h)`<br>`l:trigger(tab)`<br>`q:cancel+abort`<br>`ctrl-u:half-page-up`<br>`ctrl-d:half-page-down`<br>`,:preview-half-page-up`<br>`.:preview-half-page-down`<br>`space:clear-multi+toggle`<br>`other printable keys:ignore` | `enter:transform(e:en)`<br>`esc:transform(e:es)`<br>`i:transform(e:mi)`<br>`a:transform(e:ma)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`g:jump`<br>`G:last`<br>`jump:first`<br>`j:down`<br>`k:up`<br>`h:trigger(ctrl-h)`<br>`l:trigger(tab)`<br>`q:cancel+abort`<br>`ctrl-u:half-page-up`<br>`ctrl-d:half-page-down`<br>`,:preview-half-page-up`<br>`.:preview-half-page-down`<br>`space:toggle`<br>`other printable keys:ignore` |
-| Add | `enter:transform(e:en)`<br>`esc:transform(e:es)` | `enter:transform(e:en)`<br>`esc:transform(e:es)` |
+| Insert | `enter:transform(e:en)`<br>`ctrl-f:transform(e:sf)`<br>`esc:transform(e:es)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`ctrl-u:half-page-up`<br>`ctrl-d:half-page-down`<br>`ctrl-space:transform(e:mk)`<br>`btab:transform(e:mk)+up`<br>`right-click,shift-right-click:transform(e:mk)` | `enter:transform(e:en)`<br>`ctrl-f:transform(e:sf)`<br>`esc:transform(e:es)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`ctrl-u:half-page-up`<br>`ctrl-d:half-page-down`<br>`ctrl-space:transform(e:mk)`<br>`btab:transform(e:mk)+up`<br>`right-click,shift-right-click:transform(e:mk)`|
+| Normal | `enter:transform(e:en)`<br>`ctrl-f:transform(e:sf)`<br>`esc:transform(e:es)`<br>`i:transform(e:mi)`<br>`a:transform(e:ma)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`g:jump`<br>`G:last`<br>`jump:first`<br>`j:down`<br>`k:up`<br>`h:trigger(ctrl-h)`<br>`l:trigger(tab)`<br>`q:cancel+abort`<br>`ctrl-u:half-page-up`<br>`ctrl-d:half-page-down`<br>`,:preview-half-page-up`<br>`.:preview-half-page-down`<br>`space:transform(e:mk)`<br>`ctrl-space:transform(e:mk)`<br>`btab:transform(e:mk)+up`<br>`right-click,shift-right-click:transform(e:mk)`<br>`other printable keys:ignore` | `enter:transform(e:en)`<br>`ctrl-f:transform(e:sf)`<br>`esc:transform(e:es)`<br>`i:transform(e:mi)`<br>`a:transform(e:ma)`<br>`ctrl-l,tab,right:transform(e:fw)`<br>`ctrl-h,left:transform(e:up)`<br>`/:transform(e:sl)`<br>`~:transform(e:hm)`<br>`g:jump`<br>`G:last`<br>`jump:first`<br>`j:down`<br>`k:up`<br>`h:trigger(ctrl-h)`<br>`l:trigger(tab)`<br>`q:cancel+abort`<br>`ctrl-u:half-page-up`<br>`ctrl-d:half-page-down`<br>`,:preview-half-page-up`<br>`.:preview-half-page-down`<br>`space:transform(e:mk)`<br>`ctrl-space:transform(e:mk)`<br>`btab:transform(e:mk)+up`<br>`right-click,shift-right-click:transform(e:mk)`<br>`other printable keys:ignore` |
+| Add | `enter:transform(e:en)`<br>`ctrl-f:transform(e:sf)`<br>`esc:transform(e:es)`<br>`ctrl-space:transform(e:mk)`<br>`btab:transform(e:mk)+up`<br>`right-click,shift-right-click:transform(e:mk)` | `enter:transform(e:en)`<br>`ctrl-f:transform(e:sf)`<br>`esc:transform(e:es)`<br>`ctrl-space:transform(e:mk)`<br>`btab:transform(e:mk)+up`<br>`right-click,shift-right-click:transform(e:mk)`|
 
 Normal `i` enters Insert and Normal `a` enters Add. Normal Esc intentionally aborts the picker rather than applying the legacy clear-multi behavior. Insert keeps the static Enter/Esc callbacks and the actual navigation bindings; it does not bind `i`. In Normal, the user-facing sequence is Normal: gg:first, G:last. The first `g` enters fzf's prefix state; a different second key cancels and is consumed, while the second `g` moves to the first result. Add has no normal or navigation bindings, no paging or first/last bindings: Enter creates and loads the proposed directory tree rather than accepting picker output, while Esc returns to Normal. The table describes ordinary active bindings; `result-final` and `change` are startup-unbound. That pair is a one-shot internal handoff: invalid rendering arms `result-final`, which arms `change` only after invalid rendering completes, and the next edit restores the authenticated current generation without rebuilding candidates or changing session state.
 

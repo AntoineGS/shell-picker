@@ -47,7 +47,7 @@ func EnumerateLocal(ctx context.Context, picker protocol.Picker, location pathut
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if picker != protocol.PickerCD && picker != protocol.PickerCP {
+	if picker != protocol.PickerCD && picker != protocol.PickerCP && picker != protocol.PickerSearch {
 		return nil, fmt.Errorf("unsupported picker %q", picker)
 	}
 
@@ -216,7 +216,7 @@ func buildLocalRecords(picker protocol.Picker, location pathutil.Location, entri
 	for _, entry := range entries {
 		if entry.directory {
 			directories = append(directories, entry)
-		} else if picker == protocol.PickerCP {
+		} else if picker == protocol.PickerCP || picker == protocol.PickerSearch {
 			files = append(files, entry)
 		}
 	}
@@ -252,7 +252,7 @@ func ordinaryRootRecords(picker protocol.Picker, location pathutil.Location) []R
 }
 
 func localDirectoryKind(picker protocol.Picker) protocol.Kind {
-	if picker == protocol.PickerCP {
+	if picker == protocol.PickerCP || picker == protocol.PickerSearch {
 		return protocol.KindDirectory
 	}
 	return protocol.KindLocal

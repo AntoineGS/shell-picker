@@ -13,11 +13,28 @@ import (
 
 type State struct {
 	Picker   protocol.Picker
+	Source   protocol.Source
 	Mode     protocol.Mode
 	Location pathutil.Location
 	Home     pathutil.Location
 	Prompt   string
 	AddError bool
+	Query    []byte
+	Browser  *BrowserContext
+	Indexed  *IndexedContext
+}
+
+// BrowserContext preserves the browser view while indexed search is active.
+type BrowserContext struct {
+	Location      pathutil.Location
+	Mode          protocol.Mode
+	Query         []byte
+	SelectedPaths [][]byte
+}
+
+type IndexedContext struct {
+	Query         []byte
+	SelectedPaths [][]byte
 }
 
 type GenerateFunc func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error)
@@ -188,17 +205,6 @@ func (snapshot Snapshot) lookupRecord(key string) (candidate.Record, bool) {
 		return candidate.Record{}, false
 	}
 	return snapshot.records.values[position], true
-}
-
-func cloneState(state State) State {
-	state.Location = cloneLocation(state.Location)
-	state.Home = cloneLocation(state.Home)
-	return state
-}
-
-func cloneLocation(location pathutil.Location) pathutil.Location {
-	location.Path = bytes.Clone(location.Path)
-	return location
 }
 
 func cloneRecord(record candidate.Record) candidate.Record {

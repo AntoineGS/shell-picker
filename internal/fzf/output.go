@@ -17,13 +17,16 @@ type Result struct {
 }
 
 func ParseOutput(picker protocol.Picker, output []byte, exitCode int) (Result, error) {
-	if picker != protocol.PickerCD && picker != protocol.PickerCP {
+	if picker != protocol.PickerCD && picker != protocol.PickerCP && picker != protocol.PickerSearch {
 		return Result{}, fmt.Errorf("fzf: invalid picker %q", picker)
 	}
 	if exitCode != 0 && exitCode != 1 && exitCode != 130 {
 		return Result{}, fmt.Errorf("fzf: unexpected exit code %d", exitCode)
 	}
 	if exitCode == 1 {
+		if picker == protocol.PickerCD || picker == protocol.PickerCP || picker == protocol.PickerSearch {
+			return Result{ExitCode: exitCode}, nil
+		}
 		return Result{}, errors.New("fzf: no match or search error (exit code 1)")
 	}
 	frames, err := nulFrames(output)
@@ -41,7 +44,7 @@ func ParseOutput(picker protocol.Picker, output []byte, exitCode int) (Result, e
 				return Result{}, errors.New("fzf: malformed cd abort output")
 			}
 			result.Query = frames[0]
-		case protocol.PickerCP:
+		case protocol.PickerCP, protocol.PickerSearch:
 			if len(frames) != 0 {
 				return Result{}, errors.New("fzf: malformed cp abort output")
 			}
@@ -56,7 +59,7 @@ func ParseOutput(picker protocol.Picker, output []byte, exitCode int) (Result, e
 			return Result{}, errors.New("fzf: cd acceptance requires query, key, and one record")
 		}
 		result.Query, result.Key, result.Records = frames[0], string(frames[1]), frames[2:]
-	case protocol.PickerCP:
+	case protocol.PickerCP, protocol.PickerSearch:
 		if len(frames) < 2 {
 			return Result{}, errors.New("fzf: cp acceptance requires key and records")
 		}

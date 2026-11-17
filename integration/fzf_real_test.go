@@ -21,11 +21,12 @@ import (
 )
 
 var (
-	keyEsc   = []byte{0x1b}
-	keyEnter = []byte{'\r'}
-	keySpace = []byte{' '}
-	keyLeft  = []byte{0x1b, '[', 'D'}
-	keyDown  = []byte{0x1b, '[', 'B'}
+	keyEsc       = []byte{0x1b}
+	keyEnter     = []byte{'\r'}
+	keySpace     = []byte{' '}
+	keyCtrlSpace = []byte{0x00}
+	keyLeft      = []byte{0x1b, '[', 'D'}
+	keyDown      = []byte{0x1b, '[', 'B'}
 )
 
 type traceEvent = integrationpkg.TraceRecord

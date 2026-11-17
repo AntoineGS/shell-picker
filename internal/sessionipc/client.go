@@ -17,7 +17,8 @@ import (
 
 const (
 	maxJSONResponseBytes      = 64 << 10
-	maxLoadResponseBytes      = 64 << 20
+	maxEventResponseBytes     = 512 << 10
+	MaxLoadResponseBytes      = 256 << 20
 	maxTelemetryResponseBytes = 1 << 10
 )
 
@@ -31,10 +32,11 @@ var (
 )
 
 type Client struct {
-	address   string
-	token     Token
-	client    *http.Client
-	transport *http.Transport
+	address           string
+	token             Token
+	client            *http.Client
+	transport         *http.Transport
+	loadResponseLimit int64
 }
 
 func NewClientFromEnv(getenv func(string) string) (*Client, error) {
@@ -74,7 +76,7 @@ func newClient(address string, token Token) *Client {
 
 func (client *Client) Event(ctx context.Context, request EventRequest) (EventResponse, error) {
 	var response EventResponse
-	err := client.doJSON(ctx, "/v1/event", request, &response)
+	err := client.doJSONLimit(ctx, "/v1/event", request, &response, maxEventResponseBytes)
 	return response, err
 }
 
@@ -137,7 +139,11 @@ func (client *Client) Load(ctx context.Context, request LoadRequest) ([]byte, er
 		response.Body.Close()
 		return nil, ErrInternal
 	}
-	return client.readResponse(response, maxLoadResponseBytes)
+	limit := client.loadResponseLimit
+	if limit <= 0 {
+		limit = MaxLoadResponseBytes
+	}
+	return client.readResponse(response, limit)
 }
 
 func (client *Client) ResolvePreview(ctx context.Context, request PreviewRequest) (PreviewResponse, error) {
@@ -163,11 +169,15 @@ func (client *Client) RecordPreview(ctx context.Context, request PreviewRequest)
 }
 
 func (client *Client) doJSON(ctx context.Context, path string, input, output any) error {
+	return client.doJSONLimit(ctx, path, input, output, maxJSONResponseBytes)
+}
+
+func (client *Client) doJSONLimit(ctx context.Context, path string, input, output any, limit int64) error {
 	response, err := client.do(ctx, path, input)
 	if err != nil {
 		return err
 	}
-	body, err := client.readResponse(response, maxJSONResponseBytes)
+	body, err := client.readResponse(response, limit)
 	if err != nil {
 		return err
 	}

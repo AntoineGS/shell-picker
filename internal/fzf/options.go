@@ -26,7 +26,7 @@ func Options(config OptionsConfig) ([]string, error) {
 
 func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 	switch config.Picker {
-	case protocol.PickerCD, protocol.PickerCP:
+	case protocol.PickerCD, protocol.PickerCP, protocol.PickerSearch:
 	default:
 		return nil, nil
 	}
@@ -65,6 +65,7 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		"--preview=p",
 		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
 		binding("enter", transformEvent(protocol.OpEnter)),
+		binding("ctrl-f", transformEvent(protocol.OpSourceToggle)),
 		binding("esc", transformEvent(protocol.OpEscape)),
 		binding("i", transformEvent(protocol.OpModeInsert)),
 		binding("a", transformEvent(protocol.OpModeAdd)),
@@ -98,9 +99,21 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		options = append(options, binding(key, ignore()))
 	}
 	if config.Picker == protocol.PickerCD {
-		return append(options, binding("space", clearMulti(), toggle()), "--sort", "--print-query", "--multi=1"), nil
+		return append(options,
+			binding("space", transformEvent(protocol.OpMarkToggle)),
+			binding("ctrl-space", transformEvent(protocol.OpMarkToggle)),
+			binding("btab", transformEvent(protocol.OpMarkToggle), up()),
+			binding("right-click,shift-right-click", transformEvent(protocol.OpMarkToggle)),
+			binding("shift-left-click", ignore()),
+			"--sort", "--print-query", "--multi=1"), nil
 	}
-	return append(options, binding("space", toggle()), "--no-sort", "--multi"), nil
+	return append(options,
+		binding("space", transformEvent(protocol.OpMarkToggle)),
+		binding("ctrl-space", transformEvent(protocol.OpMarkToggle)),
+		binding("btab", transformEvent(protocol.OpMarkToggle), up()),
+		binding("right-click,shift-right-click", transformEvent(protocol.OpMarkToggle)),
+		binding("shift-left-click", ignore()),
+		"--no-sort", "--multi"), nil
 }
 
 func transformDisplay() action { return action{text: "transform(d)"} }

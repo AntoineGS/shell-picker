@@ -282,6 +282,9 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 	if effect.ClearMulti {
 		actions = append(actions, clearMulti())
 	}
+	if effect.ToggleSelection {
+		actions = append(actions, toggle())
+	}
 	if effect.ReloadGeneration != 0 {
 		actions = append(actions, reloadForEvent(effect.ReloadGeneration, eventID))
 	}
@@ -338,5 +341,10 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 		}
 		actions = append(actions, header)
 	}
+	restoreActions, err := queryRestoreActions(effect)
+	if err != nil {
+		return "", err
+	}
+	actions = append(actions, restoreActions...)
 	return sequence(actions...), nil
 }

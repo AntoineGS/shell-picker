@@ -17,6 +17,7 @@ func TestParseOutputSuccess(t *testing.T) {
 		{"cd", protocol.PickerCD, []byte("needle\x00enter\x00record\x00"), Result{Query: []byte("needle"), Key: "enter", Records: [][]byte{[]byte("record")}, ExitCode: 0}},
 		{"cd empty query", protocol.PickerCD, []byte("\x00enter\x00record\x00"), Result{Query: []byte{}, Key: "enter", Records: [][]byte{[]byte("record")}, ExitCode: 0}},
 		{"cp", protocol.PickerCP, []byte("enter\x00one\x00two\x00"), Result{Key: "enter", Records: [][]byte{[]byte("one"), []byte("two")}, ExitCode: 0}},
+		{"search", protocol.PickerSearch, []byte("enter\x00one\x00two\x00"), Result{Key: "enter", Records: [][]byte{[]byte("one"), []byte("two")}, ExitCode: 0}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -38,6 +39,7 @@ func TestParseOutputAbort(t *testing.T) {
 		{protocol.PickerCD, []byte("\x00"), 130, []byte{}},
 		{protocol.PickerCD, []byte{}, 130, nil},
 		{protocol.PickerCP, []byte{}, 130, nil},
+		{protocol.PickerSearch, []byte{}, 130, nil},
 	}
 	for _, test := range tests {
 		got, err := ParseOutput(test.picker, test.raw, test.code)
@@ -47,21 +49,19 @@ func TestParseOutputAbort(t *testing.T) {
 	}
 }
 
-func TestParseOutputRejectsGenericNoMatchExit(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		picker protocol.Picker
-		raw    []byte
-	}{
-		{name: "cd query", picker: protocol.PickerCD, raw: []byte("needle\x00")},
-		{name: "cp empty", picker: protocol.PickerCP},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			got, err := ParseOutput(test.picker, test.raw, 1)
-			if err == nil || got.Aborted {
-				t.Fatalf("got=%+v err=%v, want non-aborted no-match error", got, err)
-			}
-		})
+func TestParseOutputCDNoMatchAllowsCachedSelectionFallback(t *testing.T) {
+	got, err := ParseOutput(protocol.PickerCD, []byte("needle\x00"), 1)
+	if err != nil || got.Aborted || got.ExitCode != 1 || len(got.Records) != 0 {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+}
+
+func TestParseOutputNoVisibleRowsPreservesAcceptanceForCachedMarks(t *testing.T) {
+	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP, protocol.PickerSearch} {
+		got, err := ParseOutput(picker, nil, 1)
+		if err != nil || got.Aborted || got.ExitCode != 1 || len(got.Records) != 0 {
+			t.Fatalf("picker=%q result=%+v err=%v", picker, got, err)
+		}
 	}
 }
 
@@ -79,7 +79,7 @@ func TestParseOutputRejectsMalformedFrames(t *testing.T) {
 		{"cd many records", protocol.PickerCD, []byte("q\x00enter\x00one\x00two\x00"), 0},
 		{"cp no records", protocol.PickerCP, []byte("enter\x00"), 0},
 		{"bad abort cp", protocol.PickerCP, []byte("x\x00"), 130},
-		{"bad abort cd", protocol.PickerCD, []byte("q\x00extra\x00"), 1},
+		{"bad abort cd", protocol.PickerCD, []byte("q\x00extra\x00"), 130},
 		{"unexpected exit", protocol.PickerCP, nil, 2},
 		{"unknown picker", protocol.Picker("bad"), []byte("enter\x00x\x00"), 0},
 	}

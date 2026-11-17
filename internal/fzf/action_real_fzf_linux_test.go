@@ -85,6 +85,18 @@ func TestInstalledFZFActionSemantics(t *testing.T) {
 	}
 }
 
+func TestInstalledFZFChangeQueryRestoresText(t *testing.T) {
+	path := os.Getenv("SHELL_PICKER_REAL_FZF")
+	if path == "" {
+		t.Skip("SHELL_PICKER_REAL_FZF is required for the installed query-restoration gate")
+	}
+	query := `a)b\c+$(echo unsafe)`
+	screen := runFZFUntilText(t, path, "change-query:"+query, query)
+	if !bytes.Contains(screen, []byte(query)) {
+		t.Fatalf("query %q not rendered literally; terminal output=%q", query, screen)
+	}
+}
+
 func TestInstalledFZFInvalidPathRestoreArmingOrder(t *testing.T) {
 	path := os.Getenv("SHELL_PICKER_REAL_FZF")
 	if path == "" {

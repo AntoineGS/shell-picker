@@ -138,7 +138,7 @@ func TestServerAcceptsOnlyOneExactRawAuthorizationValue(t *testing.T) {
 	}
 }
 
-func TestServerRejectsChunkedRequestAt64KiBPlusOne(t *testing.T) {
+func TestServerRejectsChunkedEventRequestAtLimitPlusOne(t *testing.T) {
 	var calls atomic.Int32
 	backend := benignBackend()
 	backend.handleEvent = func(context.Context, protocol.Event) (EventResult, error) {
@@ -146,7 +146,7 @@ func TestServerRejectsChunkedRequestAt64KiBPlusOne(t *testing.T) {
 		return EventResult{}, nil
 	}
 	server, _ := startServer(t, backend)
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.Address()+"/v1/event", bytes.NewReader(bytes.Repeat([]byte{'x'}, (64<<10)+1)))
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.Address()+"/v1/event", bytes.NewReader(bytes.Repeat([]byte{'x'}, maxEventBody+1)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -49,7 +49,7 @@ zle() {
 }
 
 bindkey() {
-  bound_keys+=("$1:$2")
+  bound_keys+=("${(j.:.)@}")
 }
 
 plugin=${0:A:h}/shell-picker.plugin.zsh
@@ -101,12 +101,12 @@ picker_call_count() {
 }
 
 test_registration_and_explicit_bindings() {
-  assert_equal '_shell_picker_cd _shell_picker_cp _shell_picker_tab _shell_picker_space' \
+  assert_equal '_shell_picker_cd _shell_picker_cp _shell_picker_search _shell_picker_tab _shell_picker_space' \
     "${(j: :)registered_widgets}" 'source-time widget registration changed'
   assert_equal 0 "${#bound_keys}" 'source time rebound a key'
   shell-picker-bind-zsh
-  assert_equal ' :_shell_picker_space ^I:_shell_picker_tab' "${(j: :)bound_keys}" \
-    'explicit binding did not bind Space and Tab'
+  assert_equal ' :_shell_picker_space ^I:_shell_picker_tab -M:emacs:^F:_shell_picker_search -M:viins:^F:_shell_picker_search -M:vicmd:^F:_shell_picker_search' \
+    "${(j: :)bound_keys}" 'explicit bindings did not bind Space, Tab, and Ctrl-F search'
 }
 
 test_space_exact_after_magic_space() {
@@ -357,14 +357,14 @@ test_output_transport_ignores_tmpdir() {
 
   reset_case
   local saved_tmpdir=$TMPDIR
-  TMPDIR=$test_root/missing
+  unset TMPDIR
   BUFFER='mktemp state' CURSOR=6
-  _shell_picker_cd 2>/dev/null
+  _shell_picker_cd
   picker_call_count
   TMPDIR=$saved_tmpdir
   assert_equal 'mktemp state' "$BUFFER" 'missing TMPDIR changed the buffer'
   assert_equal 6 "$CURSOR" 'missing TMPDIR changed the cursor'
-  assert_equal 1 "$REPLY" 'missing TMPDIR prevented picker execution'
+  assert_equal 1 "$REPLY" 'unset TMPDIR prevented picker execution'
 }
 
 test_output_transport_ignores_hostile_temp_functions() {

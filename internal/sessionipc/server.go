@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	maxRequestBody = 64 << 10
-	maxHandlers    = 16
+	maxRequestBody  = 64 << 10
+	maxEventBody    = 16 << 20
+	maxSelectedData = 64 << 20
+	maxHandlers     = 16
 )
 
 type Server struct {
@@ -115,7 +117,11 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 	defer server.release()
 
-	body, err := readRequestBody(response, request)
+	bodyLimit := int64(maxRequestBody)
+	if route == "/v1/event" {
+		bodyLimit = maxEventBody
+	}
+	body, err := readRequestBody(response, request, bodyLimit)
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
@@ -177,8 +183,13 @@ func (server *Server) handleEvent(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusBadRequest)
 		return
 	}
+	selected, err := decodeSelectedRecords(input.SelectedRecordsBase64)
+	if err != nil {
+		writeError(response, http.StatusBadRequest)
+		return
+	}
 	result, err := server.backend.HandleEvent(request.Context(), protocol.Event{
-		Opcode: input.Opcode, Key: input.Key, Query: query, CurrentItem: current,
+		Opcode: input.Opcode, Key: input.Key, Query: query, CurrentItem: current, SelectedRecords: selected,
 	})
 	if err != nil {
 		writeBackendError(response, err)

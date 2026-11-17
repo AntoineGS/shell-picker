@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AntoineGS/shell-picker/internal/callback"
 	"github.com/AntoineGS/shell-picker/internal/candidate"
 	"github.com/AntoineGS/shell-picker/internal/fzf"
 	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
@@ -259,6 +260,35 @@ func TestFZFShellTransportFailureReturnsOneWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestFZFShellParsesSelectedFileFromSingleTransformArgument(t *testing.T) {
+	row := protocol.WireRecord{
+		Kind: protocol.KindFile, Display: "/tmp/file",
+		Payload: protocol.EncodePath([]byte("/tmp/file")),
+	}.Bytes()
+	path := filepath.Join(t.TempDir(), "selection")
+	if err := os.WriteFile(path, append(row, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FZF_SELECT_COUNT", "1")
+	t.Setenv("SHELL_PICKER_ADDR", "")
+	t.Setenv("SHELL_PICKER_TOKEN", "")
+	t.Setenv("FZF_KEY", "ctrl-f")
+
+	var stdout, stderr bytes.Buffer
+	command := "e:sf --selected-file " + path
+	parsed, parseErr := callback.ParseSelectedFileArgument(command)
+	if parseErr != nil {
+		t.Fatalf("ParseSelectedFileArgument: %v", parseErr)
+	}
+	if err := callback.ValidateLocal(parsed, os.Getenv); err != nil {
+		t.Fatalf("ValidateLocal: %v", err)
+	}
+	code := callbackMain(context.Background(), []string{"--fzf-shell", command}, Streams{Out: &stdout, Err: &stderr})
+	if code != 1 || stderr.String() != "callback connection unavailable\n" {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestFZFShellRejectsEventKeyBeforeIPCClientConstruction(t *testing.T) {
 	t.Setenv("SHELL_PICKER_ADDR", "")
 	t.Setenv("SHELL_PICKER_TOKEN", "")
@@ -312,6 +342,18 @@ func TestPickerCLITimeoutOverride(t *testing.T) {
 	options, err := parsePickerArgs([]string{"cd", "--cwd", "/work", "--home", "/home/u", "--zoxide-timeout", "275ms"}, "/bin/shell-picker")
 	if err != nil || options.ZoxideTimeout != 275*time.Millisecond {
 		t.Fatalf("options=%+v err=%v", options, err)
+	}
+}
+
+func TestParseSearchCommand(t *testing.T) {
+	options, err := parsePickerArgs(
+		[]string{"search", "--cwd", "/tmp", "--home", "/home/test"},
+		"/usr/bin/shell-picker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.Picker != protocol.PickerSearch {
+		t.Fatalf("picker = %q", options.Picker)
 	}
 }
 

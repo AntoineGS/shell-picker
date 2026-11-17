@@ -393,13 +393,13 @@ func runModeSemantic(t *testing.T, row parityRow) {
 	case "search-enabled":
 		assertParityText(t, row, boolText(result.Effect.Search == golden.Insert.Search || result.Effect.Search == golden.Add.Search))
 	case "normal-keys-unbound":
-		assertParityText(t, row, boolText(strings.Contains(action, "unbind(h,j,k,l,i,a,q,space,")))
+		assertParityText(t, row, boolText(strings.Contains(action, "unbind(h,j,k,l,i,a,q,space,g,G")))
 	case "navigation-keys-rebound":
 		assertParityText(t, row, boolText(strings.Contains(action, "rebind(ctrl-l,tab,right,ctrl-h,left,/,~,ctrl-u,ctrl-d)")))
 	case "normal-and-navigation-keys-unbound":
 		assertParityText(t, row, boolText(strings.Contains(action, "unbind(ctrl-l,tab,right,ctrl-h,left,/,~,ctrl-u,ctrl-d,h,j,k,l,i,a,q,space,g,G,jump,")))
 	case "keys-rebound":
-		assertParityText(t, row, boolText(strings.Contains(action, "rebind(ctrl-l,tab,right") && strings.Contains(action, "h,j,k,l,i,a,q,space")))
+		assertParityText(t, row, boolText(strings.Contains(action, "rebind(ctrl-l,tab,right") && strings.Contains(action, "h,j,k,l,i,a,q,space,g,G")))
 	case "cursor-sequence":
 		got := ""
 		if result.Effect.Cursor == protocol.CursorLine && golden.Insert.Cursor == "line" {

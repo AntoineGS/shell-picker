@@ -2,7 +2,6 @@ package callback
 
 import (
 	"errors"
-	"math"
 	"strconv"
 	"strings"
 
@@ -24,11 +23,12 @@ const (
 )
 
 type Command struct {
-	Kind       Kind
-	Opcode     protocol.Opcode
-	Generation uint64
-	EventID    uint64
-	Picker     protocol.Picker
+	Kind            Kind
+	Opcode          protocol.Opcode
+	Generation      uint64
+	EventID         uint64
+	Picker          protocol.Picker
+	SelectedRecords [][]byte
 }
 
 func (command Command) Local() bool {
@@ -40,6 +40,7 @@ func Parse(raw string) (Command, error) {
 		"e:mi": protocol.OpModeInsert, "e:ma": protocol.OpModeAdd, "e:es": protocol.OpEscape,
 		"e:fw": protocol.OpForward, "e:up": protocol.OpParent, "e:sl": protocol.OpSlash,
 		"e:hm": protocol.OpHome, "e:en": protocol.OpEnter, "e:rs": protocol.OpRestoreView,
+		"e:sf": protocol.OpSourceToggle, "e:mk": protocol.OpMarkToggle,
 	}
 	if opcode, ok := events[raw]; ok {
 		return Command{Kind: KindEvent, Opcode: opcode}, nil
@@ -76,7 +77,7 @@ func Parse(raw string) (Command, error) {
 		}
 	}
 	generation, err := strconv.ParseUint(parts[0], 10, 64)
-	if err != nil || generation == 0 || generation > math.MaxUint64 {
+	if err != nil || generation == 0 {
 		return Command{}, ErrGrammar
 	}
 	var eventID uint64
@@ -90,7 +91,7 @@ func Parse(raw string) (Command, error) {
 			}
 		}
 		eventID, err = strconv.ParseUint(parts[1], 10, 64)
-		if err != nil || eventID == 0 || eventID > math.MaxUint64 {
+		if err != nil || eventID == 0 {
 			return Command{}, ErrGrammar
 		}
 	}
