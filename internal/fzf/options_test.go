@@ -382,6 +382,7 @@ func wantOptionSnapshotForPlatform(config OptionsConfig, goos string) []string {
 		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
 		"--bind=enter:transform(e:en)",
 		"--bind=ctrl-f:transform(e:sf)",
+		"--bind=ctrl-alt-f:transform(e:fa)",
 		"--bind=esc:transform(e:es)",
 		"--bind=i:transform(e:mi)",
 		"--bind=a:transform(e:ma)",

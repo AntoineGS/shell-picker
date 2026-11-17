@@ -214,16 +214,6 @@ func changeModePrompt(prompt string) (action, error) {
 	}
 }
 
-func changeHeader(header string) (action, error) {
-	if header == "" {
-		return action{}, errors.New("fzf: empty header")
-	}
-	if err := validateActionArgument(header); err != nil {
-		return action{}, err
-	}
-	return action{text: "change-header:" + header}, nil
-}
-
 func put(text string) (action, error) {
 	if text != "/" && text != "~" {
 		return action{}, errors.New("fzf: put accepts only slash or tilde")
@@ -282,6 +272,12 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 	if effect.ClearMulti {
 		actions = append(actions, clearMulti())
 	}
+	if effect.SelectionLimit != 0 {
+		if effect.SelectionLimit != 1 && effect.SelectionLimit != 4096 {
+			return "", errors.New("fzf: invalid selection limit")
+		}
+		actions = append(actions, action{text: fmt.Sprintf("change-multi(%d)", effect.SelectionLimit)})
+	}
 	if effect.ToggleSelection {
 		actions = append(actions, toggle())
 	}
@@ -310,7 +306,11 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 		actions = append(actions, abort())
 	}
 	if effect.Accept {
-		actions = append(actions, acceptEnter())
+		if effect.Insert {
+			actions = append(actions, action{text: "print(insert)+accept"})
+		} else {
+			actions = append(actions, acceptEnter())
+		}
 	}
 	if effect.Ignore {
 		actions = append(actions, ignore())
@@ -335,7 +335,7 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 		actions = append(actions, prompt)
 	}
 	if effect.Header != "" {
-		header, err := changeHeader(effect.Header)
+		header, err := effectHeaderAction(effect)
 		if err != nil {
 			return "", err
 		}

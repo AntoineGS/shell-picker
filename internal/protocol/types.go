@@ -58,6 +58,7 @@ const (
 	OpEnter        Opcode = "en"
 	OpRestoreView  Opcode = "rs"
 	OpSourceToggle Opcode = "sf"
+	OpFilesSearch  Opcode = "fa"
 	OpMarkToggle   Opcode = "mk"
 )
 
@@ -81,7 +82,9 @@ type Effect struct {
 	ClearQuery        bool        `json:"clear_query"`
 	ClearMulti        bool        `json:"clear_multi"`
 	ToggleSelection   bool        `json:"toggle_selection"`
+	SelectionLimit    int         `json:"selection_limit"`
 	Accept            bool        `json:"accept"`
+	Insert            bool        `json:"insert"`
 	Abort             bool        `json:"abort"`
 	Ignore            bool        `json:"ignore"`
 	Put               string      `json:"put"`
@@ -109,7 +112,11 @@ const (
 type Outcome struct {
 	Status Status
 	Paths  [][]byte
+	Insert bool // accepted paths must be inserted rather than executing a CD action
 }
+
+// ExitInsert distinguishes forced file-search acceptance from ordinary CD/CP.
+const ExitInsert = 10
 
 type ResolvedCandidate struct {
 	Kind            Kind

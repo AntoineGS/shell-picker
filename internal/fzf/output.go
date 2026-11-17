@@ -55,7 +55,7 @@ func ParseOutput(picker protocol.Picker, output []byte, exitCode int) (Result, e
 	result := Result{ExitCode: exitCode}
 	switch picker {
 	case protocol.PickerCD:
-		if len(frames) != 3 {
+		if len(frames) < 3 || len(frames) != 3 && string(frames[1]) != "insert" {
 			return Result{}, errors.New("fzf: cd acceptance requires query, key, and one record")
 		}
 		result.Query, result.Key, result.Records = frames[0], string(frames[1]), frames[2:]
@@ -65,7 +65,7 @@ func ParseOutput(picker protocol.Picker, output []byte, exitCode int) (Result, e
 		}
 		result.Key, result.Records = string(frames[0]), frames[1:]
 	}
-	if result.Key != "enter" {
+	if result.Key != "enter" && result.Key != "insert" {
 		return Result{}, fmt.Errorf("fzf: unsupported acceptance key %q", result.Key)
 	}
 	for _, record := range result.Records {

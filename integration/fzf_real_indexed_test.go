@@ -66,6 +66,17 @@ func TestRealFZFSourceSwitchRestoresQueriesAndSourceMarks(t *testing.T) {
 	waitForTerminalText(t, term, "FSearch · saved ")
 	waitForTerminalText(t, term, query)
 
+	// Give the indexed source a different query so the browser's restored
+	// filter, rather than an intermediate reload frame, proves completion.
+	for range len(query) {
+		if err := term.Send([]byte{0x7f}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := term.Send([]byte("index-only.txt")); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalText(t, term, "[I] index-only.txt")
 	beforeBrowser := len(term.Output())
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "generation.publish", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 3, Count: 1})

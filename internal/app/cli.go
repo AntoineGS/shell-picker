@@ -83,6 +83,9 @@ func runPickerCLI(ctx context.Context, args []string, streams Streams, executabl
 		fmt.Fprintln(streams.Err, "shell-picker: output failed")
 		return 1
 	}
+	if outcome.Insert {
+		return protocol.ExitInsert
+	}
 	return 0
 }
 

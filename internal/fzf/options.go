@@ -66,6 +66,8 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
 		binding("enter", transformEvent(protocol.OpEnter)),
 		binding("ctrl-f", transformEvent(protocol.OpSourceToggle)),
+		// Terminals can map Ctrl+Shift+F to this distinct, portable sequence.
+		binding("ctrl-alt-f", transformEvent(protocol.OpFilesSearch)),
 		binding("esc", transformEvent(protocol.OpEscape)),
 		binding("i", transformEvent(protocol.OpModeInsert)),
 		binding("a", transformEvent(protocol.OpModeAdd)),

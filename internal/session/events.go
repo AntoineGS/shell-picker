@@ -35,13 +35,20 @@ func Handle(ctx context.Context, actor *Actor, event protocol.Event) (Transition
 	}
 	if proposal, ok := reduction.proposalValue(); ok {
 		result, applyErr := actor.Apply(ctx, proposal)
-		if applyErr != nil && event.Opcode == protocol.OpSourceToggle && context.Cause(ctx) == nil {
+		sourceEvent := event.Opcode == protocol.OpSourceToggle || event.Opcode == protocol.OpFilesSearch
+		if applyErr != nil && sourceEvent && context.Cause(ctx) == nil {
 			return TransitionResult{Snapshot: snapshot, Effect: protocol.Effect{
 				Header: "FSearch unavailable — Ctrl+F to retry", ErrorPrompt: true,
 			}}, nil
 		}
-		if applyErr == nil && event.Opcode == protocol.OpSourceToggle {
+		if applyErr == nil && sourceEvent {
 			result.Effect.RestorePositions = savedSelectionPositions(result.Snapshot)
+		}
+		if applyErr == nil && (sourceEvent || result.Effect.ReloadGeneration != 0) {
+			result.Effect.SelectionLimit = maxCachedSelections
+			if result.Snapshot.state.ActivePicker() == protocol.PickerCD {
+				result.Effect.SelectionLimit = 1
+			}
 		}
 		return result, applyErr
 	}
@@ -182,6 +189,10 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 		if err := toggleSource(snapshot, &proposal, event); err != nil {
 			return Reduction{}, err
 		}
+	case protocol.OpFilesSearch:
+		if err := forceFilesSearch(snapshot, &proposal, event); err != nil {
+			return Reduction{}, err
+		}
 	case protocol.OpMarkToggle:
 		if err := toggleMarkedPath(snapshot, &proposal, event); err != nil {
 			return Reduction{}, err
@@ -225,6 +236,7 @@ func reduceEnter(snapshot Snapshot, proposal ProposedTransition, event protocol.
 		}
 	}
 	proposal.Effect.Accept = true
+	proposal.Effect.Insert = snapshot.state.FilesSearch()
 	return proposalReduction(proposal), nil
 }
 

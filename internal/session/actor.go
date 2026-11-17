@@ -103,7 +103,13 @@ func (actor *Actor) run(sessionCtx context.Context, generate GenerateFunc) {
 		request := *command.proposal.Build
 		request.Generation = transition.id
 		go func(id uint64) {
-			result, err := generate(buildCtx, request)
+			var result candidate.BuildResult
+			var err error
+			if command.proposal.restoreRecords != nil {
+				result.Records = command.proposal.restoreRecords.values
+			} else {
+				result, err = generate(buildCtx, request)
+			}
 			actor.commands <- completionCommand{id: id, result: result, err: err}
 		}(transition.id)
 		return transition

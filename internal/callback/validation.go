@@ -28,9 +28,10 @@ func validKey(opcode protocol.Opcode, key string) bool {
 	allowed := map[protocol.Opcode]map[string]bool{
 		protocol.OpModeInsert: {"i": true}, protocol.OpModeAdd: {"a": true}, protocol.OpEscape: {"esc": true},
 		protocol.OpForward: {"ctrl-l": true, "tab": true, "right": true, "l": true},
-		protocol.OpParent:  {"ctrl-h": true, "left": true, "h": true},
+		protocol.OpParent:  {"ctrl-h": true, "ctrl-backspace": true, "left": true, "h": true},
 		protocol.OpSlash:   {"/": true}, protocol.OpHome: {"~": true}, protocol.OpEnter: {"enter": true},
 		protocol.OpSourceToggle: {"ctrl-f": true},
+		protocol.OpFilesSearch:  {"ctrl-alt-f": true},
 		protocol.OpMarkToggle: {"space": true, "ctrl-space": true, "btab": true,
 			"shift-tab": true, "right-click": true, "shift-right-click": true},
 	}

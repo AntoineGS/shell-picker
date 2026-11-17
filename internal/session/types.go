@@ -30,11 +30,13 @@ type BrowserContext struct {
 	Mode          protocol.Mode
 	Query         []byte
 	SelectedPaths [][]byte
+	records       *recordSet // immutable browser snapshot retained across source switches
 }
 
 type IndexedContext struct {
 	Query         []byte
 	SelectedPaths [][]byte
+	AllPaths      bool
 }
 
 type GenerateFunc func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error)
@@ -53,6 +55,7 @@ type ProposedTransition struct {
 	Build          *candidate.BuildRequest
 	Effect         protocol.Effect
 	Created        *pathutil.CreatedTree
+	restoreRecords *recordSet
 }
 
 type AddIntent struct {

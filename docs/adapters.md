@@ -12,6 +12,14 @@ For safe insertion, the widget declines to launch when the cursor is inside an
 open quote, after a dangling escape, or inside a shell-expansion context;
 `BUFFER` and `CURSOR` remain unchanged in those cases.
 
+Ctrl+Shift+F opens unrestricted file-and-directory search at the prompt and
+inside a picker, even in `cd`. In Ghostty, use
+`keybind = ctrl+shift+f=text:\x1b\x06`; fzf names that sequence `ctrl-alt-f`,
+which also works directly. Accepting this forced search inserts quoted absolute
+paths without executing the command. Ctrl+F returns to the saved browser view,
+including its query, marks, and any zoxide entries already received.
+Ctrl+H and Left both go to the parent in browser Insert and Normal modes.
+
 The Nushell 0.113.1 adapter inserts Space at the exact cursor position, recognizes only `cd` or `cp`, invokes `%cd` inside `try`, parses NUON inside `try`, replaces `cd` input only after a successful directory change, and emits NUON-quoted `cp` paths with no trailing Space. Tab is unchanged. Windows backslash, spaces, and cross-volume `%cd` behavior are exercised rather than rewritten by the adapter.
 
 The recommended low-latency Windows adapter is PowerShell 7.4.7+ with PSReadLine 2.3.6+. Install and register it with:

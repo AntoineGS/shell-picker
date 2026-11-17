@@ -33,11 +33,11 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 	}()
 	if backend.enrichment != nil {
 		result, handleErr := backend.enrichment.HandleEvent(ctx, event)
-		if handleErr == nil && event.Opcode == protocol.OpSourceToggle &&
+		if handleErr == nil && (event.Opcode == protocol.OpSourceToggle || event.Opcode == protocol.OpFilesSearch) &&
 			result.Effect.ReloadGeneration != 0 && backend.indexed != nil {
 			state, stateErr := backend.actor.CurrentState(ctx)
 			if stateErr == nil && state.Source == protocol.SourceIndexed {
-				result.Effect.Header = backend.indexed.header(state.Picker)
+				result.Effect.Header = backend.indexed.header(state.ActivePicker())
 			}
 		}
 		return result, handleErr
@@ -50,8 +50,8 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 	if handleErr == nil {
 		backend.metrics.recordTransition(transition)
 		state := transition.Snapshot.State()
-		if event.Opcode == protocol.OpSourceToggle && state.Source == protocol.SourceIndexed && backend.indexed != nil {
-			transition.Effect.Header = backend.indexed.header(state.Picker)
+		if (event.Opcode == protocol.OpSourceToggle || event.Opcode == protocol.OpFilesSearch) && state.Source == protocol.SourceIndexed && backend.indexed != nil {
+			transition.Effect.Header = backend.indexed.header(state.ActivePicker())
 		}
 		if transition.Effect.ReloadGeneration != 0 {
 			traceTransition(backend.trace, backend.metrics.policy, transition, state.Location.Path)
@@ -127,7 +127,7 @@ func (backend *pickerBackend) CurrentHeader(ctx context.Context) (header string,
 		return "", err
 	}
 	if state.Source == protocol.SourceIndexed && backend.indexed != nil {
-		return backend.indexed.header(state.Picker), nil
+		return backend.indexed.header(state.ActivePicker()), nil
 	}
 	return pathutil.PromptDisplayHome(state.Location, state.Home), nil
 }

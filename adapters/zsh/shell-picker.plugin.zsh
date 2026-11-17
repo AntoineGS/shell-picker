@@ -1,6 +1,7 @@
 _shell_picker_cd() {
   emulate -L zsh
   local saved=$BUFFER saved_cursor=$CURSOR output target record
+  local -a selected_paths
   integer picker_status=1 count=0 valid=1
 
   output=$(command mktemp -- "${TMPDIR:-/tmp}/shell-picker-cd.${$}.XXXXXX") || {
@@ -15,6 +16,7 @@ _shell_picker_cd() {
       if IFS= read -r -d '' record; then
         [[ -n $record ]] || valid=0
         target=$record
+        selected_paths+=("$record")
         (( ++count ))
       else
         [[ -z $record ]] || valid=0
@@ -25,6 +27,10 @@ _shell_picker_cd() {
     command rm -f -- "$output"
   }
 
+  if (( picker_status == 10 && valid && count > 0 )); then
+    _shell_picker_insert_paths "${selected_paths[@]}"
+    return 0
+  fi
   if (( picker_status != 0 || ! valid || count != 1 )); then
     BUFFER=$saved
     CURSOR=$saved_cursor
@@ -64,6 +70,10 @@ _shell_picker_cp() {
     command rm -f -- "$output"
   }
 
+  if (( picker_status == 10 && valid && ${#selected_paths} > 0 )); then
+    _shell_picker_insert_paths "${selected_paths[@]}"
+    return 0
+  fi
   if (( picker_status != 0 || ! valid || ${#selected_paths} == 0 )); then
     BUFFER=$saved
     CURSOR=$saved_cursor
@@ -151,8 +161,8 @@ _shell_picker_search_context_supported() {
 
 _shell_picker_search() {
   emulate -L zsh
-  local saved=$BUFFER saved_cursor=$CURSOR output selected insertion
-  local -a selected_paths quoted
+  local saved=$BUFFER saved_cursor=$CURSOR output selected
+  local -a selected_paths
   integer picker_status=1 valid=1
 
   if ! _shell_picker_search_context_supported; then
@@ -192,9 +202,26 @@ _shell_picker_search() {
     zle redisplay
     return 0
   fi
-  for selected in "${selected_paths[@]}"; do
+  _shell_picker_insert_paths "${selected_paths[@]}"
+  return 0
+}
+
+_shell_picker_insert_paths() {
+  emulate -L zsh
+  local selected insertion
+  local -a quoted
+  if ! _shell_picker_search_context_supported; then
+    zle -M 'Search insertion declined: move the cursor outside quotes, escapes, and shell expansions'
+    return 0
+  fi
+  for selected in "$@"; do
+    if [[ -z $selected || $selected != /* ]]; then
+      zle redisplay
+      return 0
+    fi
     quoted+=("${(q)selected}")
   done
+  (( ${#quoted} > 0 )) || return 0
   insertion="${(j: :)quoted}"
   if [[ -n $LBUFFER && $LBUFFER[-1] != [[:space:]] ]]; then
     insertion=" $insertion"
@@ -247,6 +274,10 @@ shell-picker-bind-zsh() {
   bindkey -M emacs '^F' _shell_picker_search
   bindkey -M viins '^F' _shell_picker_search
   bindkey -M vicmd '^F' _shell_picker_search
+  # Ctrl+Shift+F mapped by the terminal to ESC Ctrl+F.
+  bindkey -M emacs $'\e\x06' _shell_picker_search
+  bindkey -M viins $'\e\x06' _shell_picker_search
+  bindkey -M vicmd $'\e\x06' _shell_picker_search
 }
 
 zle -N _shell_picker_cd

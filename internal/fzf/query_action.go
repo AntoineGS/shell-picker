@@ -11,6 +11,11 @@ import (
 const maxRestorableCandidatePosition = 20_000_000
 
 func changeQuery(query string) (action, error) {
+	if query == "" {
+		// The colon form needs a nonempty argument. Otherwise fzf absorbs
+		// this action into a preceding colon-delimited header.
+		return action{text: "change-query()"}, nil
+	}
 	if err := validateActionArgument(query); err != nil {
 		return action{}, err
 	}

@@ -272,6 +272,9 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 			current, currentErr := actor.Current(context.Background())
 			if currentErr != nil {
 				err = currentErr
+			} else if current.State().FilesSearch() {
+				outcome, err = session.ValidateSearch(current, result.Records)
+				outcome.Insert = err == nil && options.Picker != protocol.PickerSearch
 			} else if options.Picker == protocol.PickerCD {
 				outcome, err = session.ValidateCD(current, result.Records)
 			} else if options.Picker == protocol.PickerSearch {

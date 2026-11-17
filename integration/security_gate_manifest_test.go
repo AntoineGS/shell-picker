@@ -27,7 +27,9 @@ type task20GatePackage struct {
 }
 
 var task20GateManifest = []task20GatePackage{
-	{path: "./internal/session", selectedUnix: 54, selectedWindows: 57, tests: []string{
+	{path: "./internal/session", selectedUnix: 56, selectedWindows: 59, tests: []string{
+		"TestSourceToggleRoundTripRetainsZoxideRecordsAndMarks",
+		"TestHandleForcedFilesSearchFromCDPreservesBrowserAndAcceptsFiles",
 		"TestActorKeepsReadsLiveAndPublishesCompleteProposalAtomically",
 		"TestActorAssignsMonotonicGenerationOwnershipAcrossQueuedReplacement",
 		"TestActorCreatedTreeDiscardOrdering",
@@ -212,7 +214,8 @@ var task20GateManifest = []task20GatePackage{
 		"TestParseOutputRejectsMalformedFrames",
 		"TestActionArgumentDelimiterCorpusCannotInjectAction",
 	}},
-	{path: "./internal/app", selectedUnix: 59, selectedWindows: 59, tests: []string{
+	{path: "./internal/app", selectedUnix: 60, selectedWindows: 60, tests: []string{
+		"TestRunCDForcedFilesSearchReturnsInsertionExitCode",
 		"TestInjectedIndexedFrameLimitRejectsBeforeSourceCommit",
 		"TestFZFShellRejectsMissingOrExtraCommandText",
 		"TestFZFShellCallbackUnsetsListenAPIKeyBeforeValidation",
@@ -257,7 +260,10 @@ var task20GateManifest = []task20GatePackage{
 		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",
 		"TestCreateDirectoryTreeErrorsAndPreservesExistingParents",
 	}},
-	{path: "./integration", selectedUnix: 53, selectedWindows: 106, tests: []string{
+	{path: "./integration", selectedUnix: 56, selectedWindows: 109, tests: []string{
+		"TestRealFZFCtrlHReturnsToParent",
+		"TestRealFZFForcedFilesSearchFromCD",
+		"TestRealFZFSourceRoundTripRetainsZoxide",
 		"TestSecurityGateManifestSelectsEveryRequiredTest",
 		"TestSecurityGateRunnerMatchesManifest",
 		"TestForgedPayloadCannotAuthorizePreviewOrSelection",

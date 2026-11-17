@@ -4,7 +4,7 @@ Candidate rows use exactly `KIND<TAB>ESCAPED_DISPLAY<TAB>PADDED_BASE64_PAYLOAD`,
 
 The zoxide source boundary accepts at most 4 MiB total output, 1,000,000 rows, and 128 KiB per row. These limits match the protocol's external output and candidate-count bounds while covering legal platform paths, including Windows extended paths. An exact limit is valid; limit plus one is a malformed soft failure, all records are discarded, and the child is cancelled and reaped.
 
-Callbacks have a closed grammar: events are exactly `e:mi`, `e:ma`, `e:es`, `e:fw`, `e:up`, `e:sl`, `e:hm`, `e:en`, `e:rs`, `e:mk`, or `e:sf`; `e:sf` toggles the candidate source between the browser and saved FSearch index. Mark callbacks use `FZF_CURRENT_ITEM` and update the authoritative per-source cache before fzf's native toggle action. Source switching does not transport or infer marks from fzf's selected-file placeholder. Preview is exactly `p` or the fixed local `p:invalid`; display is exactly `d`; info is exactly `i:cd` or `i:cp`; coordinator-backed loads are `l:<positive decimal generation>:<positive decimal eventID>`, while non-coordinator loads may use `l:<positive decimal generation>`; neither component permits zero, sign, or leading zero. The fixed local `l:empty` is a zero-byte candidate source, and `p:invalid` writes exactly `[Invalid Path]`. Other fixed local callbacks accept no query or path arguments and bypass IPC. `FZF_CURRENT_ITEM` carries the selected wire row. The callback parser rejects every other form instead of interpreting shell text.
+Callbacks have a closed grammar: events are exactly `e:mi`, `e:ma`, `e:es`, `e:fw`, `e:up`, `e:sl`, `e:hm`, `e:en`, `e:rs`, `e:mk`, `e:sf`, or `e:fa`; `e:sf` toggles the candidate source between the browser and saved FSearch index, and `e:fa` forces unrestricted indexed search. Mark callbacks use `FZF_CURRENT_ITEM` and update the authoritative per-source cache before fzf's native toggle action. Source switching does not transport or infer marks from fzf's selected-file placeholder. Preview is exactly `p` or the fixed local `p:invalid`; display is exactly `d`; info is exactly `i:cd` or `i:cp`; coordinator-backed loads are `l:<positive decimal generation>:<positive decimal eventID>`, while non-coordinator loads may use `l:<positive decimal generation>`; neither component permits zero, sign, or leading zero. The fixed local `l:empty` is a zero-byte candidate source, and `p:invalid` writes exactly `[Invalid Path]`. Other fixed local callbacks accept no query or path arguments and bypass IPC. `FZF_CURRENT_ITEM` carries the selected wire row. The callback parser rejects every other form instead of interpreting shell text.
 
 Candidate source is independent of interaction mode. Browser is the zero
 value for compatibility; indexed identifies entries decoded from the saved
@@ -12,6 +12,16 @@ FSearch 6.0 snapshot. The reader selects `$XDG_DATA_HOME/fsearch/fsearch.db`
 when XDG_DATA_HOME is absolute, otherwise `$HOME/.local/share/fsearch/fsearch.db`.
 Indexed records retain authoritative path bytes; escaped full paths are labels
 only. Search matching uses fzf semantics.
+
+The `e:fa` event forces unrestricted indexed search, including files in a CD
+session. It is bound to `ctrl-alt-f` (the terminal mapping for Ctrl+Shift+F).
+The underlying browser context stays intact. `selection_limit` effects set
+fzf's native limit to 1 for ordinary CD or 4096 for unrestricted search.
+Forced acceptance uses the `insert` output key and is validated against the
+authoritative indexed snapshot. CD/CP commands then emit absolute paths in the
+requested format and exit with status **10**, telling the Zsh adapter to insert
+without executing. Ordinary acceptance and standalone search still exit 0.
+Adapters that do not support this outcome must treat exit 10 as a non-success.
 
 Event JSON is `opcode`, `key`, `query_base64`, `current_item_base64`, and optionally `selected_records_gzip_base64`, which contains bounded gzip-compressed NUL-framed authoritative wire rows. An event response is `{"effect":{...},"event_id":N}`. Coordinator-backed CD events carry an opaque nonzero `event_id`; CP and other no-coordinator backends use `event_id: 0` and require no finalization. The authenticated POST /v1/event/finalize route accepts exactly `{"event_id":N,"applied":true|false}` for a nonzero ID. `applied` is true only after the callback has rendered the complete action and written all action bytes; false is a hard callback-application failure that closes input, cancels source/work, and is returned by the picker. The protocol retains the idempotent event finalization rule for duplicate event acknowledgements. Load JSON is `generation` plus `event_id`; coordinator loads must use the exact event ID encoded in the load command. The authenticated POST /v1/load/finalize route accepts exactly `{"event_id":N,"applied":true|false}`. Load finalization is true only after all returned candidate bytes have been written; false is the same hard failure. Unknown, stale, replayed, or mismatched load IDs/generations are rejected and release nothing; the display request is `{}` and its response is `{"header":"..."}`; preview JSON is `phase`, `current_item_base64`, and, only where the phase permits it, `renderer`, `duration_us`, `child_starts`, `max_live_children`, and `outcome`. Preview phases are `resolve`, `started`, and `finished`; native finished telemetry has zero child starts/live children. The callback environment accepts only the controlled loopback address and token credentials (`SHELL_PICKER_ADDR` and `SHELL_PICKER_TOKEN`); credentials are strict canonical encodings, not shell arguments. The callback application failure is the hard terminal error for an exact unapplied event or load finalization; callback application failed means the coordinator has terminalized.
 
@@ -33,7 +43,7 @@ fzf.start,ok,0,none,0/0,
 fzf.exit,aborted|error|ok,0,none,0/0,
 callback.display,error|ok,0,none,0/0,callback_ipc_us
 callback.display.start,started,0,none,0/0,
-callback.event,en|error|es|fw|hm|ma|mi|mk|rs|sf|sl|up,0,none,0/0,callback_ipc_us
+callback.event,en|error|es|fa|fw|hm|ma|mi|mk|rs|sf|sl|up,0,none,0/0,callback_ipc_us
 callback.event.start,started,0,none,0/0,
 callback.info,error|ok,0,none,0/0,
 callback.info.start,started,0,none,0/0,

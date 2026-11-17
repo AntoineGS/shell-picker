@@ -32,6 +32,7 @@ func toggleSource(snapshot Snapshot, proposal *ProposedTransition, event protoco
 			Mode:          state.Mode,
 			Query:         bytes.Clone(event.Query),
 			SelectedPaths: selected,
+			records:       snapshot.records,
 		}
 		state.Source = protocol.SourceIndexed
 		state.Mode = protocol.ModeInsert
@@ -44,12 +45,12 @@ func toggleSource(snapshot Snapshot, proposal *ProposedTransition, event protoco
 		state.AddError = false
 		state.Prompt = modePrompt(state.Mode, false)
 		proposal.Build = &candidate.BuildRequest{
-			Picker: state.Picker, Source: protocol.SourceIndexed, Location: cloneLocation(state.Location),
+			Picker: state.ActivePicker(), Source: protocol.SourceIndexed, Location: cloneLocation(state.Location),
 		}
 		proposal.Effect = protocol.Effect{
 			Mode: state.Mode, Prompt: state.Prompt, Search: "on", Rebind: state.Mode,
 			Query: string(query), SetQuery: true, ClearMulti: true, Cursor: protocol.CursorLine,
-			Header: indexedHeader(state.Picker),
+			Header: indexedHeader(state.ActivePicker()),
 		}
 		return nil
 	}
@@ -74,6 +75,7 @@ func toggleSource(snapshot Snapshot, proposal *ProposedTransition, event protoco
 	proposal.Build = &candidate.BuildRequest{
 		Picker: state.Picker, Source: protocol.SourceBrowser, Location: cloneLocation(state.Location),
 	}
+	proposal.restoreRecords = browser.records
 	proposal.Effect = protocol.Effect{
 		Mode: state.Mode, Prompt: state.Prompt, Search: "on", Rebind: state.Mode,
 		Query: string(state.Query), SetQuery: true, ClearMulti: true, Cursor: protocol.CursorLine,
@@ -120,7 +122,7 @@ func toggleMarkedPath(snapshot Snapshot, proposal *ProposedTransition, event pro
 			return nil
 		}
 	}
-	if state.Picker == protocol.PickerCD {
+	if state.ActivePicker() == protocol.PickerCD {
 		*selected = [][]byte{bytes.Clone(record.Path)}
 		proposal.Effect.ClearMulti = true
 		proposal.Effect.ToggleSelection = true

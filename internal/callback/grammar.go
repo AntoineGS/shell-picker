@@ -41,6 +41,7 @@ func Parse(raw string) (Command, error) {
 		"e:fw": protocol.OpForward, "e:up": protocol.OpParent, "e:sl": protocol.OpSlash,
 		"e:hm": protocol.OpHome, "e:en": protocol.OpEnter, "e:rs": protocol.OpRestoreView,
 		"e:sf": protocol.OpSourceToggle, "e:mk": protocol.OpMarkToggle,
+		"e:fa": protocol.OpFilesSearch,
 	}
 	if opcode, ok := events[raw]; ok {
 		return Command{Kind: KindEvent, Opcode: opcode}, nil

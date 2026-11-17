@@ -17,6 +17,7 @@ func setNavigationUnchecked(proposal *ProposedTransition, target pathutil.Locati
 		proposal.State.Browser.Mode = proposal.State.Mode
 		proposal.State.Browser.Query = nil
 		proposal.State.Browser.SelectedPaths = [][]byte{}
+		proposal.State.Browser.records = nil
 	}
 	if proposal.State.Mode == protocol.ModeAdd {
 		proposal.State.Mode = protocol.ModeNormal
