@@ -7,6 +7,9 @@ import (
 	"strings"
 )
 
+// Keep this aligned with the saved-index reader's maximum entry count.
+const maxRestorableCandidatePosition = 20_000_000
+
 func changeQuery(query string) (action, error) {
 	if err := validateActionArgument(query); err != nil {
 		return action{}, err
@@ -26,7 +29,7 @@ func restoreSelectionActions(encoded string) ([]action, error) {
 	actions = append(actions, action{text: "change-query()"}, wait())
 	for _, part := range parts {
 		position, err := strconv.Atoi(part)
-		if err != nil || position < 1 || position > 1_000_000 || strconv.Itoa(position) != part {
+		if err != nil || position < 1 || position > maxRestorableCandidatePosition || strconv.Itoa(position) != part {
 			return nil, errors.New("fzf: invalid selection restore position")
 		}
 		actions = append(actions, action{text: fmt.Sprintf("pos(%d)", position)}, action{text: "select"})

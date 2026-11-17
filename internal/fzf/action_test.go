@@ -39,6 +39,14 @@ func TestRenderEffectRestoresSelectionsAfterReloadAndQuery(t *testing.T) {
 	}
 }
 
+func TestRenderEffectRestoresSelectionPositionAboveOneMillion(t *testing.T) {
+	got, err := RenderEffect(protocol.Effect{RestorePositions: "1000001"})
+	want := "change-query()+wait+pos(1000001)+select"
+	if err != nil || got != want {
+		t.Fatalf("rendered restore = %q, want %q; err=%v", got, want, err)
+	}
+}
+
 func TestRenderReloadCarriesExactLoadEventID(t *testing.T) {
 	effect := protocol.Effect{ReloadGeneration: 7}
 	got, err := RenderEffectForEvent(effect, 9)
