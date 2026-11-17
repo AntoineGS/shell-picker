@@ -309,24 +309,6 @@ func shiftedZipWithRawOffsetDecoy(t *testing.T, entries int) []byte {
 	return append(decoy, zipData...)
 }
 
-func TestZipPreflightMatchesGoDirectorySizeZIP64Sentinel(t *testing.T) {
-	data := zip64DirectorySizeSentinelWithDecoy(t, DefaultLimits.MaxArchiveEntries+1)
-	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		t.Fatalf("archive/zip: %v", err)
-	}
-	if len(reader.File) != DefaultLimits.MaxArchiveEntries+1 {
-		t.Fatalf("archive/zip files=%d", len(reader.File))
-	}
-	path := filepath.Join(t.TempDir(), "directory-size-sentinel.zip")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := preflightZip(path, DefaultLimits.MaxArchiveEntries); !errors.Is(err, ErrArchiveEntries) {
-		t.Fatalf("preflight error=%v", err)
-	}
-}
-
 func zip64DirectorySizeSentinelWithDecoy(t *testing.T, entries int) []byte {
 	t.Helper()
 	var archive bytes.Buffer

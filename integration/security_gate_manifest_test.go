@@ -178,9 +178,12 @@ var task20GateManifest = []task20GatePackage{
 		"TestSessionStopAndWaitAreSafeBeforeStartAndRepeated",
 		"TestConcurrentPreStartLifecycleCallsReachOneTerminalState",
 	}},
-	{path: "./internal/preview", selectedUnix: 32, selectedWindows: 39, tests: []string{
+	{path: "./internal/preview", selectedUnix: 34, selectedWindows: 41, tests: []string{
 		"TestArchiveLimitsEntriesBytesAndDeadline",
 		"TestZipPreflightRejectsCentralDirectoryBombBeforeArchiveOpen",
+		"TestZipPreflightMatchesGoDirectorySizeZIP64Sentinel",
+		"TestZipPreflightOrdinaryDirectorySize65535",
+		"TestZipPreflightRejectsMalformedZIP64DirectoryMetadata",
 		"TestCachePutAnchorsRootAcrossSwap",
 		"TestCacheConcurrentProductionPutHasImmutableSingleLinkWinner",
 		"TestConverterFinalValidationRejectsOversizedArtifact",

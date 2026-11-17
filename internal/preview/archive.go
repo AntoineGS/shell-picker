@@ -121,7 +121,7 @@ func preflightZip(path string, maximumEntries int) error {
 	centralSize := uint64(binary.LittleEndian.Uint32(eocd[12:16]))
 	centralOffset := uint64(binary.LittleEndian.Uint32(eocd[16:20]))
 	directoryEndOffset := info.Size() - tailSize + int64(eocdIndex)
-	if entries == 0xffff || centralSize == 0xffff || centralOffset == 0xffffffff {
+	if entries == 0xffff || centralSize == zip64DirectorySizeSentinel || centralOffset == 0xffffffff {
 		if directoryEndOffset < 20 {
 			return zip.ErrFormat
 		}
@@ -129,26 +129,29 @@ func preflightZip(path string, maximumEntries int) error {
 		if _, err := file.ReadAt(locator, directoryEndOffset-20); err != nil {
 			return err
 		}
-		if !bytes.Equal(locator[:4], []byte{'P', 'K', 0x06, 0x07}) ||
-			binary.LittleEndian.Uint32(locator[4:8]) != 0 || binary.LittleEndian.Uint32(locator[16:20]) != 1 {
-			return zip.ErrFormat
+		// archive/zip falls back to the ordinary directory if no locator is
+		// present. In particular, 65535 can be a real directory size.
+		if bytes.Equal(locator[:4], []byte{'P', 'K', 0x06, 0x07}) {
+			if binary.LittleEndian.Uint32(locator[4:8]) != 0 || binary.LittleEndian.Uint32(locator[16:20]) != 1 {
+				return zip.ErrFormat
+			}
+			zip64OffsetRaw := binary.LittleEndian.Uint64(locator[8:16])
+			if zip64OffsetRaw > uint64(^uint64(0)>>1) {
+				return zip.ErrFormat
+			}
+			zip64Offset := int64(zip64OffsetRaw)
+			record := make([]byte, 56)
+			if _, err := file.ReadAt(record, zip64Offset); err != nil {
+				return err
+			}
+			if !bytes.Equal(record[:4], []byte{'P', 'K', 0x06, 0x06}) {
+				return zip.ErrFormat
+			}
+			entries = binary.LittleEndian.Uint64(record[32:40])
+			centralSize = binary.LittleEndian.Uint64(record[40:48])
+			centralOffset = binary.LittleEndian.Uint64(record[48:56])
+			directoryEndOffset = zip64Offset
 		}
-		zip64OffsetRaw := binary.LittleEndian.Uint64(locator[8:16])
-		if zip64OffsetRaw > uint64(^uint64(0)>>1) {
-			return zip.ErrFormat
-		}
-		zip64Offset := int64(zip64OffsetRaw)
-		record := make([]byte, 56)
-		if _, err := file.ReadAt(record, zip64Offset); err != nil {
-			return err
-		}
-		if !bytes.Equal(record[:4], []byte{'P', 'K', 0x06, 0x06}) {
-			return zip.ErrFormat
-		}
-		entries = binary.LittleEndian.Uint64(record[32:40])
-		centralSize = binary.LittleEndian.Uint64(record[40:48])
-		centralOffset = binary.LittleEndian.Uint64(record[48:56])
-		directoryEndOffset = zip64Offset
 	}
 	if entries > uint64(maximumEntries) {
 		return ErrArchiveEntries
