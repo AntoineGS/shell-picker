@@ -177,7 +177,8 @@ _shell_picker_search() {
     return 0
   }
   {
-    command shell-picker search --cwd "$PWD" --home "$HOME" --output nul >| "$output"
+    command shell-picker search --cwd "$PWD" --home "$HOME" --output nul \
+      --command-line "$saved" --display "${SHELL_PICKER_DISPLAY:-auto}" "$@" >| "$output"
     picker_status=$?
     while true; do
       selected=
@@ -204,6 +205,10 @@ _shell_picker_search() {
   fi
   _shell_picker_insert_paths "${selected_paths[@]}"
   return 0
+}
+
+_shell_picker_files_search() {
+  _shell_picker_search --search-scope files
 }
 
 _shell_picker_insert_paths() {
@@ -236,52 +241,42 @@ _shell_picker_insert_paths() {
 
 _shell_picker_tab() {
   emulate -L zsh
-  local word marker="__shell_picker_cp_marker_${$}_${RANDOM}__"
-  local input=$LBUFFER$marker
-  local -a parsed_words command_words
-  parsed_words=( ${(z)input} )
-  if [[ -n $RBUFFER || $parsed_words[-1] != $marker ]]; then
-    zle fzf_completion
-    return 0
-  fi
-  parsed_words[-1]=()
-  for word in $parsed_words; do
-    case $word in
-      ';' | '&' | '&&' | '||' | '|' | '|&' | '&!' | '&|') command_words=() ;;
-      *) command_words+=("$word") ;;
-    esac
-  done
-  if [[ $command_words[1] == cp ]]; then
-    zle _shell_picker_cp
-  else
+  local saved=$BUFFER saved_cursor=$CURSOR
+  integer _shell_picker_handled=0
+  zle _shell_picker_complete
+  if (( ! _shell_picker_handled )); then
+    BUFFER=$saved CURSOR=$saved_cursor
     zle fzf_completion
   fi
+  zle reset-prompt
   return 0
 }
 
 _shell_picker_space() {
   emulate -L zsh
   zle magic-space
-  if [[ $BUFFER == "cd " && $CURSOR -eq 3 ]]; then
-    zle _shell_picker_cd
-  fi
   return 0
 }
 
 shell-picker-bind-zsh() {
-  bindkey ' ' _shell_picker_space
-  bindkey '^I' _shell_picker_tab
+  bindkey ' ' magic-space
+  bindkey -M emacs '^I' _shell_picker_tab
+  bindkey -M viins '^I' _shell_picker_tab
   bindkey -M emacs '^F' _shell_picker_search
   bindkey -M viins '^F' _shell_picker_search
   bindkey -M vicmd '^F' _shell_picker_search
   # Ctrl+Shift+F mapped by the terminal to ESC Ctrl+F.
-  bindkey -M emacs $'\e\x06' _shell_picker_search
-  bindkey -M viins $'\e\x06' _shell_picker_search
-  bindkey -M vicmd $'\e\x06' _shell_picker_search
+  bindkey -M emacs $'\e\x06' _shell_picker_files_search
+  bindkey -M viins $'\e\x06' _shell_picker_files_search
+  bindkey -M vicmd $'\e\x06' _shell_picker_files_search
 }
 
 zle -N _shell_picker_cd
 zle -N _shell_picker_cp
 zle -N _shell_picker_search
+zle -N _shell_picker_files_search
 zle -N _shell_picker_tab
 zle -N _shell_picker_space
+
+source "${${(%):-%N}:A:h}/shell-picker-completion.zsh"
+zle -C _shell_picker_complete complete-word _shell_picker_complete

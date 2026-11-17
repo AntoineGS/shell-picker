@@ -22,6 +22,11 @@ import (
 )
 
 type PickerOptions struct {
+	Completion     bool
+	Query          string
+	CommandLine    string
+	Display        string
+	FilesOnly      bool
 	Picker         protocol.Picker
 	CWD            []byte
 	Home           []byte
@@ -138,6 +143,10 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	defer cleanup()
 
 	initialLocation := pathutil.Filesystem(options.CWD)
+	if options.Completion {
+		resolved := pathutil.ResolveCompletion(string(options.CWD), string(options.Home), options.Query)
+		initialLocation = pathutil.Filesystem([]byte(resolved.Directory))
+	}
 	initialPrompt := "[I] "
 	initialSource := protocol.SourceBrowser
 	if options.Picker == protocol.PickerSearch {
@@ -150,14 +159,19 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 			Location: initialLocation, Mode: protocol.ModeInsert, SelectedPaths: [][]byte{},
 		},
 	}
+	if options.Completion {
+		initialState.Completion = &session.CompletionContext{Base: string(options.CWD)}
+		initialState.Query = []byte(options.Query)
+		initialState.Browser.Query = []byte(options.Query)
+	}
 	if options.Picker == protocol.PickerSearch {
-		initialState.Indexed = &session.IndexedContext{SelectedPaths: [][]byte{}}
+		initialState.Indexed = &session.IndexedContext{SelectedPaths: [][]byte{}, FilesOnly: options.FilesOnly}
 	}
 	initialHeader := pathutil.PromptDisplayHome(initialLocation, initialState.Home)
 	if initialSource == protocol.SourceIndexed {
-		initialHeader = indexed.header(options.Picker)
+		initialHeader = indexed.header(options.Picker, initialState.FilesSearch())
 	}
-	if options.Picker == protocol.PickerCD {
+	if options.Picker == protocol.PickerCD && (!options.Completion || string(initialLocation.Path) == string(options.CWD)) {
 		var source initialZoxideLoader = builder
 		if dependencies.loadInitialZoxide != nil {
 			source = initialZoxideLoaderFunc(dependencies.loadInitialZoxide)
@@ -169,7 +183,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	}
 	initial, err := actor.Apply(ctx, session.ProposedTransition{
 		State: initialState,
-		Build: &candidate.BuildRequest{Picker: options.Picker, Source: initialSource, Location: initialState.Location, Initial: initialSource == protocol.SourceBrowser},
+		Build: &candidate.BuildRequest{Picker: options.Picker, Source: initialSource, Location: initialState.Location, Initial: initialSource == protocol.SourceBrowser, FilesOnly: options.FilesOnly},
 		Effect: protocol.Effect{Mode: protocol.ModeInsert, Prompt: initialState.Prompt, Search: "on",
 			Rebind: protocol.ModeInsert, Cursor: protocol.CursorLine},
 	})
@@ -179,7 +193,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	traceInitialTransition(trace, options.ZoxidePolicy, options.Picker, initial, initialState.Location.Path)
 	metrics.recordTransition(initial)
 	if initialSource == protocol.SourceIndexed {
-		initialHeader = indexed.header(options.Picker)
+		initialHeader = indexed.header(options.Picker, initialState.FilesSearch())
 	}
 	if dependencies.beforeInitialInputPublish != nil {
 		dependencies.beforeInitialInputPublish(input)
@@ -205,7 +219,9 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if err != nil {
 		return protocol.Outcome{}, err
 	}
-	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace, enrichment: coordinator, indexed: indexed}
+	commandHeader := commandLineHeader(options.CommandLine)
+	initialHeader = pickerHeader(commandHeader, initialState, indexed)
+	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace, enrichment: coordinator, indexed: indexed, commandHeader: commandHeader}
 	var listenedServer *sessionipc.Server
 	listenIPC := dependencies.listenIPC
 	if listenIPC == nil {
@@ -239,6 +255,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	listenAddress, listenAPIKey := sidecar.credentials()
 	fzfOptions, err := fzf.Options(fzf.OptionsConfig{
 		Picker: options.Picker, Prompt: initialPrompt, Header: initialHeader, ListenAddress: listenAddress,
+		Completion: options.Completion, Query: options.Query, Height: pickerHeight(options.Display, terminal),
 	})
 	if err != nil {
 		return protocol.Outcome{}, fmt.Errorf("build fzf options: %w", err)
@@ -272,6 +289,8 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 			current, currentErr := actor.Current(context.Background())
 			if currentErr != nil {
 				err = currentErr
+			} else if options.Completion {
+				outcome, err = completionOutcome(current, result.Records, options)
 			} else if current.State().FilesSearch() {
 				outcome, err = session.ValidateSearch(current, result.Records)
 				outcome.Insert = err == nil && options.Picker != protocol.PickerSearch

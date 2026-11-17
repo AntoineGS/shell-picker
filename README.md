@@ -46,7 +46,7 @@ matching semantics, not FSearch's query language; its header identifies the
 saved index as `FSearch · saved <timestamp>`. Ctrl+F switches between
 indexed results and the ordinary directory browser in an existing picker.
 
-Ctrl+Shift+F searches files and directories even from `cd`, at the Zsh prompt
+Ctrl+Shift+F searches files only, even from `cd`, at the Zsh prompt
 or inside the picker. Configure Ghostty with
 `keybind = ctrl+shift+f=text:\x1b\x06` (fzf calls this sequence `ctrl-alt-f`).
 Accepting forced search inserts quoted absolute paths without executing the
@@ -59,6 +59,47 @@ The preview uses a right-side 50% split while that pane is at least 80 columns w
 ··/long/path/to/current/
 [I] query                         7/42
 ```
+
+### Zsh path completion
+
+Tab opens shell-picker for file and directory arguments of any command, including
+`ls`, `nvim`, and `cp`. Command names, flags, and non-path arguments use the existing
+`fzf_completion` widget. Space never opens the picker. Completion inserts the
+selected path into the current word; it does not execute the command. In particular,
+`cd` keeps your shell function, so zoxide's normal directory-change hooks still run
+when you press Enter at the shell prompt. Directory completion includes the initial
+zoxide suggestions.
+
+The original command line stays in the header, above the mode and editable path:
+
+```text
+nvim src/ma
+[I] src/ma
+```
+
+Ctrl+F appends the FSearch source label, directory-only filter (when applicable),
+and saved-index timestamp to that header. Switching back restores the command-only
+header.
+
+The editable input is a path relative to the directory where completion started.
+Typing `~`, `/`, `../`, or `../../..` changes the displayed directory without
+removing that text. Deleting the prefix returns to the original directory.
+Tab, Right, and Ctrl+L append the highlighted directory to this path; Enter accepts
+the highlighted file or directory. Only the final filename portion is fuzzy-matched.
+Returned paths preserve relative, absolute, or `~/` spelling. Quoted shell words use
+an expanded home path because a quoted tilde would not expand in Zsh.
+
+On Unix, completion uses inline fzf rendering when the terminal is at least
+80 columns by 30 rows, with a provisional height of 70%; smaller terminals use
+fullscreen. This is based on terminal dimensions, not unused rows below the cursor:
+fzf can scroll to make room. Set `SHELL_PICKER_DISPLAY=inline` or `fullscreen` to
+override `auto`. The layout is chosen at launch; resizing keeps the chosen display
+mode and still adjusts the preview layout. Native Windows remains fullscreen.
+
+For direct invocation, `--completion PATH` enables editable-path behavior (including
+an empty `PATH`), `--command-line TEXT` supplies the fixed command header, and
+`--display auto|inline|fullscreen` selects the display mode. Direct invocations
+without `--completion` retain the existing browser/query behavior described below.
 
 For `cp`, the info text appends ` (N)` only while a selection is active. `cd` never shows a selection count.
 
@@ -86,7 +127,12 @@ For `cd`, zoxide candidates can appear only in the initial CD view. Cached and f
 
 ## Shell adapters
 
-Source `adapters/zsh/shell-picker.plugin.zsh` and call `shell-picker-bind-zsh`; source `adapters/nushell/shell-picker.nu` and call `shell-picker-bind-nushell`. Nushell and Clink remain supported, but neither carries a sub-100ms latency promise.
+Keep both Zsh files together, source `adapters/zsh/shell-picker.plugin.zsh`, and call
+`shell-picker-bind-zsh` after `compinit` and your other keybinding plugins. The
+adapter loads `shell-picker-completion.zsh` from the same directory. Source
+`adapters/nushell/shell-picker.nu` and call `shell-picker-bind-nushell` for Nushell.
+The new context-aware Tab flow is currently Zsh-specific; Nushell and Clink retain
+their existing bindings.
 
 On Windows, PowerShell 7.4.7 or newer with PSReadLine 2.3.6 or newer is the recommended low-latency adapter. Install the module from the release payload, then register the picker executable:
 

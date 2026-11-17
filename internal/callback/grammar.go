@@ -1,6 +1,7 @@
 package callback
 
 import (
+	"encoding/base64"
 	"errors"
 	"strconv"
 	"strings"
@@ -20,9 +21,11 @@ const (
 	KindInfo
 	KindEmptySource
 	KindInvalidPreview
+	KindLiteral
 )
 
 type Command struct {
+	Text            string
 	Kind            Kind
 	Opcode          protocol.Opcode
 	Generation      uint64
@@ -32,16 +35,24 @@ type Command struct {
 }
 
 func (command Command) Local() bool {
-	return command.Kind == KindInfo || command.Kind == KindEmptySource || command.Kind == KindInvalidPreview
+	return command.Kind == KindInfo || command.Kind == KindEmptySource || command.Kind == KindInvalidPreview || command.Kind == KindLiteral
 }
 
 func Parse(raw string) (Command, error) {
+	if encoded, ok := strings.CutPrefix(raw, "v:"); ok {
+		text, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+		if err != nil || len(text) > 32768 {
+			return Command{}, ErrGrammar
+		}
+		return Command{Kind: KindLiteral, Text: string(text)}, nil
+	}
 	events := map[string]protocol.Opcode{
 		"e:mi": protocol.OpModeInsert, "e:ma": protocol.OpModeAdd, "e:es": protocol.OpEscape,
 		"e:fw": protocol.OpForward, "e:up": protocol.OpParent, "e:sl": protocol.OpSlash,
 		"e:hm": protocol.OpHome, "e:en": protocol.OpEnter, "e:rs": protocol.OpRestoreView,
 		"e:sf": protocol.OpSourceToggle, "e:mk": protocol.OpMarkToggle,
 		"e:fa": protocol.OpFilesSearch,
+		"e:qy": protocol.OpQuery,
 	}
 	if opcode, ok := events[raw]; ok {
 		return Command{Kind: KindEvent, Opcode: opcode}, nil

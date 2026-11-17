@@ -14,7 +14,7 @@ func TestBuildIndexedKeepsDirectoriesOnlyForCDAndPreservesPathBytes(t *testing.T
 		{Path: []byte("/work/one\tname"), IsDir: false},
 		{Path: []byte{'/', 'w', 'o', 'r', 'k', '/', 0xff}, IsDir: false},
 	}}
-	records, err := BuildIndexed(context.Background(), protocol.PickerCD, database)
+	records, err := BuildIndexed(context.Background(), BuildRequest{Picker: protocol.PickerCD}, database)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestBuildIndexedKeepsDirectoriesOnlyForCDAndPreservesPathBytes(t *testing.T
 		t.Fatalf("cd records = %+v", records)
 	}
 
-	records, err = BuildIndexed(context.Background(), protocol.PickerSearch, database)
+	records, err = BuildIndexed(context.Background(), BuildRequest{Picker: protocol.PickerSearch}, database)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,5 +45,14 @@ func TestBuildIndexedKeepsDirectoriesOnlyForCDAndPreservesPathBytes(t *testing.T
 	}
 	if !escapedTab {
 		t.Fatalf("tab in full path was not escaped: %+v", records)
+	}
+	records, err = BuildIndexed(context.Background(), BuildRequest{Picker: protocol.PickerSearch, FilesOnly: true}, database)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("files-only records=%+v err=%v", records, err)
+	}
+	for _, record := range records {
+		if record.Kind != protocol.KindFile {
+			t.Fatalf("folder admitted to files-only search: %+v", record)
+		}
 	}
 }

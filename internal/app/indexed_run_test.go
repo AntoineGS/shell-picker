@@ -37,6 +37,7 @@ func TestOrdinaryCPStartupDoesNotLoadFSearchDatabase(t *testing.T) {
 
 func TestStandaloneSearchLoadsIndexAndReturnsAbsolutePaths(t *testing.T) {
 	fixture := newPickerFixture(t, protocol.PickerSearch)
+	fixture.options.CommandLine = "nvim "
 	first := filepath.Join(fixture.cwd, "readme.md")
 	second := filepath.Join(fixture.cwd, "child")
 	loads := 0
@@ -95,5 +96,38 @@ func TestStandaloneSearchReportsLoadFailureBeforeLaunchingFZF(t *testing.T) {
 	}
 	if launches != 0 {
 		t.Fatalf("fzf launches = %d, want 0", launches)
+	}
+}
+
+func TestStandaloneFilesOnlySearchFiltersFolders(t *testing.T) {
+	fixture := newPickerFixture(t, protocol.PickerSearch)
+	options, err := parsePickerArgs([]string{"search", "--cwd", fixture.cwd, "--home", fixture.cwd,
+		"--search-scope", "files", "--command-line", "nvim"}, fixture.options.ExecutablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(fixture.cwd, "readme.md")
+	fixture.dependencies.IndexLoader = func(context.Context, string) (*fsearchdb.Database, error) {
+		return &fsearchdb.Database{Entries: []fsearchdb.Entry{
+			{Path: []byte(fixture.cwd), IsDir: true}, {Path: []byte(file)},
+		}}, nil
+	}
+	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
+		if !contains(config.Options, "--header=nvim · FSearch · files only") {
+			t.Fatalf("missing files-only header: %q", config.Options)
+		}
+		framed, err := io.ReadAll(config.Input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records := bytes.Split(bytes.TrimSuffix(framed, []byte{0}), []byte{0})
+		if len(records) != 1 {
+			t.Fatalf("files-only candidates=%q", framed)
+		}
+		return fzf.Result{Key: "enter", Records: records}, nil
+	}
+	outcome, err := RunPicker(context.Background(), options, fixture.dependencies)
+	if err != nil || len(outcome.Paths) != 1 || string(outcome.Paths[0]) != file {
+		t.Fatalf("files-only outcome=%+v err=%v", outcome, err)
 	}
 }

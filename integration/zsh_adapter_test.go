@@ -80,11 +80,16 @@ func TestZshAdapter(t *testing.T) {
 		})
 	}
 
-	t.Run("space-trigger", func(t *testing.T) {
+	t.Run("space-does-not-launch", func(t *testing.T) {
 		fixture := newZshAdapterFixture(t, zsh, plugin)
 		state := fixture.run(t, "space", []string{"space target"})
-		assertZshAdapterState(t, state, 1, 0, []string{"space target"})
-		fixture.assertOnePicker(t, "cd")
+		assertZshAdapterState(t, state, 0, 0, []string{})
+		if state[2] != "cd " {
+			t.Fatalf("Space changed command: %q", state[2])
+		}
+		if _, err := os.Stat(fixture.calls); !os.IsNotExist(err) {
+			t.Fatalf("Space launched picker: %v", err)
+		}
 	})
 
 	t.Run("cp-tab-order-duplicates", func(t *testing.T) {
@@ -432,7 +437,7 @@ const zshAdapterRunner = `emulate -LR zsh
 typeset -gi accepted_calls=0 fzf_completion_calls=0
 zle() {
   case $1 in
-    -N | redisplay) ;;
+    -N | -C | redisplay) ;;
     magic-space)
       BUFFER="${BUFFER[1,CURSOR]} ${BUFFER[$(( CURSOR + 1 )),-1]}"
       (( ++CURSOR ))
@@ -456,7 +461,7 @@ case $3 in
   space)
     BUFFER=cd CURSOR=2
     _shell_picker_space
-    quoted=${BUFFER#'builtin cd -- '}
+    quoted=
     ;;
   tab | tab-options | tab-terminator | tab-escaped-terminator | tab-custom | tab-heredoc)
     case $3 in
@@ -468,7 +473,8 @@ case $3 in
       tab-heredoc) LBUFFER=$SHELL_PICKER_LBUFFER ;;
     esac
     RBUFFER=
-    _shell_picker_tab
+    # Exercise the retained explicit cp widget; Tab is tested with real ZLE.
+    _shell_picker_cp
     [[ $LBUFFER != *' ' ]] || exit 91
     if [[ $3 == tab-heredoc ]]; then
       eval "$LBUFFER"$'\nheredoc body\n--\n' || exit 94

@@ -18,6 +18,9 @@ func (enrichment *initialEnrichment) HandleEvent(ctx context.Context, event prot
 		return sessionipc.EventResult{}, errInitialEnrichmentNilSource
 	}
 	started := time.Now()
+	if err := enrichment.awaitCompletionLaunch(ctx, event); err != nil {
+		return sessionipc.EventResult{}, err
+	}
 	eventCtx, eventID, cancelEvent, reserveErr := enrichment.reserveEvent(ctx)
 	if reserveErr != nil {
 		return sessionipc.EventResult{}, reserveErr

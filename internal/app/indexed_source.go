@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -96,12 +97,12 @@ func (source *indexedSource) load(ctx context.Context) (*fsearchdb.Database, err
 	}
 }
 
-func (source *indexedSource) build(ctx context.Context, picker protocol.Picker) (candidate.BuildResult, error) {
+func (source *indexedSource) build(ctx context.Context, request candidate.BuildRequest) (candidate.BuildResult, error) {
 	database, err := source.load(ctx)
 	if err != nil {
 		return candidate.BuildResult{}, err
 	}
-	records, err := candidate.BuildIndexed(ctx, picker, database)
+	records, err := candidate.BuildIndexed(ctx, request, database)
 	if err != nil {
 		return candidate.BuildResult{}, err
 	}
@@ -129,12 +130,14 @@ func indexedFrameSizeExceeds(records []candidate.Record, limit uint64) (uint64, 
 	return size, false
 }
 
-func (source *indexedSource) header(picker protocol.Picker) string {
+func (source *indexedSource) header(picker protocol.Picker, filesOnly bool) string {
 	source.mu.Lock()
 	database := source.database
 	source.mu.Unlock()
 	label := "FSearch"
-	if picker == protocol.PickerCD {
+	if filesOnly {
+		label += " · files only"
+	} else if picker == protocol.PickerCD {
 		label += " · directories only"
 	}
 	if database != nil && !database.SavedAt.IsZero() {
@@ -150,9 +153,15 @@ func sessionGenerator(options PickerOptions, buildLocal func(context.Context, ca
 		var result candidate.BuildResult
 		var err error
 		if request.Source == protocol.SourceIndexed {
-			result, err = indexed.build(ctx, request.Picker)
+			result, err = indexed.build(ctx, request)
 		} else {
 			result, err = buildLocal(ctx, request)
+			// An unfinished or inaccessible directory is an empty completion
+			// view. Keep the typed path so editing it can recover in-place.
+			var pathError *os.PathError
+			if options.Completion && errors.As(err, &pathError) && context.Cause(ctx) == nil {
+				result.Records, err = nil, nil
+			}
 		}
 		if err == nil {
 			candidate.CompactHomeDisplays(result.Records, options.Home)

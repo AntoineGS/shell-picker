@@ -167,21 +167,6 @@ func writeActionKey(encoded *strings.Builder, key string) {
 	}
 }
 
-func buildNormalPrintableKeys() []string {
-	active := map[rune]bool{
-		'h': true, 'j': true, 'k': true, 'l': true, 'i': true, 'a': true, 'q': true,
-		'g': true, 'G': true,
-		'/': true, '~': true, ',': true, '.': true,
-	}
-	keys := make([]string, 0, 83)
-	for key := '!'; key <= '~'; key++ {
-		if !active[key] {
-			keys = append(keys, string(key))
-		}
-	}
-	return keys
-}
-
 func appendKeys(groups ...[]string) []string {
 	var size int
 	for _, group := range groups {
@@ -325,7 +310,10 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 		actions = append(actions, first())
 	}
 	if effect.ReloadGeneration != 0 || effect.RestoreGeneration != 0 {
-		actions = append(actions, changePreviewDefault(), keyAction("unbind", []string{"change"}))
+		actions = append(actions, changePreviewDefault())
+		if !effect.Completion {
+			actions = append(actions, keyAction("unbind", []string{"change"}))
+		}
 	}
 	if effect.Prompt != "" {
 		prompt, err := changeModePrompt(effect.Prompt)
@@ -346,5 +334,8 @@ func renderEffect(effect protocol.Effect, eventID uint64) (string, error) {
 		return "", err
 	}
 	actions = append(actions, restoreActions...)
+	if effect.SetSearchQuery {
+		actions = append(actions, literalTransform("search", effect.SearchQuery))
+	}
 	return sequence(actions...), nil
 }

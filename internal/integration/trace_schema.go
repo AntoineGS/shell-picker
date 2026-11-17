@@ -44,7 +44,7 @@ var productionTraceSchema = traceSchemaRules{
 		"callback.info.start":    {"started"},
 		"callback.info":          {"error", "ok"},
 		"callback.event.start":   {"started"},
-		"callback.event":         {"mi", "ma", "es", "fw", "up", "sl", "hm", "en", "rs", "sf", "fa", "mk", "error"},
+		"callback.event":         {"mi", "ma", "es", "fw", "up", "sl", "hm", "en", "rs", "sf", "fa", "mk", "qy", "error"},
 		"callback.display.start": {"started"},
 		"callback.display":       {"ok", "error"},
 		"callback.preview.start": {"started"},

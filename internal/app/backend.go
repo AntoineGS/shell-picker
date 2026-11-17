@@ -13,12 +13,13 @@ import (
 )
 
 type pickerBackend struct {
-	actor      *session.Actor
-	metrics    *pickerMetrics
-	trace      *pickerTrace
-	enrichment *initialEnrichment
-	indexed    *indexedSource
-	stat       func(string) (os.FileInfo, error)
+	actor         *session.Actor
+	metrics       *pickerMetrics
+	trace         *pickerTrace
+	enrichment    *initialEnrichment
+	indexed       *indexedSource
+	stat          func(string) (os.FileInfo, error)
+	commandHeader string
 }
 
 func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (result sessionipc.EventResult, err error) {
@@ -33,11 +34,10 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 	}()
 	if backend.enrichment != nil {
 		result, handleErr := backend.enrichment.HandleEvent(ctx, event)
-		if handleErr == nil && (event.Opcode == protocol.OpSourceToggle || event.Opcode == protocol.OpFilesSearch) &&
-			result.Effect.ReloadGeneration != 0 && backend.indexed != nil {
+		if handleErr == nil && result.Effect.Header != "" {
 			state, stateErr := backend.actor.CurrentState(ctx)
-			if stateErr == nil && state.Source == protocol.SourceIndexed {
-				result.Effect.Header = backend.indexed.header(state.ActivePicker())
+			if stateErr == nil {
+				backend.decorateHeader(&result.Effect, state)
 			}
 		}
 		return result, handleErr
@@ -50,9 +50,7 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 	if handleErr == nil {
 		backend.metrics.recordTransition(transition)
 		state := transition.Snapshot.State()
-		if (event.Opcode == protocol.OpSourceToggle || event.Opcode == protocol.OpFilesSearch) && state.Source == protocol.SourceIndexed && backend.indexed != nil {
-			transition.Effect.Header = backend.indexed.header(state.ActivePicker())
-		}
+		backend.decorateHeader(&transition.Effect, state)
 		if transition.Effect.ReloadGeneration != 0 {
 			traceTransition(backend.trace, backend.metrics.policy, transition, state.Location.Path)
 		}
@@ -126,10 +124,7 @@ func (backend *pickerBackend) CurrentHeader(ctx context.Context) (header string,
 	if err != nil {
 		return "", err
 	}
-	if state.Source == protocol.SourceIndexed && backend.indexed != nil {
-		return backend.indexed.header(state.ActivePicker()), nil
-	}
-	return pathutil.PromptDisplayHome(state.Location, state.Home), nil
+	return pickerHeader(backend.commandHeader, state, backend.indexed), nil
 }
 
 func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte) (candidate protocol.ResolvedCandidate, err error) {

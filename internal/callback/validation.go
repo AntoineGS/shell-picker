@@ -12,11 +12,11 @@ func ValidateLocal(command Command, lookupEnv func(string) string) error {
 	}
 	switch command.Kind {
 	case KindEvent:
-		if command.Opcode != protocol.OpRestoreView &&
+		if command.Opcode != protocol.OpRestoreView && command.Opcode != protocol.OpQuery &&
 			!validKey(command.Opcode, lookupEnv("FZF_KEY")) {
 			return ErrKey
 		}
-	case KindLoad, KindPreview, KindDisplay, KindInfo, KindEmptySource, KindInvalidPreview:
+	case KindLoad, KindPreview, KindDisplay, KindInfo, KindEmptySource, KindInvalidPreview, KindLiteral:
 		return nil
 	default:
 		return ErrGrammar

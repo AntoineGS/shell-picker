@@ -21,7 +21,7 @@ func effectHeaderAction(effect protocol.Effect) (action, error) {
 	if err != nil {
 		return action{}, err
 	}
-	if effect.SetQuery || effect.RestorePositions != "" {
+	if effect.SetQuery || effect.RestorePositions != "" || effect.SetSearchQuery {
 		// A colon-delimited header consumes the rest of its action list.
 		// Render it separately so restoration remains executable and
 		// arbitrary path punctuation stays data, not action syntax.
@@ -37,6 +37,9 @@ func queryRestoreActions(effect protocol.Effect) ([]action, error) {
 	}
 	actions := append([]action(nil), restoredSelections...)
 	if effect.SetQuery {
+		if effect.Completion {
+			return append(actions, literalTransform("query", effect.Query)), nil
+		}
 		queryAction, err := changeQuery(effect.Query)
 		if err != nil {
 			return nil, err

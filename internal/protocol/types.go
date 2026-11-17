@@ -60,6 +60,7 @@ const (
 	OpSourceToggle Opcode = "sf"
 	OpFilesSearch  Opcode = "fa"
 	OpMarkToggle   Opcode = "mk"
+	OpQuery        Opcode = "qy"
 )
 
 type Event struct {
@@ -71,6 +72,9 @@ type Event struct {
 }
 
 type Effect struct {
+	Completion        bool        `json:"completion"`
+	SearchQuery       string      `json:"search_query"`
+	SetSearchQuery    bool        `json:"set_search_query"`
 	Mode              Mode        `json:"mode"`
 	Prompt            string      `json:"prompt"`
 	Header            string      `json:"header"`

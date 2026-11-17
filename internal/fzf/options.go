@@ -11,6 +11,9 @@ import (
 
 // OptionsConfig describes the stable and optional listen-specific fzf flags.
 type OptionsConfig struct {
+	Completion    bool
+	Query         string
+	Height        string
 	Picker        protocol.Picker
 	Prompt        string
 	Header        string
@@ -49,6 +52,12 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		"--prompt=" + config.Prompt,
 		"--header=" + config.Header,
 		"--header-first",
+	}
+	if config.Height != "" {
+		options = append(options, "--height="+config.Height)
+	}
+	if config.Completion {
+		options = append(options, "--query="+config.Query)
 	}
 	if listenEnabled {
 		options = append(options, "--info=hidden", "--list-label=0/0", "--listen="+config.ListenAddress)
@@ -90,6 +99,10 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		binding("change", transformEvent(protocol.OpRestoreView)),
 	)
 	start := []action{startUnbind()}
+	if config.Completion {
+		start = []action{keyAction("unbind", normalKeys), transformEvent(protocol.OpQuery)}
+		options = append(options, binding("change", transformEvent(protocol.OpQuery)))
+	}
 	if !listenEnabled && goos != "windows" {
 		start = append(start, transformDisplay())
 	}

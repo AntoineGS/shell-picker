@@ -49,6 +49,8 @@ func Dispatch(ctx context.Context, command Command, dependencies Dependencies) e
 		return err
 	}
 	switch command.Kind {
+	case KindLiteral:
+		return writeAll(dependencies.Stdout, []byte(command.Text))
 	case KindEvent:
 		return dispatchEvent(ctx, command, dependencies)
 	case KindLoad:

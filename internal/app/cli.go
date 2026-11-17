@@ -71,7 +71,7 @@ func runProbeCLI(ctx context.Context, args []string, streams Streams, build stri
 func runPickerCLI(ctx context.Context, args []string, streams Streams, executable string, dependencies *Dependencies) int {
 	options, err := parsePickerArgs(args, executable)
 	if err != nil {
-		fmt.Fprintln(streams.Err, "usage: shell-picker cd|cp|search --cwd PATH --home PATH [--output nul|nuon] [--fzf PATH] [--zoxide-policy cached|fresh] [--zoxide-timeout DURATION] [--trace FILE]")
+		fmt.Fprintln(streams.Err, "usage: shell-picker cd|cp|search --cwd PATH --home PATH [--output nul|nuon] [--completion PATH] [--command-line TEXT] [--display auto|inline|fullscreen] [--search-scope all|files] [--fzf PATH] [--zoxide-policy cached|fresh] [--zoxide-timeout DURATION] [--trace FILE]")
 		return 2
 	}
 	outcome, err := RunPicker(ctx, options, *dependencies)
@@ -106,6 +106,21 @@ func parsePickerArgs(args []string, executable string) (PickerOptions, error) {
 		switch flag {
 		case "--cwd":
 			options.CWD = []byte(value)
+		case "--completion":
+			options.Completion = true
+			options.Query = value
+		case "--command-line":
+			options.CommandLine = value
+		case "--display":
+			if value != "auto" && value != "inline" && value != "fullscreen" {
+				return PickerOptions{}, errors.New("invalid display mode")
+			}
+			options.Display = value
+		case "--search-scope":
+			if options.Picker != protocol.PickerSearch || (value != "all" && value != "files") {
+				return PickerOptions{}, errors.New("search scope must be all or files for the search picker")
+			}
+			options.FilesOnly = value == "files"
 		case "--home":
 			options.Home = []byte(value)
 		case "--output":
@@ -144,6 +159,9 @@ func parsePickerArgs(args []string, executable string) (PickerOptions, error) {
 	}
 	if !filepath.IsAbs(executable) {
 		return PickerOptions{}, errors.New("executable path must be absolute")
+	}
+	if options.Completion && options.Display == "" {
+		options.Display = "auto"
 	}
 	return options, nil
 }

@@ -17,6 +17,7 @@ type BuildRequest struct {
 	Location    pathutil.Location
 	StatWorkers int
 	Initial     bool
+	FilesOnly   bool
 }
 
 type BuildResult struct {

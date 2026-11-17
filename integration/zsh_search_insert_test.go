@@ -17,12 +17,15 @@ func TestZshForcedSearchInsertsWithoutExecuting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, widget := range []string{"cd", "cp", "search"} {
+	for _, widget := range []string{"cd", "cp", "search", "files_search"} {
 		t.Run(widget, func(t *testing.T) {
 			root := t.TempDir()
 			fake := "#!/bin/sh\nprintf '/tmp/a b\\000/tmp/c\\000'\nexit 10\n"
-			if widget == "search" {
+			if widget == "search" || widget == "files_search" {
 				fake = strings.Replace(fake, "exit 10", "exit 0", 1)
+			}
+			if widget == "files_search" {
+				fake = strings.Replace(fake, "#!/bin/sh\n", "#!/bin/sh\ncase \"$*\" in *'--search-scope files'*) ;; *) exit 2 ;; esac\n", 1)
 			}
 			if err := os.WriteFile(filepath.Join(root, "shell-picker"), []byte(fake), 0o700); err != nil {
 				t.Fatal(err)

@@ -21,6 +21,7 @@ zle() {
     -N)
       registered_widgets+=("$2")
       ;;
+    -C) ;;
     magic-space)
       events+=(magic-space)
       BUFFER="${BUFFER[1,CURSOR]} ${BUFFER[$(( CURSOR + 1 )),-1]}"
@@ -101,11 +102,11 @@ picker_call_count() {
 }
 
 test_registration_and_explicit_bindings() {
-  assert_equal '_shell_picker_cd _shell_picker_cp _shell_picker_search _shell_picker_tab _shell_picker_space' \
+  assert_equal '_shell_picker_cd _shell_picker_cp _shell_picker_search _shell_picker_files_search _shell_picker_tab _shell_picker_space' \
     "${(j: :)registered_widgets}" 'source-time widget registration changed'
   assert_equal 0 "${#bound_keys}" 'source time rebound a key'
   shell-picker-bind-zsh
-  assert_equal $' :_shell_picker_space ^I:_shell_picker_tab -M:emacs:^F:_shell_picker_search -M:viins:^F:_shell_picker_search -M:vicmd:^F:_shell_picker_search -M:emacs:\e\x06:_shell_picker_search -M:viins:\e\x06:_shell_picker_search -M:vicmd:\e\x06:_shell_picker_search' \
+  assert_equal $' :magic-space -M:emacs:^I:_shell_picker_tab -M:viins:^I:_shell_picker_tab -M:emacs:^F:_shell_picker_search -M:viins:^F:_shell_picker_search -M:vicmd:^F:_shell_picker_search -M:emacs:\e\x06:_shell_picker_files_search -M:viins:\e\x06:_shell_picker_files_search -M:vicmd:\e\x06:_shell_picker_files_search' \
     "${(j: :)bound_keys}" 'explicit bindings did not bind Space, Tab, and Ctrl-F search'
 }
 
@@ -116,9 +117,8 @@ test_space_exact_after_magic_space() {
   picker_call_count
   assert_equal 'cd ' "$BUFFER" 'aborted exact cd did not retain magic-space result'
   assert_equal 3 "$CURSOR" 'aborted exact cd did not retain post-space cursor'
-  assert_equal 1 "$REPLY" 'exact cd Space did not invoke one picker'
-  assert_equal 'magic-space _shell_picker_cd redisplay' "${(j: :)events}" \
-    'magic-space did not run before the cd trigger'
+  assert_equal 0 "$REPLY" 'Space launched a picker'
+  assert_equal 'magic-space' "${(j: :)events}" 'Space did more than normal editing'
 
   reset_case
   BUFFER='echo cd' CURSOR=7
@@ -314,37 +314,6 @@ test_cp_zsh_redirection_families() {
     'multiple redirections consumed pending cp option state'
 }
 
-test_tab_current_command_parser() {
-  local separator
-  for separator in ';' '&' '&&' '||' '|' '|&' '&!' '&|'; do
-    reset_case
-    PICKER_MODE=cp-order
-    LBUFFER="echo before $separator cp " RBUFFER=
-    _shell_picker_tab
-    picker_call_count
-    assert_equal "echo before $separator cp -- first\\ path third\\ path first\\ path" "$LBUFFER" \
-      "separator $separator did not reset the current command"
-    assert_equal 1 "$REPLY" "separator $separator did not route to one cp picker"
-    assert_equal 0 "$fzf_completion_calls" "separator $separator fell back to completion"
-  done
-
-  reset_case
-  LBUFFER='echo cp ' RBUFFER=
-  _shell_picker_tab
-  picker_call_count
-  assert_equal 0 "$REPLY" 'non-command cp invoked the picker'
-  assert_equal 1 "$fzf_completion_calls" 'non-command cp did not use existing completion'
-
-  reset_case
-  LBUFFER='echo x | cp ' RBUFFER=suffix
-  _shell_picker_tab
-  picker_call_count
-  assert_equal 'echo x | cp ' "$LBUFFER" 'RBUFFER fallback changed LBUFFER'
-  assert_equal suffix "$RBUFFER" 'RBUFFER fallback corrupted its suffix'
-  assert_equal 0 "$REPLY" 'RBUFFER fallback invoked the picker'
-  assert_equal 1 "$fzf_completion_calls" 'RBUFFER did not use existing completion'
-}
-
 test_output_transport_ignores_tmpdir() {
   reset_case
   local unrelated=$TMPDIR/shell-picker-cd.UNRELATED
@@ -405,7 +374,7 @@ test_cp_abort_error_and_malformed_restore
 test_cp_option_terminator
 test_cp_terminator_context
 test_cp_zsh_redirection_families
-test_tab_current_command_parser
+# Tab routing uses the real completion context in TestZshPathCompletion.
 test_output_transport_ignores_tmpdir
 test_output_transport_ignores_hostile_temp_functions
 

@@ -4,7 +4,7 @@ Candidate rows use exactly `KIND<TAB>ESCAPED_DISPLAY<TAB>PADDED_BASE64_PAYLOAD`,
 
 The zoxide source boundary accepts at most 4 MiB total output, 1,000,000 rows, and 128 KiB per row. These limits match the protocol's external output and candidate-count bounds while covering legal platform paths, including Windows extended paths. An exact limit is valid; limit plus one is a malformed soft failure, all records are discarded, and the child is cancelled and reaped.
 
-Callbacks have a closed grammar: events are exactly `e:mi`, `e:ma`, `e:es`, `e:fw`, `e:up`, `e:sl`, `e:hm`, `e:en`, `e:rs`, `e:mk`, `e:sf`, or `e:fa`; `e:sf` toggles the candidate source between the browser and saved FSearch index, and `e:fa` forces unrestricted indexed search. Mark callbacks use `FZF_CURRENT_ITEM` and update the authoritative per-source cache before fzf's native toggle action. Source switching does not transport or infer marks from fzf's selected-file placeholder. Preview is exactly `p` or the fixed local `p:invalid`; display is exactly `d`; info is exactly `i:cd` or `i:cp`; coordinator-backed loads are `l:<positive decimal generation>:<positive decimal eventID>`, while non-coordinator loads may use `l:<positive decimal generation>`; neither component permits zero, sign, or leading zero. The fixed local `l:empty` is a zero-byte candidate source, and `p:invalid` writes exactly `[Invalid Path]`. Other fixed local callbacks accept no query or path arguments and bypass IPC. `FZF_CURRENT_ITEM` carries the selected wire row. The callback parser rejects every other form instead of interpreting shell text.
+Callbacks have a closed grammar: events are exactly `e:mi`, `e:ma`, `e:es`, `e:fw`, `e:up`, `e:sl`, `e:hm`, `e:en`, `e:rs`, `e:mk`, `e:sf`, `e:fa`, or `e:qy`; `e:sf` toggles the candidate source between the browser and saved FSearch index, `e:fa` forces files-only indexed search, and `e:qy` updates editable-path completion. Mark callbacks use `FZF_CURRENT_ITEM` and update the authoritative per-source cache before fzf's native toggle action. Source switching does not transport or infer marks from fzf's selected-file placeholder. Preview is exactly `p` or the fixed local `p:invalid`; display is exactly `d`; info is exactly `i:cd` or `i:cp`; coordinator-backed loads are `l:<positive decimal generation>:<positive decimal eventID>`, while non-coordinator loads may use `l:<positive decimal generation>`; neither component permits zero, sign, or leading zero. The fixed local `l:empty` is a zero-byte candidate source, and `p:invalid` writes exactly `[Invalid Path]`. Fixed local callbacks accept no query or path arguments and bypass IPC. The local `v:<unpadded URL-safe base64>` callback decodes at most 32 KiB of literal text for fzf query, search, and prompt transforms; decoded text is written as data, never interpreted as shell or action syntax. `FZF_CURRENT_ITEM` carries the selected wire row. The callback parser rejects every other form instead of interpreting shell text.
 
 Candidate source is independent of interaction mode. Browser is the zero
 value for compatibility; indexed identifies entries decoded from the saved
@@ -13,10 +13,10 @@ when XDG_DATA_HOME is absolute, otherwise `$HOME/.local/share/fsearch/fsearch.db
 Indexed records retain authoritative path bytes; escaped full paths are labels
 only. Search matching uses fzf semantics.
 
-The `e:fa` event forces unrestricted indexed search, including files in a CD
+The `e:fa` event forces files-only indexed search, including from a CD
 session. It is bound to `ctrl-alt-f` (the terminal mapping for Ctrl+Shift+F).
 The underlying browser context stays intact. `selection_limit` effects set
-fzf's native limit to 1 for ordinary CD or 4096 for unrestricted search.
+fzf's native limit to 1 for ordinary CD or 4096 for files-only search.
 Forced acceptance uses the `insert` output key and is validated against the
 authoritative indexed snapshot. CD/CP commands then emit absolute paths in the
 requested format and exit with status **10**, telling the Zsh adapter to insert
@@ -43,7 +43,7 @@ fzf.start,ok,0,none,0/0,
 fzf.exit,aborted|error|ok,0,none,0/0,
 callback.display,error|ok,0,none,0/0,callback_ipc_us
 callback.display.start,started,0,none,0/0,
-callback.event,en|error|es|fa|fw|hm|ma|mi|mk|rs|sf|sl|up,0,none,0/0,callback_ipc_us
+callback.event,en|error|es|fa|fw|hm|ma|mi|mk|qy|rs|sf|sl|up,0,none,0/0,callback_ipc_us
 callback.event.start,started,0,none,0/0,
 callback.info,error|ok,0,none,0/0,
 callback.info.start,started,0,none,0/0,

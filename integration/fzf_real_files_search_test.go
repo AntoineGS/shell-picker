@@ -35,8 +35,8 @@ func TestRealFZFForcedFilesSearchFromCD(t *testing.T) {
 	}()
 	waitForTerminalText(t, term, "5/5")
 	sendAndWait(t, term, []byte{0x1b, 0x06}, barrier{Event: "callback.event", Operation: "fa", Count: 1})
-	waitForTerminalText(t, term, "FSearch · saved ")
-	waitForTerminalText(t, term, "3/3")
+	waitForTerminalText(t, term, "FSearch · files only · saved ")
+	waitForTerminalText(t, term, "2/2")
 	for i, name := range []string{"first.txt", "second.txt"} {
 		if i > 0 {
 			for range len("first.txt") {
@@ -49,16 +49,16 @@ func TestRealFZFForcedFilesSearchFromCD(t *testing.T) {
 		if err := term.Send([]byte(name)); err != nil {
 			t.Fatal(err)
 		}
-		waitForTerminalTextAfter(t, term, before, "1/3")
+		waitForTerminalTextAfter(t, term, before, "1/2")
 		sendAndWait(t, term, keyCtrlSpace, barrier{Event: "callback.event", Operation: "mk", Count: i + 1})
 	}
-	// Browser round trip must preserve both marks and the unrestricted scope.
+	// Browser round trip must preserve both marks and the files-only scope.
 	before := len(term.Output())
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 1})
 	waitForTerminalTextAfter(t, term, before, "5/5")
 	before = len(term.Output())
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 2})
-	waitForTerminalTextAfter(t, term, before, "1/3")
+	waitForTerminalTextAfter(t, term, before, "1/2")
 	sendAndWait(t, term, keyEnter, barrier{Event: "callback.event", Operation: "en", Count: 1})
 	var exit *exec.ExitError
 	if err := term.Wait(testContext(t)); !errors.As(err, &exit) || exit.ExitCode() != 10 {

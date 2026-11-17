@@ -12,7 +12,8 @@ import (
 
 // BuildIndexed converts a saved FSearch snapshot to authoritative picker
 // records without statting indexed paths.
-func BuildIndexed(ctx context.Context, picker protocol.Picker, database *fsearchdb.Database) ([]Record, error) {
+func BuildIndexed(ctx context.Context, request BuildRequest, database *fsearchdb.Database) ([]Record, error) {
+	picker := request.Picker
 	if ctx == nil {
 		return nil, fmt.Errorf("indexed candidates: nil context")
 	}
@@ -32,6 +33,9 @@ func BuildIndexed(ctx context.Context, picker protocol.Picker, database *fsearch
 			return nil, fmt.Errorf("indexed candidates: non-absolute path %q", entry.Path)
 		}
 		if picker == protocol.PickerCD && !entry.IsDir {
+			continue
+		}
+		if request.FilesOnly && entry.IsDir {
 			continue
 		}
 		key := filesystemRecordKey(entry.Path)

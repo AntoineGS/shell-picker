@@ -15,10 +15,16 @@ import (
 )
 
 func TestRunCDForcedFilesSearchReturnsInsertionExitCode(t *testing.T) {
+	t.Run("browser", func(t *testing.T) { testCDForcedFilesSearch(t, false) })
+	t.Run("completion", func(t *testing.T) { testCDForcedFilesSearch(t, true) })
+}
+
+func testCDForcedFilesSearch(t *testing.T, completion bool) {
 	fixture := newPickerFixture(t, protocol.PickerCD)
 	path := filepath.Join(fixture.cwd, "report.txt")
+	second := filepath.Join(fixture.cwd, "second.txt")
 	fixture.dependencies.IndexLoader = func(context.Context, string) (*fsearchdb.Database, error) {
-		return &fsearchdb.Database{Entries: []fsearchdb.Entry{{Path: []byte(path)}}}, nil
+		return &fsearchdb.Database{Entries: []fsearchdb.Entry{{Path: []byte(path)}, {Path: []byte(second)}}}, nil
 	}
 	fixture.dependencies.loadInitialZoxide = func(context.Context) (candidate.InitialZoxideResult, error) {
 		return candidate.InitialZoxideResult{}, nil
@@ -54,9 +60,15 @@ func TestRunCDForcedFilesSearchReturnsInsertionExitCode(t *testing.T) {
 		return fzf.Result{Key: "enter", Records: records}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := runPickerCLI(context.Background(), []string{"cd", "--cwd", fixture.cwd, "--home", fixture.cwd},
+	args := []string{"cd", "--cwd", fixture.cwd, "--home", fixture.cwd}
+	want := path + "\x00" + second + "\x00"
+	if completion {
+		args = append(args, "--completion", "")
+		want = "report.txt\x00second.txt\x00"
+	}
+	code := runPickerCLI(context.Background(), args,
 		Streams{Out: &stdout, Err: &stderr}, fixture.options.ExecutablePath, &fixture.dependencies)
-	if code != 10 || stdout.String() != path+"\x00" || stderr.Len() != 0 {
+	if code != 10 || stdout.String() != want || stderr.Len() != 0 {
 		t.Fatalf("code=%d output=%q error=%q", code, stdout.String(), stderr.String())
 	}
 }

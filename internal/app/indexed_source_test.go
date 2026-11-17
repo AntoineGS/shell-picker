@@ -66,7 +66,7 @@ func TestInjectedIndexedFrameLimitRejectsBeforeSourceCommit(t *testing.T) {
 	source.maxFrameBytes = 1
 	actor := session.New(ctx, func(ctx context.Context, request candidate.BuildRequest) (candidate.BuildResult, error) {
 		if request.Source == protocol.SourceIndexed {
-			return source.build(ctx, request.Picker)
+			return source.build(ctx, request)
 		}
 		return candidate.BuildResult{}, nil
 	})

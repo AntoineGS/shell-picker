@@ -6,6 +6,20 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
 
+func modePrompt(mode protocol.Mode, addError bool) string {
+	switch mode {
+	case protocol.ModeNormal:
+		return "[N] "
+	case protocol.ModeAdd:
+		if addError {
+			return "[A!] "
+		}
+		return "[A] "
+	default:
+		return "[I] "
+	}
+}
+
 func setNavigationUnchecked(proposal *ProposedTransition, target pathutil.Location) {
 	proposal.State.Location = cloneLocation(target)
 	proposal.State.Query = nil

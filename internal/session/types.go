@@ -12,16 +12,23 @@ import (
 )
 
 type State struct {
-	Picker   protocol.Picker
-	Source   protocol.Source
-	Mode     protocol.Mode
-	Location pathutil.Location
-	Home     pathutil.Location
-	Prompt   string
-	AddError bool
-	Query    []byte
-	Browser  *BrowserContext
-	Indexed  *IndexedContext
+	Picker     protocol.Picker
+	Source     protocol.Source
+	Mode       protocol.Mode
+	Location   pathutil.Location
+	Home       pathutil.Location
+	Prompt     string
+	AddError   bool
+	Query      []byte
+	Browser    *BrowserContext
+	Indexed    *IndexedContext
+	Completion *CompletionContext
+}
+
+// CompletionContext fixes the reference directory for an editable path.
+type CompletionContext struct {
+	Base    string
+	records *recordSet // launch candidates, including admitted zoxide suggestions
 }
 
 // BrowserContext preserves the browser view while indexed search is active.
@@ -36,7 +43,7 @@ type BrowserContext struct {
 type IndexedContext struct {
 	Query         []byte
 	SelectedPaths [][]byte
-	AllPaths      bool
+	FilesOnly     bool
 }
 
 type GenerateFunc func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error)

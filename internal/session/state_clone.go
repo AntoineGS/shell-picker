@@ -10,6 +10,10 @@ func cloneState(state State) State {
 	state.Location = cloneLocation(state.Location)
 	state.Home = cloneLocation(state.Home)
 	state.Query = bytes.Clone(state.Query)
+	if state.Completion != nil {
+		completion := *state.Completion
+		state.Completion = &completion
+	}
 	if state.Browser != nil {
 		browser := *state.Browser
 		browser.Location = cloneLocation(browser.Location)

@@ -91,7 +91,7 @@ fi
 typeset -gi accepted=0 redisplayed=0 completed=0
 zle() {
   case $1 in
-    -N) ;;
+    -N | -C) ;;
     accept-line) (( ++accepted )) ;;
     redisplay) (( ++redisplayed )) ;;
     fzf_completion) (( ++completed )) ;;

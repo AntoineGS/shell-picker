@@ -191,6 +191,7 @@ func TestTraceAcceptsPrivacySafeCallbackInvocationEvents(t *testing.T) {
 		{Name: "callback.preview", Outcome: "error"},
 		{Name: "callback.event.start", Outcome: "started"},
 		{Name: "callback.event", Outcome: "es"},
+		{Name: "callback.event", Outcome: "qy"},
 		{Name: "callback.event", Outcome: "error"},
 		{Name: "callback.load.start", Generation: 2, Outcome: "started"},
 		{Name: "callback.load", Generation: 2, Outcome: "ok"},

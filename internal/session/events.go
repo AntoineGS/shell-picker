@@ -35,6 +35,9 @@ func Handle(ctx context.Context, actor *Actor, event protocol.Event) (Transition
 	}
 	if proposal, ok := reduction.proposalValue(); ok {
 		result, applyErr := actor.Apply(ctx, proposal)
+		if applyErr == nil {
+			decorateCompletionEffect(&result)
+		}
 		sourceEvent := event.Opcode == protocol.OpSourceToggle || event.Opcode == protocol.OpFilesSearch
 		if applyErr != nil && sourceEvent && context.Cause(ctx) == nil {
 			return TransitionResult{Snapshot: snapshot, Effect: protocol.Effect{
@@ -65,7 +68,7 @@ func Handle(ctx context.Context, actor *Actor, event protocol.Event) (Transition
 	if cause := context.Cause(ctx); cause != nil {
 		return TransitionResult{}, errors.Join(cause, rollback(proposal.Created))
 	}
-	return actor.Apply(ctx, proposal)
+	return applyCreatedTransition(ctx, actor, proposal, snapshot)
 }
 
 func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
@@ -74,6 +77,12 @@ func Reduce(snapshot Snapshot, event protocol.Event) (Reduction, error) {
 		State:          cloneState(snapshot.state),
 	}
 	state := snapshot.state
+	if state.Completion != nil {
+		proposal.State.Query = bytes.Clone(event.Query)
+		if handled, err := reduceCompletion(snapshot, &proposal, event); handled || err != nil {
+			return proposalReduction(proposal), err
+		}
+	}
 	switch event.Opcode {
 	case protocol.OpModeInsert:
 		if state.Mode != protocol.ModeNormal {
@@ -268,20 +277,6 @@ func modeEffect(state State, clearQuery bool, restoreGeneration uint64) protocol
 		effect.Cursor = protocol.CursorBlock
 	}
 	return effect
-}
-
-func modePrompt(mode protocol.Mode, addError bool) string {
-	switch mode {
-	case protocol.ModeNormal:
-		return "[N] "
-	case protocol.ModeAdd:
-		if addError {
-			return "[A!] "
-		}
-		return "[A] "
-	default:
-		return "[I] "
-	}
 }
 
 func exactImmediateChild(snapshot Snapshot, query []byte) (candidate.Record, bool) {

@@ -45,12 +45,12 @@ func toggleSource(snapshot Snapshot, proposal *ProposedTransition, event protoco
 		state.AddError = false
 		state.Prompt = modePrompt(state.Mode, false)
 		proposal.Build = &candidate.BuildRequest{
-			Picker: state.ActivePicker(), Source: protocol.SourceIndexed, Location: cloneLocation(state.Location),
+			Picker: state.ActivePicker(), Source: protocol.SourceIndexed, Location: cloneLocation(state.Location), FilesOnly: state.FilesSearch(),
 		}
 		proposal.Effect = protocol.Effect{
 			Mode: state.Mode, Prompt: state.Prompt, Search: "on", Rebind: state.Mode,
 			Query: string(query), SetQuery: true, ClearMulti: true, Cursor: protocol.CursorLine,
-			Header: indexedHeader(state.ActivePicker()),
+			Header: indexedHeader(state.ActivePicker(), state.FilesSearch()),
 		}
 		return nil
 	}
@@ -160,7 +160,10 @@ func savedSelectionPositions(snapshot Snapshot) string {
 	return strings.Join(restored, ",")
 }
 
-func indexedHeader(picker protocol.Picker) string {
+func indexedHeader(picker protocol.Picker, filesOnly bool) string {
+	if filesOnly {
+		return "FSearch · files only"
+	}
 	if picker == protocol.PickerCD {
 		return "FSearch · directories only"
 	}
