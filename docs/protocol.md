@@ -7,9 +7,12 @@ The zoxide source boundary accepts at most 4 MiB total output, 1,000,000 rows, a
 Callbacks have a closed grammar: events are exactly `e:mi`, `e:ma`, `e:es`, `e:fw`, `e:up`, `e:sl`, `e:hm`, `e:en`, `e:rs`, `e:mk`, `e:sf`, `e:fa`, or `e:qy`; `e:sf` toggles the candidate source between the browser and saved FSearch index, `e:fa` forces files-only indexed search, and `e:qy` updates editable-path completion. Mark callbacks use `FZF_CURRENT_ITEM` and update the authoritative per-source cache before fzf's native toggle action. Source switching does not transport or infer marks from fzf's selected-file placeholder. Preview is exactly `p` or the fixed local `p:invalid`; display is exactly `d`; info is exactly `i:cd` or `i:cp`; coordinator-backed loads are `l:<positive decimal generation>:<positive decimal eventID>`, while non-coordinator loads may use `l:<positive decimal generation>`; neither component permits zero, sign, or leading zero. The fixed local `l:empty` is a zero-byte candidate source, and `p:invalid` writes exactly `[Invalid Path]`. Fixed local callbacks accept no query or path arguments and bypass IPC. The local `v:<unpadded URL-safe base64>` callback decodes at most 32 KiB of literal text for fzf query, search, and prompt transforms; decoded text is written as data, never interpreted as shell or action syntax. `FZF_CURRENT_ITEM` carries the selected wire row. The callback parser rejects every other form instead of interpreting shell text.
 
 Candidate source is independent of interaction mode. Browser is the zero
-value for compatibility; indexed identifies entries decoded from the saved
-FSearch 6.0 snapshot. The reader selects `$XDG_DATA_HOME/fsearch/fsearch.db`
-when XDG_DATA_HOME is absolute, otherwise `$HOME/.local/share/fsearch/fsearch.db`.
+value for compatibility; indexed identifies entries read from the platform's
+index. Linux's default indexed source is the live Unearth index, queried in
+strict live-index mode with hidden entries enabled; an unavailable index does
+not trigger a filesystem walk or FSearch fallback. Non-Linux retains the saved
+FSearch 6.0 snapshot and selects `$XDG_DATA_HOME/fsearch/fsearch.db` when
+XDG_DATA_HOME is absolute, otherwise `$HOME/.local/share/fsearch/fsearch.db`.
 Indexed records retain authoritative path bytes; escaped full paths are labels
 only. Search matching uses fzf semantics.
 

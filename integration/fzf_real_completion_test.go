@@ -87,7 +87,7 @@ func TestRealFZFCompletionHomeDeletionReturnsToLaunch(t *testing.T) {
 	waitForTerminalTextAfter(t, term, before, "alpha/")
 	before = len(term.Output())
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 1})
-	waitForTerminalTextAfter(t, term, before, "nvim · Unearth")
+	waitForTerminalTextAfter(t, term, before, "nvim · "+expectedIndexedSourceLabel())
 	before = len(term.Output())
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 2})
 	waitForTerminalTextAfter(t, term, before, "alpha/")

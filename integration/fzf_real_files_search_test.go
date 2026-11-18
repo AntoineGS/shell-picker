@@ -34,7 +34,7 @@ func TestRealFZFForcedFilesSearchFromCD(t *testing.T) {
 	}()
 	waitForTerminalText(t, term, "5/5")
 	sendAndWait(t, term, []byte{0x1b, 0x06}, barrier{Event: "callback.event", Operation: "fa", Count: 1})
-	waitForTerminalText(t, term, "Unearth · files only")
+	waitForTerminalText(t, term, expectedIndexedSourceLabel()+" · files only")
 	waitForTerminalText(t, term, "2/2")
 	for i, name := range []string{"first.txt", "second.txt"} {
 		if i > 0 {
@@ -98,7 +98,7 @@ func TestRealFZFSourceRoundTripRetainsZoxide(t *testing.T) {
 	waitForTerminalText(t, term, "1/5")
 	sendAndWait(t, term, keyCtrlSpace, barrier{Event: "callback.event", Operation: "mk", Count: 1})
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 1})
-	waitForTerminalText(t, term, "Unearth · directories only")
+	waitForTerminalText(t, term, expectedIndexedSourceLabel()+" · directories only")
 	for range len("late-match") {
 		if err := term.Send([]byte{0x7f}); err != nil {
 			t.Fatal(err)

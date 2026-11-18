@@ -92,7 +92,7 @@ func TestInjectedIndexedFrameLimitRejectsBeforeSourceCommit(t *testing.T) {
 	}
 	if result.Snapshot.Generation() != initial.Snapshot.Generation() ||
 		result.Snapshot.State().Source != protocol.SourceBrowser ||
-		result.Effect.Header != "Unearth unavailable — Ctrl+F to retry" {
+		result.Effect.Header != expectedIndexedSourceLabel()+" unavailable — Ctrl+F to retry" {
 		t.Fatalf("oversize transition committed: generation=%d source=%v effect=%+v",
 			result.Snapshot.Generation(), result.Snapshot.State().Source, result.Effect)
 	}

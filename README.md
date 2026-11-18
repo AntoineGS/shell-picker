@@ -37,14 +37,20 @@ shell-picker cp --cwd "$PWD" --home "$HOME" --output nul
 ```
 
 Direct search invocation is `shell-picker search --cwd "$PWD" --home "$HOME" --output nul`.
-It starts with the saved FSearch index, returns selected absolute paths,
-and does not execute a command or perform a copy. It requires a readable
-FSearch 6.0 saved database at `$XDG_DATA_HOME/fsearch/fsearch.db` or
-`$HOME/.local/share/fsearch/fsearch.db`. The index is a snapshot from the last
-FSearch save; changes since that save are not reflected. Search uses fzf's
-matching semantics, not FSearch's query language; its header identifies the
-saved index as `FSearch · saved <timestamp>`. Ctrl+F switches between
-indexed results and the ordinary directory browser in an existing picker.
+It returns selected absolute paths and does not execute a command or perform a
+copy. Linux queries the live Unearth index with `--require-live-index`,
+`--index-binary '*'`, and `--hidden`, so hidden entries covered by the daemon's
+index policy remain searchable. An unavailable or unready live index is an
+error; there is no filesystem-walk or FSearch fallback. Linux's indexed header
+identifies the source as `Unearth`.
+
+Non-Linux platforms continue to use the saved FSearch 6.0 database at
+`$XDG_DATA_HOME/fsearch/fsearch.db` or
+`$HOME/.local/share/fsearch/fsearch.db`. That snapshot reflects the last FSearch
+save and its header identifies it as `FSearch · saved <timestamp>`. Search uses
+fzf's matching semantics rather than FSearch's query language. Ctrl+F switches
+between indexed results and the ordinary directory browser in an existing
+picker.
 
 Ctrl+Shift+F searches files only, even from `cd`, at the Zsh prompt
 or inside the picker. Configure Ghostty with
@@ -77,9 +83,9 @@ nvim src/ma
 [I] src/ma
 ```
 
-Ctrl+F appends the FSearch source label, directory-only filter (when applicable),
-and saved-index timestamp to that header. Switching back restores the command-only
-header.
+Ctrl+F appends the platform's indexed-source label and directory-only filter
+(when applicable); non-Linux FSearch headers also include the saved-index
+timestamp. Switching back restores the command-only header.
 
 The editable input is a path relative to the directory where completion started.
 Typing `~`, `/`, `../`, or `../../..` changes the displayed directory without

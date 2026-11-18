@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/fsearchdb"
 )
@@ -112,7 +113,7 @@ func TestLoadUnearthPassesStrictLiveQueryArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantArgs := "--require-live-index\n--index-binary\n*\n/fixture\n"
+	wantArgs := "--require-live-index\n--index-binary\n*\n--hidden\n/fixture\n"
 	if arguments, err := os.ReadFile(argsPath); err != nil {
 		t.Fatal(err)
 	} else if string(arguments) != wantArgs {
@@ -135,6 +136,61 @@ func TestLoadUnearthHonorsCancellation(t *testing.T) {
 	_, err := loadUnearth(ctx, "/fixture", []string{"PATH=" + bin})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("loadUnearth() error = %v; want context.Canceled", err)
+	}
+}
+
+func TestLoadUnearthCancellationClosesInheritedOutputPipes(t *testing.T) {
+	bin := t.TempDir()
+	startedPath := filepath.Join(bin, "started")
+	path := filepath.Join(bin, "unearth")
+	script := "#!/bin/sh\n" +
+		"/bin/sleep 30 &\n" +
+		"printf started > \"$STARTED\"\n" +
+		"printf '\\003\\000\\000\\000/ok'\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	type result struct {
+		database *fsearchdb.Database
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		database, err := loadUnearth(ctx, "/fixture", []string{
+			"PATH=" + bin, "STARTED=" + startedPath,
+		})
+		done <- result{database: database, err: err}
+	}()
+
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(startedPath); err == nil {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			cancel()
+			t.Fatal("unearth fixture did not start")
+		}
+	}
+	cancel()
+
+	select {
+	case outcome := <-done:
+		if !errors.Is(outcome.err, context.Canceled) {
+			t.Fatalf("load error = %v; want context.Canceled", outcome.err)
+		}
+		if outcome.database != nil {
+			t.Fatalf("canceled load published database: %#v", outcome.database)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("loadUnearth hung after cancellation with inherited stdout/stderr pipes")
 	}
 }
 

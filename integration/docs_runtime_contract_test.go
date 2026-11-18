@@ -193,6 +193,43 @@ func TestDocumentationUsesImmutableInitialGenerationForNonpublishedEnrichment(t 
 	}
 }
 
+func TestIndexedSearchDocumentationDescribesPlatformSourcesAndHiddenEntries(t *testing.T) {
+	requirements := map[string][]string{
+		"README.md": {
+			"Linux queries the live Unearth index",
+			"`--require-live-index`",
+			"`--index-binary '*'`",
+			"`--hidden`",
+			"no filesystem-walk or FSearch fallback",
+			"Non-Linux platforms continue to use the saved FSearch 6.0 database",
+		},
+		"docs/architecture.md": {
+			"Linux invokes Unearth with a strict live-index query and `--hidden`",
+			"Non-Linux platforms retain the saved",
+			"FSearch 6.0 snapshot loader",
+		},
+		"docs/protocol.md": {
+			"Linux's default indexed source is the live Unearth index",
+			"with hidden entries enabled",
+			"Non-Linux retains the saved",
+			"FSearch 6.0 snapshot",
+		},
+		"docs/adapters.md": {
+			"On Linux the indexed source is Unearth's live index, queried with `--hidden`",
+			"Non-Linux platforms",
+			"retain the FSearch snapshot",
+		},
+	}
+	for path, requiredValues := range requirements {
+		document := readDoc(t, path)
+		for _, required := range requiredValues {
+			if !strings.Contains(document, required) {
+				t.Errorf("%s missing indexed-source contract %q", path, required)
+			}
+		}
+	}
+}
+
 func TestDocumentationStatesCurrentRuntimeContracts(t *testing.T) {
 	requirements := map[string][]string{
 		"README.md": {

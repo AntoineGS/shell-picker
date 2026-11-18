@@ -10,17 +10,19 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/fsearchdb"
+	"github.com/AntoineGS/shell-picker/internal/process"
 	"github.com/AntoineGS/shell-picker/internal/sessionipc"
 )
 
 const (
 	unearthMaxRecordBytes = 1 << 20
 	unearthMaxEntries     = 20_000_000
+	unearthWaitDelay      = 2 * time.Second
 )
 
 func loadDefaultIndex(ctx context.Context, root string, environment []string) (*fsearchdb.Database, error) {
@@ -34,23 +36,43 @@ func loadUnearth(ctx context.Context, root string, environment []string) (*fsear
 	if err != nil {
 		return nil, err
 	}
-	command := exec.CommandContext(ctx, executable, "--require-live-index", "--index-binary", "*", root)
-	command.Env = environment
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("unearth stdout: %w", err)
-	}
+	stdout, stdoutWriter := io.Pipe()
 	var stderr limitedBuffer
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
+	child, err := (process.Runner{}).Start(ctx, process.Spec{
+		Path: executable, Args: []string{"--require-live-index", "--index-binary", "*", "--hidden", root},
+		Env: environment, Stdout: stdoutWriter, Stderr: &stderr,
+		Containment: process.ContainmentOwnTree, WaitDelay: unearthWaitDelay,
+	})
+	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		return nil, fmt.Errorf("start unearth: %w", err)
 	}
 
+	finished := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = child.KillTree()
+			_ = stdoutWriter.CloseWithError(context.Cause(ctx))
+		case <-finished:
+		}
+	}()
+	waitResult := make(chan error, 1)
+	go func() {
+		waitErr := child.Wait()
+		_ = stdoutWriter.Close()
+		waitResult <- waitErr
+	}()
 	database, decodeErr := decodeUnearth(stdout)
 	if decodeErr != nil {
-		_ = command.Process.Kill()
+		_ = child.KillTree()
+		_ = stdoutWriter.CloseWithError(decodeErr)
 	}
-	waitErr := command.Wait()
+	waitErr := <-waitResult
+	close(finished)
+	_ = stdout.Close()
+	_ = stdoutWriter.Close()
 	if cause := context.Cause(ctx); cause != nil {
 		return nil, cause
 	}

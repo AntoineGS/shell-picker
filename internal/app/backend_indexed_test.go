@@ -15,7 +15,7 @@ import (
 	"github.com/AntoineGS/shell-picker/internal/session"
 )
 
-func TestCurrentHeaderKeepsUnearthIdentityAcrossResize(t *testing.T) {
+func TestCurrentHeaderKeepsPlatformIndexedIdentityAcrossResize(t *testing.T) {
 	actor := session.New(context.Background(), func(context.Context, candidate.BuildRequest) (candidate.BuildResult, error) {
 		return candidate.BuildResult{}, nil
 	})
@@ -35,7 +35,7 @@ func TestCurrentHeaderKeepsUnearthIdentityAcrossResize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(header, "cp ~/gits · Unearth") || !strings.Contains(header, "2024-01-02T03:04:05Z") {
+	if !strings.HasPrefix(header, "cp ~/gits · "+expectedIndexedSourceLabel()) || !strings.Contains(header, "2024-01-02T03:04:05Z") {
 		t.Fatalf("indexed header = %q", header)
 	}
 }
@@ -76,7 +76,7 @@ func TestCommandHeaderPreservesSourceSwitchStatus(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			searchHeader := command + " · Unearth"
+			searchHeader := command + " · " + expectedIndexedSourceLabel()
 			if picker == protocol.PickerCD {
 				searchHeader += " · directories only"
 			}
@@ -96,7 +96,7 @@ func TestCommandHeaderPreservesSourceSwitchStatus(t *testing.T) {
 			}
 			failIndex = true
 			result, err := backend.HandleEvent(ctx, protocol.Event{Opcode: protocol.OpSourceToggle})
-			want := command + " · Unearth unavailable — Ctrl+F to retry"
+			want := command + " · " + expectedIndexedSourceLabel() + " unavailable — Ctrl+F to retry"
 			if err != nil || result.Header != want {
 				t.Fatalf("failed-search header=%q, want %q; err=%v", result.Header, want, err)
 			}

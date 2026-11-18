@@ -63,7 +63,7 @@ func TestRealFZFSourceSwitchRestoresQueriesAndSourceMarks(t *testing.T) {
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "generation.publish", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 2, Count: 1})
-	waitForTerminalText(t, term, "Unearth")
+	waitForTerminalText(t, term, expectedIndexedSourceLabel())
 	waitForTerminalText(t, term, query)
 
 	// Give the indexed source a different query so the browser's restored
@@ -101,7 +101,7 @@ func TestRealFZFStandaloneSearchAcceptsMultiplePathsAfterFiltering(t *testing.T)
 		indexEnvironment, 120, 35)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
-	waitForTerminalText(t, term, "Unearth")
+	waitForTerminalText(t, term, expectedIndexedSourceLabel())
 
 	for _, name := range []string{"qz-first.txt", "qz-second.txt"} {
 		beforeQuery := len(term.Output())
@@ -191,7 +191,7 @@ func TestRealFZFUnearthDirectorySearchExcludesFiles(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "generation.publish", Generation: 2, Count: 1})
-	waitForTerminalText(t, term, "Unearth · directories only")
+	waitForTerminalText(t, term, expectedIndexedSourceLabel()+" · directories only")
 	waitForTerminalText(t, term, "1/1")
 	if err := term.Send([]byte("indexed-dir")); err != nil {
 		t.Fatal(err)

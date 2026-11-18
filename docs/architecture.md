@@ -5,14 +5,16 @@
 Each session owns one *candidate.Builder, configures it before use, and it must not be copied after first use. Startup is local-first streaming startup: the local generation is published to the input stream first, fzf begins live query filtering, and one asynchronous zoxide source resolves without blocking that publication. Only the initial CD view may admit the source records; an initial-view-only discard leaves the active/base generation unchanged. Its fresh and cached policy and timeout apply only to that source, which overlaps its single attempt with local enumeration; fresh plus timeout zero is authoritative only there. Every later navigation generation is local-only, including a return to the launch path, and reports zoxide_outcome `not-run` with zero zoxide counters. Direct concurrent initial fresh calls remain protected by the shared builder's cancellation-aware permit: a cancelled waiter returns its context cause without factory or attempt. Independent sessions may query concurrently because there is no package-global mutex. By design, CP never invokes zoxide.
 
 Indexed search is a separate candidate source, not an interaction mode. A
-session-local lazy loader decodes one saved FSearch 6.0 snapshot on standalone
+session-local lazy loader reads the platform's indexed source on standalone
 search or the first Ctrl+F source switch, then reuses it for later switches.
-Ordinary cd/cp startup never opens the database. Indexed rows preserve their
-authoritative path bytes and are not statted during generation; cd filters
-out files. A failed or canceled read is retryable and leaves the current
-browser generation published. The database's saved timestamp is shown in the
-FSearch header. The snapshot is only as fresh as FSearch's last save, and
-matching is performed by fzf.
+Linux invokes Unearth with a strict live-index query and `--hidden`, preserving
+the daemon's indexed hidden-entry policy; an unavailable live index does not
+fall back to a filesystem walk or FSearch. Non-Linux platforms retain the saved
+FSearch 6.0 snapshot loader. Ordinary cd/cp startup never loads an index.
+Indexed rows preserve their authoritative path bytes and are not statted during
+generation; cd filters out files. A failed or canceled read is retryable and
+leaves the current browser generation published. Non-Linux FSearch headers show
+the database's saved timestamp. Search matching is performed by fzf.
 The callback transport exposes the focused authenticated record and caches
 mark toggles per source, because fzf's selection-file placeholder contains
 only rows visible under the current query. A nonempty cache is authoritative

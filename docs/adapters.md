@@ -31,9 +31,12 @@ canceling the session still stops the source.
 The Zsh Ctrl+F widget invokes `shell-picker search` outside a picker and
 switches sources inside cd/cp. Standalone search inserts shell-quoted absolute
 paths at the cursor; it does not execute the line or add cp's `--` prefix.
-FSearch data comes from the last saved database snapshot, so recent filesystem
-changes may not be present. Missing, busy, unsupported, or malformed indexes
-are reported without discarding the current command buffer.
+On Linux the indexed source is Unearth's live index, queried with `--hidden` so
+hidden entries covered by the daemon's rules are included. The live-index-only
+query does not fall back to a filesystem walk or FSearch. Non-Linux platforms
+retain the FSearch snapshot, which reflects the last saved database and may not
+include recent filesystem changes. Missing, busy, unsupported, or malformed
+indexes are reported without discarding the current command buffer.
 For safe insertion, the widget declines to launch when the cursor is inside an
 open quote, after a dangling escape, or inside a shell-expansion context;
 `BUFFER` and `CURSOR` remain unchanged in those cases.
@@ -44,8 +47,9 @@ inside a picker, even in `cd`. In Ghostty, use
 which also works directly. Accepting this forced search inserts quoted absolute
 paths without executing the command. Ctrl+F returns to the saved browser view,
 including its query, marks, and any zoxide entries already received.
-The files-only header includes `FSearch · files only`; directories are excluded
-from the candidate set. The Zsh shortcut uses `search --search-scope files`;
+The files-only header identifies the platform's indexed source and adds
+`files only`; directories are excluded from the candidate set. The Zsh shortcut
+uses `search --search-scope files`;
 ordinary Ctrl+F retains its context-sensitive behavior, and `search --search-scope
 all` includes both files and directories.
 Ctrl+H and Left both go to the parent in browser Insert and Normal modes.

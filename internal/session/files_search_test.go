@@ -46,7 +46,7 @@ func TestHandleForcedFilesSearchFromCDPreservesBrowserAndAcceptsFiles(t *testing
 		t.Fatal(err)
 	}
 	if result.Snapshot.RecordCount() != 1 || result.Snapshot.State().Source != protocol.SourceIndexed ||
-		result.Effect.Header != "Unearth · files only" {
+		result.Effect.Header != expectedIndexedSourceLabel()+" · files only" {
 		t.Fatalf("forced files search=%+v", result)
 	}
 	for _, record := range []candidate.Record{file} {
