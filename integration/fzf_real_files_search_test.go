@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AntoineGS/shell-picker/internal/protocol"
@@ -13,14 +14,12 @@ import (
 
 func TestRealFZFForcedFilesSearchFromCD(t *testing.T) {
 	fixture := newRealFZFFixture(t, requireRealFZF(t), "forced files search")
-	databaseDir := filepath.Join(fixture.root, "xdg", "fsearch")
-	if err := os.MkdirAll(databaseDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	writeSyntheticFSearchDB(t, filepath.Join(databaseDir, "fsearch.db"), fixture.cwd,
-		[]string{"first.txt", "second.txt"})
+	indexEnvironment := fixture.indexFixture(t, []indexedFixtureRecord{
+		{path: []byte(filepath.Join(fixture.cwd, "first.txt"))},
+		{path: []byte(filepath.Join(fixture.cwd, "second.txt"))},
+	})
 	term := fixture.startSized(t, protocol.PickerCD,
-		[]string{"XDG_DATA_HOME=" + filepath.Join(fixture.root, "xdg")}, 120, 35)
+		indexEnvironment, 120, 35)
 	defer term.Close()
 	defer func() {
 		if t.Failed() {
@@ -35,7 +34,7 @@ func TestRealFZFForcedFilesSearchFromCD(t *testing.T) {
 	}()
 	waitForTerminalText(t, term, "5/5")
 	sendAndWait(t, term, []byte{0x1b, 0x06}, barrier{Event: "callback.event", Operation: "fa", Count: 1})
-	waitForTerminalText(t, term, "FSearch · files only · saved ")
+	waitForTerminalText(t, term, "Unearth · files only")
 	waitForTerminalText(t, term, "2/2")
 	for i, name := range []string{"first.txt", "second.txt"} {
 		if i > 0 {
@@ -72,20 +71,25 @@ func TestRealFZFForcedFilesSearchFromCD(t *testing.T) {
 
 func TestRealFZFSourceRoundTripRetainsZoxide(t *testing.T) {
 	fixture := newRealZoxideFixture(t, requireRealFZF(t))
-	databaseDir := filepath.Join(fixture.root, "xdg", "fsearch")
-	if err := os.MkdirAll(databaseDir, 0o700); err != nil {
-		t.Fatal(err)
+	indexEnvironment := fixture.indexFixture(t, nil)
+	var indexPath string
+	var indexVariables []string
+	for _, entry := range indexEnvironment {
+		if key, value, ok := strings.Cut(entry, "="); ok && key == "PATH" {
+			indexPath = value
+		} else {
+			indexVariables = append(indexVariables, entry)
+		}
 	}
-	writeSyntheticFSearchDB(t, filepath.Join(databaseDir, "fsearch.db"), fixture.cwd, nil)
 	fixture.Release(t)
-	term := fixture.startSizedWithZoxideTimeout(t, protocol.PickerCD, []string{
-		"XDG_DATA_HOME=" + filepath.Join(fixture.root, "xdg"),
-		"PATH=" + fixture.tools + string(os.PathListSeparator) + os.Getenv("PATH"),
+	environment := append([]string{
+		"PATH=" + fixture.tools + string(os.PathListSeparator) + indexPath,
 		parityHelperEnvironment + "=" + realZoxideHelperMode,
 		realZoxideStartedEnvironment + "=" + fixture.started,
 		realZoxideReleaseEnvironment + "=" + fixture.release,
 		realZoxideRootEnvironment + "=" + fixture.home,
-	}, 120, 35, "0")
+	}, indexVariables...)
+	term := fixture.startSizedWithZoxideTimeout(t, protocol.PickerCD, environment, 120, 35, "0")
 	defer term.Close()
 	waitForTerminalText(t, term, "5/5")
 	if err := term.Send([]byte("late-match")); err != nil {
@@ -94,7 +98,7 @@ func TestRealFZFSourceRoundTripRetainsZoxide(t *testing.T) {
 	waitForTerminalText(t, term, "1/5")
 	sendAndWait(t, term, keyCtrlSpace, barrier{Event: "callback.event", Operation: "mk", Count: 1})
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 1})
-	waitForTerminalText(t, term, "FSearch · directories only")
+	waitForTerminalText(t, term, "Unearth · directories only")
 	for range len("late-match") {
 		if err := term.Send([]byte{0x7f}); err != nil {
 			t.Fatal(err)

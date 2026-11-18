@@ -41,7 +41,7 @@ func Handle(ctx context.Context, actor *Actor, event protocol.Event) (Transition
 		sourceEvent := event.Opcode == protocol.OpSourceToggle || event.Opcode == protocol.OpFilesSearch
 		if applyErr != nil && sourceEvent && context.Cause(ctx) == nil {
 			return TransitionResult{Snapshot: snapshot, Effect: protocol.Effect{
-				Header: "FSearch unavailable — Ctrl+F to retry", ErrorPrompt: true,
+				Header: indexedSourceName() + " unavailable — Ctrl+F to retry", ErrorPrompt: true,
 			}}, nil
 		}
 		if applyErr == nil && sourceEvent {

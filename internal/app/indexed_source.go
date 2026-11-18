@@ -22,9 +22,10 @@ type IndexLoader func(context.Context, string) (*fsearchdb.Database, error)
 // indexedSource owns one decoded saved database for the lifetime of a picker
 // session. Failed and canceled attempts are intentionally not cached.
 type indexedSource struct {
-	home   string
-	lookup func(string) string
-	loader IndexLoader
+	home        string
+	environment []string
+	lookup      func(string) string
+	loader      IndexLoader
 
 	mu            sync.Mutex
 	database      *fsearchdb.Database
@@ -40,7 +41,8 @@ func newIndexedSource(home string, environment []string, loader IndexLoader) *in
 		}
 	}
 	return &indexedSource{
-		home: home,
+		home:        home,
+		environment: append([]string(nil), environment...),
 		lookup: func(key string) string {
 			if value, ok := values[key]; ok {
 				return value
@@ -73,12 +75,14 @@ func (source *indexedSource) load(ctx context.Context) (*fsearchdb.Database, err
 		source.loading = waiting
 		source.mu.Unlock()
 
-		path := fsearchdb.DefaultPath(source.home, source.lookup)
-		loader := source.loader
-		if loader == nil {
-			loader = fsearchdb.Load
+		var database *fsearchdb.Database
+		var err error
+		if source.loader != nil {
+			path := fsearchdb.DefaultPath(source.home, source.lookup)
+			database, err = source.loader(ctx, path)
+		} else {
+			database, err = loadDefaultIndex(ctx, source.home, source.environment)
 		}
-		database, err := loader(ctx, path)
 		if cause := context.Cause(ctx); cause != nil {
 			database = nil
 			err = cause
@@ -88,7 +92,7 @@ func (source *indexedSource) load(ctx context.Context) (*fsearchdb.Database, err
 		if err == nil && database != nil {
 			source.database = database
 		} else if err == nil {
-			err = errors.New("FSearch database loader returned nil")
+			err = errors.New("indexed source loader returned nil")
 		}
 		source.loading = nil
 		close(waiting)
@@ -107,7 +111,7 @@ func (source *indexedSource) build(ctx context.Context, request candidate.BuildR
 		return candidate.BuildResult{}, err
 	}
 	if size, exceeded := indexedFrameSizeExceeds(records, source.maxFrameBytes); exceeded {
-		return candidate.BuildResult{}, fmt.Errorf("FSearch candidate set (%d bytes) exceeds the %d-byte reload limit",
+		return candidate.BuildResult{}, fmt.Errorf("indexed candidate set (%d bytes) exceeds the %d-byte reload limit",
 			size, source.maxFrameBytes)
 	}
 	return candidate.BuildResult{Records: records}, nil
@@ -134,7 +138,7 @@ func (source *indexedSource) header(picker protocol.Picker, filesOnly bool) stri
 	source.mu.Lock()
 	database := source.database
 	source.mu.Unlock()
-	label := "FSearch"
+	label := indexedSourceName()
 	if filesOnly {
 		label += " · files only"
 	} else if picker == protocol.PickerCD {

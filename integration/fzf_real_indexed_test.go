@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -21,14 +22,13 @@ func TestRealFZFSourceSwitchRestoresQueriesAndSourceMarks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	databaseDir := filepath.Join(fixture.root, "xdg", "fsearch")
-	if err := os.MkdirAll(databaseDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	writeSyntheticFSearchDB(t, filepath.Join(databaseDir, "fsearch.db"), fixture.cwd, []string{"alpha.txt", "beta.txt", "index-only.txt"})
+	indexEnvironment := fixture.indexFixture(t, []indexedFixtureRecord{
+		{path: []byte(alpha)}, {path: []byte(beta)},
+		{path: []byte(filepath.Join(fixture.cwd, "index-only.txt"))},
+	})
 
 	term := fixture.startSized(t, protocol.PickerCP,
-		[]string{"XDG_DATA_HOME=" + filepath.Join(fixture.root, "xdg")}, 120, 35)
+		indexEnvironment, 120, 35)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 
@@ -63,7 +63,7 @@ func TestRealFZFSourceSwitchRestoresQueriesAndSourceMarks(t *testing.T) {
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "generation.publish", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 2, Count: 1})
-	waitForTerminalText(t, term, "FSearch · saved ")
+	waitForTerminalText(t, term, "Unearth")
 	waitForTerminalText(t, term, query)
 
 	// Give the indexed source a different query so the browser's restored
@@ -92,18 +92,16 @@ func TestRealFZFSourceSwitchRestoresQueriesAndSourceMarks(t *testing.T) {
 func TestRealFZFStandaloneSearchAcceptsMultiplePathsAfterFiltering(t *testing.T) {
 	fzfPath := requireRealFZF(t)
 	fixture := newRealFZFFixture(t, fzfPath, "standalone indexed search")
-	databaseDir := filepath.Join(fixture.root, "xdg", "fsearch")
-	if err := os.MkdirAll(databaseDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	writeSyntheticFSearchDB(t, filepath.Join(databaseDir, "fsearch.db"), fixture.cwd,
-		[]string{"qz-first.txt", "qz-second.txt"})
+	indexEnvironment := fixture.indexFixture(t, []indexedFixtureRecord{
+		{path: []byte(filepath.Join(fixture.cwd, "qz-first.txt"))},
+		{path: []byte(filepath.Join(fixture.cwd, "qz-second.txt"))},
+	})
 
 	term := fixture.startSized(t, protocol.PickerSearch,
-		[]string{"XDG_DATA_HOME=" + filepath.Join(fixture.root, "xdg")}, 120, 35)
+		indexEnvironment, 120, 35)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
-	waitForTerminalText(t, term, "FSearch")
+	waitForTerminalText(t, term, "Unearth")
 
 	for _, name := range []string{"qz-first.txt", "qz-second.txt"} {
 		beforeQuery := len(term.Output())
@@ -152,6 +150,104 @@ func TestRealFZFStandaloneSearchAcceptsMultiplePathsAfterFiltering(t *testing.T)
 			err, term.TraceEvents(), term.Output())
 	}
 	fixture.AssertAccepted(t, term, filepath.Join(fixture.cwd, "qz-first.txt"))
+}
+
+func TestRealFZFUnearthPreservesInvalidUTF8AndNewlineSelectionBytes(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Unearth is the Linux indexed source")
+	}
+	fixture := newRealFZFFixture(t, requireRealFZF(t), "unearth raw byte selection")
+	path := append([]byte(fixture.cwd+string(os.PathSeparator)+"file-"), 0xff, '\n')
+	path = append(path, []byte(".txt")...)
+	term := fixture.startSized(t, protocol.PickerSearch, fixture.indexFixture(t, []indexedFixtureRecord{{path: path}}), 120, 35)
+	defer term.Close()
+	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+	display := protocol.EscapeDisplay(path)
+	waitForTerminalText(t, term, display)
+	if err := term.Send(keyEnter); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Wait(testContext(t)); err != nil {
+		t.Fatalf("wait for raw-byte selection: %v; events=%+v; output=%q; result=% x",
+			err, term.TraceEvents(), visibleTerminalOutput(term.Output()), term.ResultBytes())
+	}
+	want := append(bytes.Clone(path), 0)
+	if got := term.ResultBytes(); !bytes.Equal(got, want) {
+		t.Fatalf("selected bytes = %q (% x); want %q (% x)", got, got, want, want)
+	}
+}
+
+func TestRealFZFUnearthDirectorySearchExcludesFiles(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Unearth is the Linux indexed source")
+	}
+	fixture := newRealFZFFixture(t, requireRealFZF(t), "unearth directory filtering")
+	directory := filepath.Join(fixture.cwd, "indexed-dir")
+	term := fixture.startSized(t, protocol.PickerCD, fixture.indexFixture(t, []indexedFixtureRecord{
+		{path: []byte(directory + string(os.PathSeparator))},
+		{path: []byte(filepath.Join(fixture.cwd, "indexed-file"))},
+	}), 120, 35)
+	defer term.Close()
+	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
+
+	sendAndWait(t, term, []byte{0x06}, barrier{Event: "generation.publish", Generation: 2, Count: 1})
+	waitForTerminalText(t, term, "Unearth · directories only")
+	waitForTerminalText(t, term, "1/1")
+	if err := term.Send([]byte("indexed-dir")); err != nil {
+		t.Fatal(err)
+	}
+	waitForTerminalText(t, term, "1/1")
+	if err := term.Send(keyEnter); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Wait(testContext(t)); err != nil {
+		t.Fatal(err)
+	}
+	fixture.AssertAccepted(t, term, directory)
+}
+
+type indexedFixtureRecord struct {
+	path []byte
+}
+
+func (fixture *realFZFFixture) indexFixture(t *testing.T, records []indexedFixtureRecord) []string {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		names := make([]string, 0, len(records))
+		for _, record := range records {
+			names = append(names, filepath.Base(string(record.path)))
+		}
+		databaseDir := filepath.Join(fixture.root, "xdg", "fsearch")
+		if err := os.MkdirAll(databaseDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeSyntheticFSearchDB(t, filepath.Join(databaseDir, "fsearch.db"), fixture.cwd, names)
+		return []string{"XDG_DATA_HOME=" + filepath.Join(fixture.root, "xdg")}
+	}
+
+	bin := filepath.Join(fixture.root, "unearth-bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	streamPath := filepath.Join(fixture.root, "unearth-records")
+	var stream bytes.Buffer
+	for _, record := range records {
+		if err := binary.Write(&stream, binary.LittleEndian, uint32(len(record.path))); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = stream.Write(record.path)
+	}
+	if err := os.WriteFile(streamPath, stream.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := []byte("#!/bin/sh\nexec /bin/cat \"$SHELL_PICKER_UNEARTH_RECORDS\"\n")
+	if err := os.WriteFile(filepath.Join(bin, "unearth"), script, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return []string{
+		"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"SHELL_PICKER_UNEARTH_RECORDS=" + streamPath,
+	}
 }
 
 func TestRealFZFCDSpaceUsesAuthoritativeMarkedDirectory(t *testing.T) {

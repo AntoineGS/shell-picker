@@ -9,14 +9,17 @@ import (
 	"testing"
 )
 
-func startCompletion(t *testing.T, fixture *realFZFFixture, query, display string, columns, lines uint16) terminalSession {
+func startCompletion(t *testing.T, fixture *realFZFFixture, query, display string, columns, lines uint16,
+	extraEnvironment ...string) terminalSession {
 	t.Helper()
+	environment := replaceEnvironment(os.Environ(), "TERM=xterm-256color", "_ZO_DATA_DIR="+fixture.home,
+		"XDG_DATA_HOME="+filepath.Join(fixture.home, ".local", "share"))
+	environment = replaceEnvironment(environment, extraEnvironment...)
 	return newTerminalSession(t, terminalConfig{
 		Path: fixture.picker, Directory: fixture.cwd, Columns: columns, Lines: lines,
 		Args: []string{"cp", "--cwd", fixture.cwd, "--home", fixture.home, "--fzf", fixture.fzf,
 			"--completion", query, "--command-line", "nvim ", "--display", display},
-		Environment: replaceEnvironment(os.Environ(), "TERM=xterm-256color", "_ZO_DATA_DIR="+fixture.home,
-			"XDG_DATA_HOME="+filepath.Join(fixture.home, ".local", "share")),
+		Environment: environment,
 	})
 }
 
@@ -69,15 +72,11 @@ func TestRealFZFCompletionEditablePaths(t *testing.T) {
 
 func TestRealFZFCompletionHomeDeletionReturnsToLaunch(t *testing.T) {
 	fixture := newRealFZFFixture(t, requireRealFZF(t), "completion home")
-	databaseDir := filepath.Join(fixture.home, ".local", "share", "fsearch")
-	if err := os.MkdirAll(databaseDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	writeSyntheticFSearchDB(t, filepath.Join(databaseDir, "fsearch.db"), fixture.cwd, nil)
+	indexEnvironment := fixture.indexFixture(t, nil)
 	if err := os.WriteFile(filepath.Join(fixture.home, "home-only"), []byte("HOME-PREVIEW"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	term := startCompletion(t, fixture, "", "fullscreen", 160, 40)
+	term := startCompletion(t, fixture, "", "fullscreen", 160, 40, indexEnvironment...)
 	defer term.Close()
 	waitForTerminalText(t, term, "[I]")
 	before := len(term.Output())
@@ -88,7 +87,7 @@ func TestRealFZFCompletionHomeDeletionReturnsToLaunch(t *testing.T) {
 	waitForTerminalTextAfter(t, term, before, "alpha/")
 	before = len(term.Output())
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 1})
-	waitForTerminalTextAfter(t, term, before, "nvim · FSearch · saved ")
+	waitForTerminalTextAfter(t, term, before, "nvim · Unearth")
 	before = len(term.Output())
 	sendAndWait(t, term, []byte{0x06}, barrier{Event: "callback.event", Operation: "sf", Count: 2})
 	waitForTerminalTextAfter(t, term, before, "alpha/")

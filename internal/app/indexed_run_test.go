@@ -53,12 +53,12 @@ func TestStandaloneSearchLoadsIndexAndReturnsAbsolutePaths(t *testing.T) {
 	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
 		foundHeader := false
 		for _, option := range config.Options {
-			if strings.HasPrefix(option, "--header=") && strings.Contains(option, "FSearch") {
+			if strings.HasPrefix(option, "--header=") && strings.Contains(option, "Unearth") {
 				foundHeader = true
 			}
 		}
 		if !foundHeader {
-			t.Fatalf("search header does not identify FSearch: %q", config.Options)
+			t.Fatalf("search header does not identify Unearth: %q", config.Options)
 		}
 		framed, err := io.ReadAll(config.Input)
 		if err != nil {
@@ -113,7 +113,7 @@ func TestStandaloneFilesOnlySearchFiltersFolders(t *testing.T) {
 		}}, nil
 	}
 	fixture.dependencies.launchFZF = func(_ context.Context, config fzf.Config) (fzf.Result, error) {
-		if !contains(config.Options, "--header=nvim · FSearch · files only") {
+		if !contains(config.Options, "--header=nvim · Unearth · files only") {
 			t.Fatalf("missing files-only header: %q", config.Options)
 		}
 		framed, err := io.ReadAll(config.Input)

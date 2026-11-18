@@ -406,7 +406,7 @@ func TestFailedIndexedSwitchLeavesBrowserUsableForRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Effect.Header != "FSearch unavailable — Ctrl+F to retry" || !result.Effect.ErrorPrompt ||
+	if result.Effect.Header != "Unearth unavailable — Ctrl+F to retry" || !result.Effect.ErrorPrompt ||
 		result.Effect.ReloadGeneration != 0 || result.Snapshot.State().Source != protocol.SourceBrowser ||
 		result.Snapshot.Generation() != initial.Snapshot.Generation() {
 		t.Fatalf("failed transition result = %+v", result)

@@ -161,11 +161,12 @@ func savedSelectionPositions(snapshot Snapshot) string {
 }
 
 func indexedHeader(picker protocol.Picker, filesOnly bool) string {
+	source := indexedSourceName()
 	if filesOnly {
-		return "FSearch · files only"
+		return source + " · files only"
 	}
 	if picker == protocol.PickerCD {
-		return "FSearch · directories only"
+		return source + " · directories only"
 	}
-	return "FSearch"
+	return source
 }
