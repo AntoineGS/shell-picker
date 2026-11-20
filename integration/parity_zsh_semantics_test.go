@@ -105,7 +105,8 @@ func runZshSemantic(t *testing.T, row parityRow, picker protocol.Picker) {
 		assertParityText(t, row, boolText(err == nil && sameParityLocation(result.Snapshot.State().Location, pathutil.Root()) &&
 			bytes.Equal(snapshot.State().Location.Path, []byte(evidence.CWD))))
 	case "escape-callback":
-		assertParityText(t, row, boolText(strings.Contains(joined, "transform(e:"+string(protocol.OpEscape)+")")))
+		// The insert-only trial replaces the legacy Escape callback with a native abort.
+		assertParityText(t, row, boolText(containsString(options, "--bind=esc:cancel+abort")))
 	case "enter-callback":
 		assertParityText(t, row, boolText(strings.Contains(joined, "transform(e:"+string(protocol.OpEnter)+")")))
 	case "slash-callback":
@@ -347,7 +348,7 @@ func runZshBindingSemantic(t *testing.T, row parityRow) {
 	case "binds-add":
 		assertParityText(t, row, boolText(strings.Contains(options, "transform(e:"+string(protocol.OpModeAdd)+")")))
 	case "binds-escape":
-		assertParityText(t, row, boolText(strings.Contains(options, "transform(e:"+string(protocol.OpEscape)+")")))
+		assertParityText(t, row, boolText(containsString(generated, "--bind=esc:cancel+abort")))
 	case "forward-transform-count":
 		assertParityText(t, row, strconv.Itoa(strings.Count(options, "transform(e:"+string(protocol.OpForward)+")")))
 	case "parent-transform-count":

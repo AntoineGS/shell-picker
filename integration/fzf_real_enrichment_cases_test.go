@@ -188,18 +188,9 @@ func TestRealFZFNavigationDiscardsBlockedEnrichment(t *testing.T) {
 	if returnGeneration.CandidateCount != 3 {
 		t.Fatalf("return generation=%+v", returnGeneration)
 	}
-	loadBeforeEscape := traceCountGeneration(term.TraceEvents(), "callback.load", 3)
-	beforeNormal := len(term.Output())
 	if err := term.Send(keyEsc); err != nil {
 		t.Fatal(err)
 	}
-	term.WaitBarrier(testContext(t), barrier{Event: "callback.event", Operation: "es", Count: 1})
-	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 3, Count: loadBeforeEscape + 1})
-	waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
-	if err := term.Send(keyEsc); err != nil {
-		t.Fatal(err)
-	}
-	term.WaitBarrier(testContext(t), barrier{Event: "callback.event", Operation: "es", Count: 2})
 	waitForTerminalText(t, term, promptReturnSentinel)
 	waitErr := term.Wait(testContext(t))
 	closed := term.WaitBarrier(testContext(t), barrier{Event: "session.close", Count: 1})
@@ -214,13 +205,9 @@ func TestRealFZFAbortCancelsBlockedEnrichment(t *testing.T) {
 	term, identity := fixture.StartBlockedCD(t, true, "local-visible")
 	tracked := term.TrackLiveDescendants(t)
 
-	beforeNormal := len(term.Output())
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
 	if err := term.Send(keyEsc); err != nil {
 		t.Fatal(err)
 	}
-	term.WaitBarrier(testContext(t), barrier{Event: "callback.event", Operation: "es", Count: 2})
 	waitForTerminalText(t, term, promptReturnSentinel)
 	waitErr := term.Wait(testContext(t))
 	closed := term.WaitBarrier(testContext(t), barrier{Event: "session.close", Count: 1})

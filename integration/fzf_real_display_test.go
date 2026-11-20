@@ -133,32 +133,6 @@ func TestRealFZFTwoLineDisplayAndConditionalSelectionInfo(t *testing.T) {
 			t.Fatalf("post-resize header tail %q is not longer than side-by-side tail %q", longerRetainedHeaderTail, sideBySideHeaderTail)
 		}
 
-		retainedPathTail := "rightmost-location" + string(os.PathSeparator)
-		beforeNormal := len(term.Output())
-		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
-		assertModePathSeparated(t, term, beforeNormal, "[N] ", fixture.cwd, retainedPathTail)
-		beforeAdd := len(term.Output())
-		sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeAdd, "[A]")
-		assertModePathSeparated(t, term, beforeAdd, "[A] ", fixture.cwd, retainedPathTail)
-		if err := term.Send([]byte("../invalid")); err != nil {
-			t.Fatal(err)
-		}
-		beforeAddError := len(term.Output())
-		sendAndWait(t, term, keyEnter, barrier{Event: "callback.event", Operation: "en", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeAddError, "[A!]")
-		assertModePathSeparated(t, term, beforeAddError, "[A!] ", fixture.cwd, retainedPathTail)
-		beforeNormal = len(term.Output())
-		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
-		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
-		beforeInsert := len(term.Output())
-		sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeInsert, "[I]")
-		assertModePathSeparated(t, term, beforeInsert, "[I] ", fixture.cwd, retainedPathTail)
-		beforeNormal = len(term.Output())
-		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
-		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
 		beforeNavigation := len(term.Output())
 		sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 2, Count: 1})
 		waitForTerminalTextAfter(t, term, beforeNavigation, "header-prefix-")
@@ -241,28 +215,22 @@ func assertRealFZFSelectionInfo(t *testing.T, fixture *realFZFFixture, picker pr
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	waitForTerminalText(t, term, "3/3")
-	beforeNormal := len(term.Output())
-	loadCount := traceCountGeneration(term.TraceEvents(), "callback.load", 1)
-	finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
-	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 1, Count: loadCount + 1})
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
 	if bytes.Contains(visibleTerminalOutput(term.Output()), []byte("(0)")) {
 		t.Fatalf("zero selection count rendered: %q", term.Output())
 	}
-	beforeSelection := len(term.Output())
-	if err := term.Send(keySpace); err != nil {
+	// Mark the selected, real directory rather than the synthetic current row.
+	beforeFilter := len(term.Output())
+	if err := term.Send([]byte("alpha")); err != nil {
 		t.Fatal(err)
 	}
+	waitForTerminalTextAfter(t, term, beforeFilter, "1/3")
+	beforeSelection := len(term.Output())
+	sendAndWait(t, term, keyCtrlSpace, barrier{Event: "callback.event", Operation: "mk", Count: 1})
 	if wantSelected {
 		waitForTerminalTextAfter(t, term, beforeSelection, "(1)")
 	} else {
 		term.WaitOutputAfter(testContext(t), beforeSelection)
 	}
-	beforeInsert := len(term.Output())
-	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
-	waitForTerminalTextAfter(t, term, beforeInsert, "[I]")
 	output := term.Output()
 	selectedOutput := visibleTerminalOutput(output[beforeSelection:])
 	if bytes.Contains(selectedOutput, []byte("(0)")) {

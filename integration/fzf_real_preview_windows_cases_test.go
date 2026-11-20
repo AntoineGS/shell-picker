@@ -194,9 +194,7 @@ func TestRealFZFPreviewReplacementKillsWholeTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: 1})
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalText(t, term, "[N]")
-	if err := term.Send([]byte("q")); err != nil {
+	if err := term.Send(keyEsc); err != nil {
 		t.Fatal(err)
 	}
 	if err := term.Wait(testContext(t)); err != nil {

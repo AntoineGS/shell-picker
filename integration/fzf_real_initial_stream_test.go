@@ -167,7 +167,9 @@ func TestRealFZFInitialUnearthEscapeBeforeFirstRowReapsSource(t *testing.T) {
 	if err := waitForPath(t, readyPath, true, 3*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	if err := term.Send(keyEsc); err != nil {
+		t.Fatal(err)
+	}
 	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatalf("wait for Escape cancellation: %v; events=%+v", err, term.TraceEvents())
 	}
@@ -192,7 +194,9 @@ func TestRealFZFInitialUnearthEscapeDuringBlockedTailReapsSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForTerminalText(t, term, "cancel-hit.txt")
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
+	if err := term.Send(keyEsc); err != nil {
+		t.Fatal(err)
+	}
 	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatalf("wait for blocked-tail cancellation: %v; events=%+v",
 			err, term.TraceEvents())
@@ -266,8 +270,9 @@ func TestRealFZFInitialUnearthEmptySuccessLoadsNormally(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForTerminalTextAfter(t, term, beforeRelease, expectedIndexedSourceLabel())
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
+	if err := term.Send(keyEsc); err != nil {
+		t.Fatal(err)
+	}
 	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatalf("empty successful stream failed: %v; events=%+v",
 			err, term.TraceEvents())

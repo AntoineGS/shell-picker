@@ -254,36 +254,28 @@ func (fixture *realFZFFixture) indexFixture(t *testing.T, records []indexedFixtu
 	}
 }
 
-func TestRealFZFCDSpaceUsesAuthoritativeMarkedDirectory(t *testing.T) {
+func TestRealFZFCDCtrlSpaceUsesAuthoritativeMarkedDirectory(t *testing.T) {
 	fixture := newRealFZFFixture(t, requireRealFZF(t), "cd authoritative selection")
 	term := fixture.Start(t, protocol.PickerCD)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 
-	beforeQuery := len(term.Output())
-	if err := term.Send([]byte("alpha")); err != nil {
-		t.Fatal(err)
-	}
-	waitForTerminalTextAfter(t, term, beforeQuery, "[I] alpha")
-	waitForTerminalTextAfter(t, term, beforeQuery, "1/5")
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalText(t, term, "[N]")
-	// Normal mode disables filtering; from the top entries (. and ..), alpha
-	// is row 3 and visible is row 4 in the sorted browser list.
+	waitForTerminalText(t, term, "5/5")
+	// From the top entries (. and ..), alpha is row 3 and visible is row 4.
 	for range 2 {
 		if err := term.Send(keyDown); err != nil {
 			t.Fatal(err)
 		}
 	}
-	sendAndWait(t, term, keySpace, barrier{Event: "callback.event", Operation: "mk", Count: 1})
+	sendAndWait(t, term, keyCtrlSpace, barrier{Event: "callback.event", Operation: "mk", Count: 1})
 	if err := term.Send(keyDown); err != nil {
 		t.Fatal(err)
 	}
-	sendAndWait(t, term, keySpace, barrier{Event: "callback.event", Operation: "mk", Count: 2})
+	sendAndWait(t, term, keyCtrlSpace, barrier{Event: "callback.event", Operation: "mk", Count: 2})
 	// Unmark the replacement and accept with an empty authoritative cache.
 	// If native --multi=1 still holds alpha, fzf outputs alpha instead of the
 	// focused visible row.
-	sendAndWait(t, term, keySpace, barrier{Event: "callback.event", Operation: "mk", Count: 3})
+	sendAndWait(t, term, keyCtrlSpace, barrier{Event: "callback.event", Operation: "mk", Count: 3})
 	sendAndWait(t, term, keyEnter, barrier{Event: "callback.event", Operation: "en", Count: 1})
 	if err := term.Wait(testContext(t)); err != nil {
 		t.Fatalf("wait for cd acceptance: %v; events=%+v; output=%q",

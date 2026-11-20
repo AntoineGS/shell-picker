@@ -50,16 +50,8 @@ func TestRealFZFCompletionEditablePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitForTerminalText(t, term, "COMPLETION-PREVIEW")
-			if err := term.Send([]byte{27}); err != nil {
-				t.Fatal(err)
-			}
-			waitForTerminalText(t, term, "[N] alpha/doc")
-			beforeInsert := len(term.Output())
-			if err := term.Send([]byte("i")); err != nil {
-				t.Fatal(err)
-			}
-			waitForTerminalTextAfter(t, term, beforeInsert, "[I] alpha/doc")
-			if err := term.Send([]byte{13}); err != nil {
+			waitForTerminalText(t, term, "[I] alpha/doc")
+			if err := term.Send(keyEnter); err != nil {
 				t.Fatal(err)
 			}
 			if err := term.Wait(testContext(t)); err != nil {

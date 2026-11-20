@@ -275,44 +275,36 @@ func sendAndWait(t *testing.T, term terminalSession, input []byte, wanted barrie
 	return term.WaitBarrier(testContext(t), wanted)
 }
 
-func TestRealFZFInteractiveModesReloadAddAccept(t *testing.T) {
+func TestRealFZFInteractiveReloadAndAccept(t *testing.T) {
 	fixture := newRealFZFFixture(t, requireRealFZF(t), "directory with spaces")
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	term.AssertProcessTopology(t)
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalText(t, term, "[N]")
-	sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
-	waitForTerminalText(t, term, "[A]")
-	if err := term.Send([]byte("created-dir")); err != nil {
-		t.Fatal(err)
-	}
-	sendAndWait(t, term, keyEnter, barrier{Event: "generation.publish", Generation: 2, Count: 1})
+	beforeChild := len(term.Output())
+	sendAndWait(t, term, []byte("alpha/"), barrier{Event: "generation.publish", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: 2})
-	waitForTerminalText(t, term, "created-dir"+string(os.PathSeparator))
+	waitForTerminalTextAfter(t, term, beforeChild, "2/2")
 	beforeParent := len(term.Output())
-	sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 3, Count: 1})
+	sendAndWait(t, term, []byte{0x08}, barrier{Event: "generation.publish", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 3})
 	waitForTerminalTextAfter(t, term, beforeParent, protocol.EscapeDisplay([]byte(filepath.Base(fixture.cwd)))+string(os.PathSeparator))
-	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
-	waitForTerminalTextAfter(t, term, beforeParent, "[I]")
+	waitForTerminalTextAfter(t, term, beforeParent, "5/5")
 	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("visiblex")); err != nil {
 		t.Fatal(err)
 	}
-	waitForTerminalTextAfter(t, term, beforeQuery, "[I] visiblex")
-	waitForTerminalTextAfter(t, term, beforeQuery, "0/6")
+	waitForTerminalTextAfter(t, term, beforeQuery, "visiblex")
+	waitForTerminalTextAfter(t, term, beforeQuery, "0/5")
 	beforeFinalQuery := len(term.Output())
 	if err := term.Send([]byte{0x7f}); err != nil {
 		t.Fatal(err)
 	}
-	waitForTerminalTextAfter(t, term, beforeFinalQuery, "[I] visible")
-	waitForTerminalTextAfter(t, term, beforeFinalQuery, "1/6")
+	waitForTerminalTextAfter(t, term, beforeFinalQuery, "1/5")
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
@@ -334,9 +326,8 @@ func TestRealFZFInteractiveAbort(t *testing.T) {
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 	term.AssertProcessTopology(t)
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalText(t, term, "[N]")
-	if err := term.Send([]byte("q")); err != nil {
+	waitForTerminalText(t, term, "[I]")
+	if err := term.Send(keyEsc); err != nil {
 		t.Fatal(err)
 	}
 	if err := term.Wait(testContext(t)); err != nil {
@@ -386,35 +377,27 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	term.AssertProcessTopology(t)
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalText(t, term, "[N]")
-	sendAndWait(t, term, []byte("a"), barrier{Event: "callback.event", Operation: "ma", Count: 1})
-	waitForTerminalText(t, term, "[A]")
-	if err := term.Send([]byte("created")); err != nil {
-		t.Fatal(err)
-	}
-	sendAndWait(t, term, keyEnter, barrier{Event: "generation.publish", Generation: 2, Count: 1})
+	beforeChild := len(term.Output())
+	sendAndWait(t, term, []byte("visible/"), barrier{Event: "generation.publish", Generation: 2, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Operation: "ok", Renderer: "eza", Count: 2})
-	waitForTerminalText(t, term, "created"+string(os.PathSeparator))
+	waitForTerminalTextAfter(t, term, beforeChild, "2/2")
 	beforeParent := len(term.Output())
-	sendAndWait(t, term, keyLeft, barrier{Event: "generation.publish", Generation: 3, Count: 1})
+	sendAndWait(t, term, []byte{0x08}, barrier{Event: "generation.publish", Generation: 3, Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 3})
 	waitForTerminalTextAfter(t, term, beforeParent, protocol.EscapeDisplay([]byte(filepath.Base(fixture.cwd)))+string(os.PathSeparator))
-	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
-	waitForTerminalTextAfter(t, term, beforeParent, "[I]")
+	waitForTerminalTextAfter(t, term, beforeParent, "3/3")
 	beforeQuery := len(term.Output())
 	if err := term.Send([]byte("visiblex")); err != nil {
 		t.Fatal(err)
 	}
-	waitForTerminalTextAfter(t, term, beforeQuery, "[I] visiblex")
-	waitForTerminalTextAfter(t, term, beforeQuery, "0/4")
+	waitForTerminalTextAfter(t, term, beforeQuery, "visiblex")
+	waitForTerminalTextAfter(t, term, beforeQuery, "0/3")
 	beforeFinalQuery := len(term.Output())
 	if err := term.Send([]byte{0x7f}); err != nil {
 		t.Fatal(err)
 	}
-	waitForTerminalTextAfter(t, term, beforeFinalQuery, "[I] visible")
-	waitForTerminalTextAfter(t, term, beforeFinalQuery, "1/4")
+	waitForTerminalTextAfter(t, term, beforeFinalQuery, "1/3")
 	if err := term.Send(keySpace); err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +417,7 @@ func TestRealFZFAdversarialPromptCannotInjectAction(t *testing.T) {
 			callbacks = append(callbacks, event.Outcome)
 		}
 	}
-	wantCallbacks := []string{"es", "ma", "en", "up", "mi", "en"}
+	wantCallbacks := []string{"sl", "up", "en"}
 	if !reflect.DeepEqual(callbacks, wantCallbacks) {
 		t.Fatalf("callback opcodes=%q want %q; events=%+v", callbacks, wantCallbacks, term.TraceEvents())
 	}
@@ -451,11 +434,7 @@ func TestRealFZFCPAcceptanceOrder(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 1})
 	term.AssertProcessTopology(t)
-	beforeNormal := len(term.Output())
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 2})
-	waitForTerminalTextAfter(t, term, beforeNormal, "[N] ")
+	waitForTerminalText(t, term, "5/5")
 	for index, name := range []string{"..", "alpha", "visible"} {
 		count := index + 2
 		beforeDown := len(term.Output())
@@ -466,7 +445,7 @@ func TestRealFZFCPAcceptanceOrder(t *testing.T) {
 		waitForTerminalTextAfter(t, term, beforeDown, "▌ "+name)
 	}
 	beforeFirstSelection := len(term.Output())
-	if err := term.Send(keySpace); err != nil {
+	if err := term.Send(keyCtrlSpace); err != nil {
 		t.Fatal(err)
 	}
 	waitForTerminalTextAfter(t, term, beforeFirstSelection, "5/5 (1)")
@@ -477,7 +456,7 @@ func TestRealFZFCPAcceptanceOrder(t *testing.T) {
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 5})
 	waitForTerminalTextAfter(t, term, beforeUp, "▌ alpha")
 	beforeSecondSelection := len(term.Output())
-	if err := term.Send(keySpace); err != nil {
+	if err := term.Send(keyCtrlSpace); err != nil {
 		t.Fatal(err)
 	}
 	waitForTerminalTextAfter(t, term, beforeSecondSelection, "5/5 (2)")

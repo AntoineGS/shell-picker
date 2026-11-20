@@ -283,11 +283,8 @@ func runFirstFrameSample(t *testing.T, binary string, tools firstFrameTools, mod
 		term.WaitBarrier(testContext(t), barrier{Event: "sidecar.get", Operation: "success", Count: 1})
 		term.WaitBarrier(testContext(t), barrier{Event: "sidecar.post", Operation: "success", Count: 1})
 	}
-	if err := term.Send(keyEsc); err != nil {
-		return firstFrameSample{}, err
-	}
-	term.WaitBarrier(testContext(t), barrier{Event: "callback.event", Operation: "es", Count: 1})
-	if err := term.Send([]byte("q")); err != nil {
+	// Ctrl-G aborts both older modal and current insert-only binaries.
+	if err := term.Send([]byte{0x07}); err != nil {
 		return firstFrameSample{}, err
 	}
 	if err := term.Wait(testContext(t)); err != nil {

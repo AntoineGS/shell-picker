@@ -1,22 +1,21 @@
 package integration
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/AntoineGS/shell-picker/internal/protocol"
 )
 
-func TestRealFZFPickerNavigationAndNormalMode(t *testing.T) {
+func TestRealFZFPickerNavigation(t *testing.T) {
 	t.Run("exact child slash preserves insert", testRealFZFExactChildSlash)
 	t.Run("invalid slash restores after edit", testRealFZFInvalidSlashRestore)
-	t.Run("normal printable keys and escape", testRealFZFNormalInputAndEscape)
-	t.Run("normal paging directions", testRealFZFNormalPaging)
+	t.Run("single Escape cancels from insert", testRealFZFSingleEscape)
 	t.Run("insert paging directions", testRealFZFInsertPaging)
-	t.Run("normal first and last", testRealFZFNormalFirstLast)
 }
 
 func testRealFZFExactChildSlash(t *testing.T) {
@@ -91,172 +90,33 @@ func testRealFZFInvalidSlashRestore(t *testing.T) {
 	}
 }
 
-func testRealFZFNormalInputAndEscape(t *testing.T) {
-	fixture := newRealFZFFixture(t, requireRealFZF(t), "normal ignored input")
-	removeFixtureCandidates(t, fixture)
-	if err := os.Mkdir(filepath.Join(fixture.cwd, "alpha"), 0o700); err != nil {
+func testRealFZFSingleEscape(t *testing.T) {
+	fixture := newRealFZFFixture(t, requireRealFZF(t), "single Escape")
+	if err := os.Mkdir(filepath.Join(fixture.cwd, "iq aj"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	term := fixture.Start(t, protocol.PickerCP)
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
-	waitForTerminalText(t, term, "3/3")
+	waitForTerminalText(t, term, "6/6")
 	beforeQuery := len(term.Output())
-	if err := term.Send([]byte("alpha")); err != nil {
+	if err := term.Send([]byte("iq aj")); err != nil {
 		t.Fatal(err)
 	}
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
 	waitForTerminalTextAfter(t, term, beforeQuery, "[I]")
-	waitForTerminalTextAfter(t, term, beforeQuery, "alpha")
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalText(t, term, "[N]")
-
-	if err := term.Send([]byte{'b', 'Z', '7', ':', '+', '\\'}); err != nil {
+	waitForTerminalTextAfter(t, term, beforeQuery, "1/6")
+	if err := term.Send(keyEsc); err != nil {
 		t.Fatal(err)
 	}
-	sendAndWait(t, term, []byte("i"), barrier{Event: "callback.event", Operation: "mi", Count: 1})
-	beforeResize := len(term.Output())
-	if err := term.Resize(121, 35); err != nil {
-		t.Fatal(err)
-	}
-	term.WaitOutputAfter(testContext(t), beforeResize)
-	waitForTerminalTextAfter(t, term, beforeResize, "[I]")
-	waitForTerminalTextAfter(t, term, beforeResize, "alpha")
-	waitForTerminalTextAfter(t, term, beforeResize, "1/3")
-	if visible := visibleTerminalOutput(term.Output()[beforeResize:]); bytes.Contains(visible, []byte(`alphabZ7:+\`)) {
-		t.Fatalf("ignored Normal keys mutated query: %q", term.Output()[beforeResize:])
-	}
-
-	beforeNormal := len(term.Output())
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 2})
-	waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
-	waitForTerminalTextAfter(t, term, beforeNormal, "alpha")
-	waitForTerminalTextAfter(t, term, beforeNormal, "1/3")
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 3})
-	if err := term.Wait(testContext(t)); err != nil {
-		t.Fatal(err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := term.Wait(ctx); err != nil {
+		t.Fatalf("picker did not exit after one Escape: %v", err)
 	}
 	closed := term.WaitBarrier(testContext(t), barrier{Event: "session.close", Operation: "aborted", Count: 1})
 	if closed.Outcome != "aborted" || len(term.ResultBytes()) != 0 {
-		t.Fatalf("second Escape close/result=%+v/%q", closed, term.ResultBytes())
+		t.Fatalf("single Escape close/result=%+v/%q", closed, term.ResultBytes())
 	}
-}
-
-func testRealFZFNormalPaging(t *testing.T) {
-	t.Run("list", func(t *testing.T) {
-		fixture := newRealFZFFixture(t, requireRealFZF(t), "normal list paging")
-		removeFixtureCandidates(t, fixture)
-		for index := 0; index < 36; index++ {
-			name := fmt.Sprintf("item-%02d.txt", index)
-			content := fmt.Sprintf("LIST-PREVIEW-%02d\n", index)
-			if err := os.WriteFile(filepath.Join(fixture.cwd, name), []byte(content), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		term := fixture.startSized(t, protocol.PickerCP, []string{"PATH=" + t.TempDir()}, 80, 18)
-		defer term.Close()
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
-		if err := term.Send([]byte("item-")); err != nil {
-			t.Fatal(err)
-		}
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
-		waitForTerminalText(t, term, "LIST-PREVIEW-00")
-		beforeNormal := len(term.Output())
-		loadCount := traceCountGeneration(term.TraceEvents(), "callback.load", 1)
-		finishedBeforeNormal := traceCount(term.TraceEvents(), "preview.finished", "")
-		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
-		waitForTerminalTextAfter(t, term, beforeNormal, "item-")
-		term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 1, Count: loadCount + 1})
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedBeforeNormal + 1})
-
-		beforeMove := len(term.Output())
-		for range 2 {
-			previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
-			finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
-			if err := term.Send(keyDown); err != nil {
-				t.Fatal(err)
-			}
-			term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
-			term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
-		}
-		waitForTerminalTextAfter(t, term, beforeMove, "LIST-PREVIEW-00")
-
-		beforeDown := len(term.Output())
-		previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
-		finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
-		if err := term.Send([]byte{0x04}); err != nil {
-			t.Fatal(err)
-		}
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
-		down := waitForChangedNavigationMarkerAfter(t, term, beforeDown, "LIST", 0)
-
-		beforeUp := len(term.Output())
-		if err := term.Send([]byte{0x15}); err != nil {
-			t.Fatal(err)
-		}
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 2})
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 2})
-		up := waitForChangedNavigationMarkerAfter(t, term, beforeUp, "LIST", down)
-		if down <= 0 || up >= down {
-			t.Fatalf("Ctrl-D/Ctrl-U visible markers=%d/%d, want down then up", down, up)
-		}
-	})
-
-	t.Run("preview", func(t *testing.T) {
-		fixture := newRealFZFFixture(t, requireRealFZF(t), "normal preview paging")
-		removeFixtureCandidates(t, fixture)
-		var content bytes.Buffer
-		for index := 0; index < 60; index++ {
-			fmt.Fprintf(&content, "SCROLL-PREVIEW-%02d line with deterministic content\n", index)
-		}
-		if err := os.WriteFile(filepath.Join(fixture.cwd, "preview-target.txt"), content.Bytes(), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		term := fixture.startSized(t, protocol.PickerCP, []string{"PATH=" + t.TempDir()}, 80, 18)
-		defer term.Close()
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
-		if err := term.Send([]byte("preview-target")); err != nil {
-			t.Fatal(err)
-		}
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
-		waitForTerminalText(t, term, "SCROLL-PREVIEW-00")
-		beforeNormal := len(term.Output())
-		loadCount := traceCountGeneration(term.TraceEvents(), "callback.load", 1)
-		finishedBeforeNormal := traceCount(term.TraceEvents(), "preview.finished", "")
-		sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-		waitForTerminalTextAfter(t, term, beforeNormal, "[N]")
-		waitForTerminalTextAfter(t, term, beforeNormal, "preview-target")
-		term.WaitBarrier(testContext(t), barrier{Event: "callback.load", Generation: 1, Count: loadCount + 1})
-		term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedBeforeNormal + 1})
-
-		beforeMove := len(term.Output())
-		for range 2 {
-			previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
-			finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
-			if err := term.Send(keyDown); err != nil {
-				t.Fatal(err)
-			}
-			term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
-			term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
-		}
-		waitForTerminalTextAfter(t, term, beforeMove, "SCROLL-PREVIEW-00")
-
-		beforeDown := len(term.Output())
-		if err := term.Send([]byte{'.'}); err != nil {
-			t.Fatal(err)
-		}
-		down := waitForChangedNavigationMarkerAfter(t, term, beforeDown, "SCROLL", 0)
-		beforeUp := len(term.Output())
-		if err := term.Send([]byte{','}); err != nil {
-			t.Fatal(err)
-		}
-		up := waitForChangedNavigationMarkerAfter(t, term, beforeUp, "SCROLL", down)
-		if down <= 0 || up >= down {
-			t.Fatalf("period/comma visible preview markers=%d/%d, want down then up", down, up)
-		}
-	})
 }
 
 func testRealFZFInsertPaging(t *testing.T) {
@@ -309,60 +169,6 @@ func testRealFZFInsertPaging(t *testing.T) {
 		t.Fatalf("Ctrl-D/Ctrl-U visible markers=%d/%d, want down then up", down, up)
 	}
 	assertTraceCount(t, term.TraceEvents(), "callback.event", "", callbackCount)
-}
-
-func testRealFZFNormalFirstLast(t *testing.T) {
-	fixture := newRealFZFFixture(t, requireRealFZF(t), "normal first and last")
-	removeFixtureCandidates(t, fixture)
-	for index := 0; index < 36; index++ {
-		name := fmt.Sprintf("item-%02d.txt", index)
-		content := fmt.Sprintf("LIST-PREVIEW-%02d\n", index)
-		if err := os.WriteFile(filepath.Join(fixture.cwd, name), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	term := fixture.startSized(t, protocol.PickerCP, []string{"PATH=" + t.TempDir()}, 80, 18)
-	defer term.Close()
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 1})
-	if err := term.Send([]byte("item-")); err != nil {
-		t.Fatal(err)
-	}
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: 2})
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: 2})
-	waitForTerminalText(t, term, "LIST-PREVIEW-00")
-	waitForTerminalText(t, term, "[I] item-")
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	waitForTerminalText(t, term, "[N] item-")
-
-	previewCount := traceCount(term.TraceEvents(), "preview.dispatch", "")
-	finishedCount := traceCount(term.TraceEvents(), "preview.finished", "")
-	beforeLast := len(term.Output())
-	if err := term.Send([]byte{'G'}); err != nil {
-		t.Fatal(err)
-	}
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
-	last := waitForChangedNavigationMarkerAfter(t, term, beforeLast, "LIST", 0)
-	if last != 35 {
-		t.Fatalf("G selected marker=%d, want 35", last)
-	}
-
-	previewCount = traceCount(term.TraceEvents(), "preview.dispatch", "")
-	finishedCount = traceCount(term.TraceEvents(), "preview.finished", "")
-	beforeFirst := len(term.Output())
-	if err := term.Send([]byte("gg")); err != nil {
-		t.Fatal(err)
-	}
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.dispatch", Count: previewCount + 1})
-	term.WaitBarrier(testContext(t), barrier{Event: "preview.finished", Count: finishedCount + 1})
-	// Normal disables filtering while retaining the query for Insert. The
-	// first unfiltered candidate is '.', not the first matching item file.
-	waitForTerminalTextAfter(t, term, beforeFirst, "Directory:")
-	resizeAndWaitForRedraw(t, term, 82, 18)
-	assertLatestModePromptAfter(t, term, beforeFirst, "[N] item-", "Directory:")
-	if item, ok := latestSelectedNavigationItem(visibleTerminalOutput(term.Output()[beforeFirst:])); !ok || item != "." {
-		t.Fatalf("gg selected item=%q/%t, want ./true", item, ok)
-	}
 }
 
 func TestChangedNavigationMarkerSkipsStaleContent(t *testing.T) {

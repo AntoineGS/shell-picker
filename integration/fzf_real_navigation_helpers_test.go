@@ -90,15 +90,6 @@ func changedNavigationMarker(output []byte, prefix string, previous int) (int, b
 	return 0, false
 }
 
-func latestSelectedNavigationItem(output []byte) (string, bool) {
-	marker := regexp.MustCompile(`▌ (item-[0-9]{2}\.txt|\.\.?)(?:\s|$)`)
-	matches := marker.FindAllSubmatch(output, -1)
-	if len(matches) == 0 {
-		return "", false
-	}
-	return string(matches[len(matches)-1][1]), true
-}
-
 func assertLatestModePromptAfter(t *testing.T, term terminalSession, before int, want, evidence string) {
 	t.Helper()
 	waitForTerminalTextAfter(t, term, before, evidence)

@@ -52,7 +52,7 @@ The files-only header identifies the platform's indexed source and adds
 uses `search --search-scope files`;
 ordinary Ctrl+F retains its context-sensitive behavior, and `search --search-scope
 all` includes both files and directories.
-Ctrl+H and Left both go to the parent in browser Insert and Normal modes.
+Ctrl+H and Left both go to the parent in browser Insert mode.
 
 The Nushell 0.113.1 adapter inserts Space at the exact cursor position, recognizes only `cd` or `cp`, invokes `%cd` inside `try`, parses NUON inside `try`, replaces `cd` input only after a successful directory change, and emits NUON-quoted `cp` paths with no trailing Space. Tab is unchanged. Windows backslash, spaces, and cross-volume `%cd` behavior are exercised rather than rewritten by the adapter.
 

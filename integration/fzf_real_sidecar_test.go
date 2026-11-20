@@ -343,8 +343,8 @@ func TestRealFZFListenSidecarAbortPreservesPickerOutcome(t *testing.T) {
 	term := fixture.start(t, protocol.PickerCP, []string{fzfsidecar.ActivationVariable + "=1"})
 	defer term.Close()
 	term.WaitBarrier(testContext(t), barrier{Event: "fzf.start", Count: 1})
-	sendAndWait(t, term, keyEsc, barrier{Event: "callback.event", Operation: "es", Count: 1})
-	if err := term.Send([]byte("q")); err != nil {
+	waitForTerminalText(t, term, "[I]")
+	if err := term.Send(keyEsc); err != nil {
 		t.Fatal(err)
 	}
 	if err := term.Wait(testContext(t)); err != nil {

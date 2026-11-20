@@ -13,27 +13,24 @@ import (
 )
 
 func TestDocumentedModeTableMatchesFZFBindings(t *testing.T) {
-	want := map[string][]string{}
-	for _, mode := range []protocol.Mode{protocol.ModeInsert, protocol.ModeNormal, protocol.ModeAdd} {
-		want[modeTitle(mode)] = []string{
-			modeTitle(mode),
-			formatBindings(activeModeBindings(t, protocol.PickerCD, mode)),
-			formatBindings(activeModeBindings(t, protocol.PickerCP, mode)),
-		}
+	want := map[string][]string{
+		"Insert": {
+			"Insert",
+			formatBindings(activeModeBindings(t, protocol.PickerCD)),
+			formatBindings(activeModeBindings(t, protocol.PickerCP)),
+		},
 	}
 	got := parseModeTable(t, readDoc(t, "README.md"))
-	if strings.Join(flattenModeRows(got), "\n") != strings.Join(flattenModeRows(want), "\n") {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("README mode table differs from fzf bindings\n got: %#v\nwant: %#v", got, want)
 	}
 }
 
 func TestDocumentedRuntimeModeBindingsExcludeStartupUnboundTransientEvents(t *testing.T) {
 	for _, picker := range []protocol.Picker{protocol.PickerCD, protocol.PickerCP} {
-		for _, mode := range []protocol.Mode{protocol.ModeInsert, protocol.ModeNormal, protocol.ModeAdd} {
-			for _, binding := range activeModeBindings(t, picker, mode) {
-				if strings.HasPrefix(binding, "change:") || strings.HasPrefix(binding, "result-final:") {
-					t.Errorf("%s/%s startup binding %q is active", picker, mode, binding)
-				}
+		for _, binding := range activeModeBindings(t, picker) {
+			if strings.HasPrefix(binding, "change:") || strings.HasPrefix(binding, "result-final:") {
+				t.Errorf("%s startup binding %q is active", picker, binding)
 			}
 		}
 	}
@@ -266,7 +263,7 @@ func TestDocumentationStatesCurrentRuntimeContracts(t *testing.T) {
 	}
 }
 
-func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode) []string {
+func activeModeBindings(t *testing.T, picker protocol.Picker) []string {
 	t.Helper()
 	options, err := fzf.Options(fzf.OptionsConfig{Picker: picker, Prompt: "[I] ", Header: "/work/"})
 	if err != nil {
@@ -307,11 +304,6 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 		}
 	}
 	applyBindingActions(active, startupActions)
-	effect, err := fzf.RenderEffect(protocol.Effect{Rebind: mode})
-	if err != nil {
-		t.Fatal(err)
-	}
-	applyBindingActions(active, effect)
 	result := []string{}
 	for _, binding := range bindings {
 		allActive := true
@@ -321,9 +313,6 @@ func activeModeBindings(t *testing.T, picker protocol.Picker, mode protocol.Mode
 		if allActive {
 			result = append(result, binding.render)
 		}
-	}
-	if mode == protocol.ModeNormal {
-		result = append(result, "other printable keys:ignore")
 	}
 	return result
 }
@@ -348,11 +337,14 @@ func parseModeTable(t *testing.T, document string) map[string][]string {
 		if line != "| Mode | cd active fzf bindings | cp active fzf bindings |" {
 			continue
 		}
-		if index+4 >= len(lines) || lines[index+1] != "| --- | --- | --- |" {
+		if index+2 >= len(lines) || lines[index+1] != "| --- | --- | --- |" {
 			t.Fatal("README mode table has invalid header")
 		}
 		rows := map[string][]string{}
-		for _, line := range lines[index+2 : index+5] {
+		for _, line := range lines[index+2:] {
+			if !strings.HasPrefix(line, "|") {
+				break
+			}
 			cells := strings.Split(strings.Trim(line, "|"), "|")
 			if len(cells) != 3 {
 				t.Fatalf("invalid mode row %q", line)
@@ -362,18 +354,10 @@ func parseModeTable(t *testing.T, document string) map[string][]string {
 			}
 			rows[cells[0]] = cells
 		}
-		if index+5 < len(lines) && strings.HasPrefix(lines[index+5], "|") {
-			t.Fatalf("README mode table has unexpected extra row %q", lines[index+5])
-		}
 		return rows
 	}
 	t.Fatal("README has no exact mode table")
 	return nil
-}
-
-func modeTitle(mode protocol.Mode) string {
-	value := string(mode)
-	return strings.ToUpper(value[:1]) + value[1:]
 }
 
 func formatBindings(bindings []string) string {
@@ -382,14 +366,6 @@ func formatBindings(bindings []string) string {
 		quoted[index] = "`" + binding + "`"
 	}
 	return strings.Join(quoted, "<br>")
-}
-
-func flattenModeRows(rows map[string][]string) []string {
-	result := []string{}
-	for _, mode := range []string{"Insert", "Normal", "Add"} {
-		result = append(result, strings.Join(rows[mode], "|"))
-	}
-	return result
 }
 
 func TestDocumentedPlatformTimeoutsMatchAuthority(t *testing.T) {

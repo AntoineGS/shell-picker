@@ -80,7 +80,8 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		binding("ctrl-f", transformEvent(protocol.OpSourceToggle)),
 		// Terminals can map Ctrl+Shift+F to this distinct, portable sequence.
 		binding("ctrl-alt-f", transformEvent(protocol.OpFilesSearch)),
-		binding("esc", transformEvent(protocol.OpEscape)),
+		// Insert-only trial: bypass the mode-switch callback and cancel directly.
+		binding("esc", abort()),
 		binding("i", transformEvent(protocol.OpModeInsert)),
 		binding("a", transformEvent(protocol.OpModeAdd)),
 		binding(forwardKeys, transformEvent(protocol.OpForward)),

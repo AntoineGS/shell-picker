@@ -429,7 +429,7 @@ func wantOptionSnapshotForPlatform(config OptionsConfig, goos string) []string {
 		"--bind=enter:transform(e:en)",
 		"--bind=ctrl-f:transform(e:sf)",
 		"--bind=ctrl-alt-f:transform(e:fa)",
-		"--bind=esc:transform(e:es)",
+		"--bind=esc:cancel+abort",
 		"--bind=i:transform(e:mi)",
 		"--bind=a:transform(e:ma)",
 		"--bind="+forwardBinding+":transform(e:fw)",

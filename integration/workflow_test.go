@@ -392,7 +392,7 @@ func TestCIWindowsFZFSmokeContract(t *testing.T) {
 		"Windows smoke command")
 
 	for _, step := range fzfJob.steps {
-		if strings.Contains(step.run, "TestRealFZFPickerNavigationAndNormalMode") || step.continueOnError == "true" {
+		if strings.Contains(step.run, "TestRealFZFPickerNavigation") || step.continueOnError == "true" {
 			t.Fatalf("fzf-version contains an out-of-scope or non-blocking step: %+v", step)
 		}
 	}
@@ -414,8 +414,8 @@ func TestRealFZFWorkflowContract(t *testing.T) {
 	requireAll(t, smoke.run, "SHELL_PICKER_REAL_FZF=", "go test ./integration -run TestRealFZF -count=1 -v")
 	requireAll(t, readRepositoryFiles(t, "fzf_real_test.go", "fzf_real_navigation_test.go"),
 		"func TestRealFZFInteractiveAbort(",
-		"func TestRealFZFInteractiveModesReloadAddAccept(",
-		"func TestRealFZFPickerNavigationAndNormalMode(",
+		"func TestRealFZFInteractiveReloadAndAccept(",
+		"func TestRealFZFPickerNavigation(",
 	)
 	prerequisites := readRepositoryFiles(t, "platform_prerequisites_linux_test.go", "platform_prerequisites_windows_test.go")
 	requireAll(t, prerequisites, "/dev/ptmx", "TIOCSPTLCK", "TIOCGPTN", "pidfd_open", "17763", "CreatePseudoConsole")
