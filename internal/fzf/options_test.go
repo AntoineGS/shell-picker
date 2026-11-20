@@ -48,6 +48,52 @@ func TestStandaloneSearchUsesMultiSelection(t *testing.T) {
 	}
 }
 
+func TestInitialStreamSearchGatesActionsUntilInputLoad(t *testing.T) {
+	options, err := Options(OptionsConfig{
+		Picker: protocol.PickerSearch, Prompt: "[I] ", Query: "seeded-hit", Header: "Loading index…",
+		InitialLoading: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"--header=Loading index…",
+		"--query=seeded-hit",
+		"--bind=enter:transform(e:en)",
+		"--bind=space:transform(e:mk)",
+		"--bind=ctrl-space:transform(e:mk)",
+		"--bind=double-click:transform(e:en)",
+		"--bind=ctrl-f:transform(e:sf)",
+	} {
+		if !slices.Contains(options, want) {
+			t.Errorf("stream options lack %q: %q", want, options)
+		}
+	}
+	var loadBinding string
+	for _, option := range options {
+		if strings.HasPrefix(option, "--bind=load:") {
+			loadBinding = option
+		}
+	}
+	for _, want := range []string{"unbind(load)", "rebind(", "ctrl-f",
+		"ctrl-alt-f", "transform(e:il)", "change-preview(p)", "shift-scroll-up,shift-scroll-down"} {
+		if !strings.Contains(loadBinding, want) {
+			t.Errorf("load binding %q lacks %q", loadBinding, want)
+		}
+	}
+	if slices.Contains(options, "--preview=p") {
+		t.Fatal("preview must not run while the index is provisional")
+	}
+	foundSpaceUnbind := false
+	for _, option := range options {
+		foundSpaceUnbind = foundSpaceUnbind ||
+			(strings.HasPrefix(option, "--bind=start:") && strings.Contains(option, "unbind(") && strings.Contains(option, "space"))
+	}
+	if !foundSpaceUnbind {
+		t.Fatalf("loading mode must unbind Space's mark callback to preserve query editing: %q", options)
+	}
+}
+
 func TestMarkControlsCallSessionBeforeNativeToggle(t *testing.T) {
 	options, err := Options(OptionsConfig{Picker: protocol.PickerCP, Prompt: "[I] ", Header: "/work"})
 	if err != nil {

@@ -23,6 +23,14 @@ func commandStatusHeader(command, status string) string {
 	return command + " · " + status
 }
 
+func loadingIndexHeader(command string, filesOnly bool) string {
+	status := indexedSourceName() + " · Loading index…"
+	if filesOnly {
+		status += " · files only"
+	}
+	return commandStatusHeader(command, status)
+}
+
 func (backend *pickerBackend) decorateHeader(effect *protocol.Effect, state session.State) {
 	if effect.Header == "" {
 		return

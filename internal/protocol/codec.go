@@ -42,9 +42,23 @@ func DecodePath(payload string) ([]byte, error) {
 }
 
 func EscapeDisplay(path []byte) string {
+	// Most indexed paths consist entirely of printable ASCII and need no
+	// escaping. Keep the Unicode/byte-preserving path for the rest.
+	prefix := 0
+	for prefix < len(path) {
+		b := path[prefix]
+		if b < ' ' || b > '~' || b == '\\' || b == '\'' {
+			break
+		}
+		prefix++
+	}
+	if prefix == len(path) {
+		return string(path)
+	}
 	var display strings.Builder
 	display.Grow(len(path))
-
+	display.Write(path[:prefix])
+	path = path[prefix:]
 	for len(path) > 0 {
 		switch path[0] {
 		case '\\':

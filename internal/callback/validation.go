@@ -13,6 +13,7 @@ func ValidateLocal(command Command, lookupEnv func(string) string) error {
 	switch command.Kind {
 	case KindEvent:
 		if command.Opcode != protocol.OpRestoreView && command.Opcode != protocol.OpQuery &&
+			command.Opcode != protocol.OpInputLoaded &&
 			!validKey(command.Opcode, lookupEnv("FZF_KEY")) {
 			return ErrKey
 		}
@@ -29,7 +30,7 @@ func validKey(opcode protocol.Opcode, key string) bool {
 		protocol.OpModeInsert: {"i": true}, protocol.OpModeAdd: {"a": true}, protocol.OpEscape: {"esc": true},
 		protocol.OpForward: {"ctrl-l": true, "tab": true, "right": true, "l": true},
 		protocol.OpParent:  {"ctrl-h": true, "ctrl-backspace": true, "left": true, "h": true},
-		protocol.OpSlash:   {"/": true}, protocol.OpHome: {"~": true}, protocol.OpEnter: {"enter": true},
+		protocol.OpSlash:   {"/": true}, protocol.OpHome: {"~": true}, protocol.OpEnter: {"enter": true, "double-click": true},
 		protocol.OpSourceToggle: {"ctrl-f": true},
 		protocol.OpFilesSearch:  {"ctrl-alt-f": true},
 		protocol.OpMarkToggle: {"space": true, "ctrl-space": true, "btab": true,

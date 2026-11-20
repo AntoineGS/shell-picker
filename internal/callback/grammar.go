@@ -53,6 +53,7 @@ func Parse(raw string) (Command, error) {
 		"e:sf": protocol.OpSourceToggle, "e:mk": protocol.OpMarkToggle,
 		"e:fa": protocol.OpFilesSearch,
 		"e:qy": protocol.OpQuery,
+		"e:il": protocol.OpInputLoaded,
 	}
 	if opcode, ok := events[raw]; ok {
 		return Command{Kind: KindEvent, Opcode: opcode}, nil

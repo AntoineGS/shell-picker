@@ -101,6 +101,12 @@ func (source *indexedSource) load(ctx context.Context) (*fsearchdb.Database, err
 	}
 }
 
+func (source *indexedSource) cache(database *fsearchdb.Database) {
+	source.mu.Lock()
+	source.database = database
+	source.mu.Unlock()
+}
+
 func (source *indexedSource) build(ctx context.Context, request candidate.BuildRequest) (candidate.BuildResult, error) {
 	database, err := source.load(ctx)
 	if err != nil {

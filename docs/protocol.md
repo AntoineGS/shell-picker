@@ -38,7 +38,7 @@ event,outcomes,generation,renderer,counters,optional_fields
 @renderers,bat|bat-fallback|chafa|chafa-fallback|exiftool|exiftool-fallback|eza|eza-fallback|ffmpeg|ffmpeg-fallback|ffmpegthumbnailer|ffmpegthumbnailer-fallback|file|file-fallback|glow|glow-fallback|gzip|gzip-fallback|kitten|kitten-fallback|native|pdftoppm|pdftoppm-fallback|tar|tar-fallback|unzip|unzip-fallback|xz|xz-fallback,,,,
 @zoxide_outcomes,cached|cancelled|malformed|missing|not-run|ok|pending|process-error|timeout,,,,
 @zoxide_policies,cached|fresh,,,,
-session.start,cd|cp,0,none,0/0,
+session.start,cd|cp|search,0,none,0/0,
 generation.start,ok,0|nonzero,none,0/0,
 generation.publish,ok,0|nonzero,none,0/0,actor_queue_wait_us|candidate_count|local_us|path|transform_us|zoxide_*:policy+outcome|zoxide_us
 generation.discard,cancelled|error|stale|superseded,0|nonzero,none,0/0,actor_queue_wait_us|local_us|transform_us|zoxide_*:policy+outcome|zoxide_us
@@ -46,7 +46,7 @@ fzf.start,ok,0,none,0/0,
 fzf.exit,aborted|error|ok,0,none,0/0,
 callback.display,error|ok,0,none,0/0,callback_ipc_us
 callback.display.start,started,0,none,0/0,
-callback.event,en|error|es|fa|fw|hm|ma|mi|mk|qy|rs|sf|sl|up,0,none,0/0,callback_ipc_us
+callback.event,en|error|es|fa|fw|hm|il|ma|mi|mk|qy|rs|sf|sl|up,0,none,0/0,callback_ipc_us
 callback.event.start,started,0,none,0/0,
 callback.info,error|ok,0,none,0/0,
 callback.info.start,started,0,none,0/0,

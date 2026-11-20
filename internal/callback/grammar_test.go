@@ -18,6 +18,7 @@ func TestParseAcceptsOnlyStaticGrammar(t *testing.T) {
 		"e:hm":                   {Kind: KindEvent, Opcode: protocol.OpHome},
 		"e:en":                   {Kind: KindEvent, Opcode: protocol.OpEnter},
 		"e:rs":                   {Kind: KindEvent, Opcode: protocol.OpRestoreView},
+		"e:il":                   {Kind: KindEvent, Opcode: protocol.OpInputLoaded},
 		"e:sf":                   {Kind: KindEvent, Opcode: protocol.OpSourceToggle},
 		"e:mk":                   {Kind: KindEvent, Opcode: protocol.OpMarkToggle},
 		"l:1":                    {Kind: KindLoad, Generation: 1},

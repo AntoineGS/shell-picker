@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os"
+	"sync"
 	"time"
 
 	integrationpkg "github.com/AntoineGS/shell-picker/internal/integration"
@@ -20,6 +21,37 @@ type pickerBackend struct {
 	indexed       *indexedSource
 	stat          func(string) (os.FileInfo, error)
 	commandHeader string
+	initialGate   *initialStreamGate
+}
+
+type initialStreamGate struct {
+	mu         sync.Mutex
+	actorReady bool
+	fzfLoaded  bool
+}
+
+func (gate *initialStreamGate) markActorReady() {
+	gate.mu.Lock()
+	gate.actorReady = true
+	gate.mu.Unlock()
+}
+
+func (gate *initialStreamGate) markFZFLoaded() {
+	gate.mu.Lock()
+	gate.fzfLoaded = true
+	gate.mu.Unlock()
+}
+
+func (gate *initialStreamGate) ready() bool {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	return gate.actorReady && gate.fzfLoaded
+}
+
+func (gate *initialStreamGate) published() bool {
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	return gate.actorReady
 }
 
 func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Event) (result sessionipc.EventResult, err error) {
@@ -42,6 +74,28 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 		}
 		return result, handleErr
 	}
+	if event.Opcode == protocol.OpInputLoaded {
+		if backend.initialGate == nil || !backend.initialGate.published() {
+			return sessionipc.EventResult{}, session.ErrInvalidEvent
+		}
+		if backend.initialGate.ready() {
+			return sessionipc.EventResult{Effect: protocol.Effect{Ignore: true}}, nil
+		}
+		state, err := backend.syncInitialQuery(ctx, event.Query)
+		if err != nil {
+			return sessionipc.EventResult{}, err
+		}
+		backend.initialGate.markFZFLoaded()
+		return sessionipc.EventResult{Effect: protocol.Effect{
+			Header: pickerHeader(backend.commandHeader, state, backend.indexed),
+		}}, nil
+	}
+	if gate := backend.initialGate; gate != nil && !gate.ready() {
+		if event.Opcode == protocol.OpEscape {
+			return sessionipc.EventResult{Effect: protocol.Effect{Abort: true}}, nil
+		}
+		return sessionipc.EventResult{Effect: protocol.Effect{Ignore: true}}, nil
+	}
 	if cause := context.Cause(ctx); cause != nil {
 		return sessionipc.EventResult{}, cause
 	}
@@ -57,6 +111,22 @@ func (backend *pickerBackend) HandleEvent(ctx context.Context, event protocol.Ev
 	}
 	backend.metrics.recordCallback(duration)
 	return sessionipc.EventResult{Effect: transition.Effect}, handleErr
+}
+
+func (backend *pickerBackend) syncInitialQuery(ctx context.Context, query []byte) (session.State, error) {
+	snapshot, err := backend.actor.Current(ctx)
+	if err != nil {
+		return session.State{}, err
+	}
+	state := snapshot.State()
+	state.Query = append([]byte(nil), query...)
+	if state.Source == protocol.SourceIndexed && state.Indexed != nil {
+		state.Indexed.Query = append([]byte(nil), query...)
+	}
+	_, err = backend.actor.Apply(ctx, session.ProposedTransition{
+		BaseGeneration: snapshot.Generation(), State: state,
+	})
+	return state, err
 }
 
 func (backend *pickerBackend) FinalizeEvent(ctx context.Context, request sessionipc.EventFinalizeRequest) error {
@@ -124,6 +194,9 @@ func (backend *pickerBackend) CurrentHeader(ctx context.Context) (header string,
 	if err != nil {
 		return "", err
 	}
+	if backend.initialGate != nil && !backend.initialGate.ready() {
+		return loadingIndexHeader(backend.commandHeader, state.FilesSearch()), nil
+	}
 	return pickerHeader(backend.commandHeader, state, backend.indexed), nil
 }
 
@@ -138,6 +211,9 @@ func (backend *pickerBackend) ResolvePreview(ctx context.Context, current []byte
 	}()
 	if cause := context.Cause(ctx); cause != nil {
 		return protocol.ResolvedCandidate{}, cause
+	}
+	if backend.initialGate != nil && !backend.initialGate.ready() {
+		return protocol.ResolvedCandidate{}, sessionipc.ErrNotFound
 	}
 	record, err := backend.actor.ResolveCurrent(ctx, current)
 	if err != nil {

@@ -210,7 +210,7 @@ func (snapshot Snapshot) lookupRecord(key string) (candidate.Record, bool) {
 	if snapshot.records == nil {
 		return candidate.Record{}, false
 	}
-	position, ok := snapshot.records.byFullRecord[key]
+	position, ok := snapshot.records.lookup(key)
 	if !ok {
 		return candidate.Record{}, false
 	}

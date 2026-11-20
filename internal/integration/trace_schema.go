@@ -34,7 +34,7 @@ const traceTimestampRFC3339Nano = "rfc3339nano"
 
 var productionTraceSchema = traceSchemaRules{
 	EventOutcomes: map[string][]string{
-		"session.start":          {"cd", "cp"},
+		"session.start":          {"cd", "cp", "search"},
 		"generation.start":       {"ok"},
 		"generation.publish":     {"ok"},
 		"generation.discard":     {"cancelled", "error", "stale", "superseded"},
@@ -44,7 +44,7 @@ var productionTraceSchema = traceSchemaRules{
 		"callback.info.start":    {"started"},
 		"callback.info":          {"error", "ok"},
 		"callback.event.start":   {"started"},
-		"callback.event":         {"mi", "ma", "es", "fw", "up", "sl", "hm", "en", "rs", "sf", "fa", "mk", "qy", "error"},
+		"callback.event":         {"mi", "ma", "es", "fw", "up", "sl", "hm", "en", "rs", "sf", "fa", "mk", "qy", "il", "error"},
 		"callback.display.start": {"started"},
 		"callback.display":       {"ok", "error"},
 		"callback.preview.start": {"started"},

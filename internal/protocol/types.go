@@ -61,6 +61,7 @@ const (
 	OpFilesSearch  Opcode = "fa"
 	OpMarkToggle   Opcode = "mk"
 	OpQuery        Opcode = "qy"
+	OpInputLoaded  Opcode = "il"
 )
 
 type Event struct {

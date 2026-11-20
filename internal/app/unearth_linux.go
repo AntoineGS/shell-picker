@@ -3,6 +3,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -125,7 +126,7 @@ func streamUnearth(ctx context.Context, root string, environment []string, emit 
 		_ = stdoutWriter.Close()
 		waitResult <- waitErr
 	}()
-	decodeErr := decodeUnearthEach(stdout, emit)
+	decodeErr := decodeUnearthEach(bufio.NewReaderSize(stdout, 128<<10), emit)
 	if decodeErr != nil {
 		_ = child.KillTree()
 		_ = stdoutWriter.CloseWithError(decodeErr)
@@ -165,8 +166,8 @@ func decodeUnearth(reader io.Reader) (*fsearchdb.Database, error) {
 func decodeUnearthEach(reader io.Reader, emit func(fsearchdb.Entry) error) error {
 	var total uint64
 	var count int
+	var sizeBytes [4]byte
 	for {
-		var sizeBytes [4]byte
 		_, err := io.ReadFull(reader, sizeBytes[:])
 		if errors.Is(err, io.EOF) {
 			return nil

@@ -11,13 +11,14 @@ import (
 
 // OptionsConfig describes the stable and optional listen-specific fzf flags.
 type OptionsConfig struct {
-	Completion    bool
-	Query         string
-	Height        string
-	Picker        protocol.Picker
-	Prompt        string
-	Header        string
-	ListenAddress string
+	Completion     bool
+	Query          string
+	Height         string
+	Picker         protocol.Picker
+	Prompt         string
+	Header         string
+	ListenAddress  string
+	InitialLoading bool
 }
 
 var errInvalidListenAddress = errors.New("fzf: invalid listen address")
@@ -56,7 +57,7 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 	if config.Height != "" {
 		options = append(options, "--height="+config.Height)
 	}
-	if config.Completion {
+	if config.Completion || config.InitialLoading {
 		options = append(options, "--query="+config.Query)
 	}
 	if listenEnabled {
@@ -70,8 +71,10 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 	if listenEnabled {
 		forwardKeys, normalForward = "ctrl-l,right", "right"
 	}
+	if !config.InitialLoading {
+		options = append(options, "--preview=p")
+	}
 	options = append(options,
-		"--preview=p",
 		"--preview-window=right:50%:wrap:<80(down:50%:wrap)",
 		binding("enter", transformEvent(protocol.OpEnter)),
 		binding("ctrl-f", transformEvent(protocol.OpSourceToggle)),
@@ -98,12 +101,21 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		binding(".", previewHalfPageDown()),
 		binding("change", transformEvent(protocol.OpRestoreView)),
 	)
+	if config.InitialLoading {
+		options = append(options, binding("double-click", transformEvent(protocol.OpEnter)))
+	}
 	start := []action{startUnbind()}
 	if config.Completion {
 		start = []action{keyAction("unbind", normalKeys), transformEvent(protocol.OpQuery)}
 		options = append(options, binding("change", transformEvent(protocol.OpQuery)))
 	}
-	if !listenEnabled && goos != "windows" {
+	if config.InitialLoading {
+		loadingKeys := []string{"ctrl-f", "ctrl-alt-f", "ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~",
+			"shift-scroll-up", "shift-scroll-down"}
+		start = []action{startUnbind(), keyAction("unbind", loadingKeys)}
+		options = append(options, binding("load", keyAction("unbind", []string{"load"}),
+			transformEvent(protocol.OpInputLoaded), keyAction("rebind", loadingKeys), changePreviewDefault()))
+	} else if !listenEnabled && goos != "windows" {
 		start = append(start, transformDisplay())
 	}
 	options = append(options, binding("start", start...))
@@ -114,19 +126,21 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		options = append(options, binding(key, ignore()))
 	}
 	if config.Picker == protocol.PickerCD {
+		mark := transformEvent(protocol.OpMarkToggle)
 		return append(options,
-			binding("space", transformEvent(protocol.OpMarkToggle)),
-			binding("ctrl-space", transformEvent(protocol.OpMarkToggle)),
+			binding("space", mark),
+			binding("ctrl-space", mark),
 			binding("btab", transformEvent(protocol.OpMarkToggle), up()),
-			binding("right-click,shift-right-click", transformEvent(protocol.OpMarkToggle)),
+			binding("right-click,shift-right-click", mark),
 			binding("shift-left-click", ignore()),
 			"--sort", "--print-query", "--multi=1"), nil
 	}
+	mark := transformEvent(protocol.OpMarkToggle)
 	return append(options,
-		binding("space", transformEvent(protocol.OpMarkToggle)),
-		binding("ctrl-space", transformEvent(protocol.OpMarkToggle)),
+		binding("space", mark),
+		binding("ctrl-space", mark),
 		binding("btab", transformEvent(protocol.OpMarkToggle), up()),
-		binding("right-click,shift-right-click", transformEvent(protocol.OpMarkToggle)),
+		binding("right-click,shift-right-click", mark),
 		binding("shift-left-click", ignore()),
 		"--no-sort", "--multi"), nil
 }
