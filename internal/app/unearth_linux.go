@@ -89,44 +89,120 @@ func loadUnearth(ctx context.Context, root string, environment []string) (*fsear
 	return database, nil
 }
 
+// streamUnearth exposes each independently validated path record as it arrives.
+// Its returned error remains authoritative: callers must not accept a streamed
+// prefix unless the process exits successfully.
+func streamUnearth(ctx context.Context, root string, environment []string, emit func(fsearchdb.Entry) error) error {
+	executable, err := findUnearth(environment)
+	if err != nil {
+		return err
+	}
+	stdout, stdoutWriter := io.Pipe()
+	var stderr limitedBuffer
+	child, err := (process.Runner{}).Start(ctx, process.Spec{
+		Path: executable, Args: []string{"--require-live-index", "--index-binary", "--stream-index-binary", "--hidden", "*", root},
+		Env: environment, Stdout: stdoutWriter, Stderr: &stderr,
+		Containment: process.ContainmentOwnTree, WaitDelay: unearthWaitDelay,
+	})
+	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		return fmt.Errorf("start unearth: %w", err)
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = child.KillTree()
+			_ = stdoutWriter.CloseWithError(context.Cause(ctx))
+		case <-finished:
+		}
+	}()
+	waitResult := make(chan error, 1)
+	go func() {
+		waitErr := child.Wait()
+		_ = stdoutWriter.Close()
+		waitResult <- waitErr
+	}()
+	decodeErr := decodeUnearthEach(stdout, emit)
+	if decodeErr != nil {
+		_ = child.KillTree()
+		_ = stdoutWriter.CloseWithError(decodeErr)
+	}
+	waitErr := <-waitResult
+	close(finished)
+	_ = stdout.Close()
+	_ = stdoutWriter.Close()
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	if decodeErr != nil {
+		return fmt.Errorf("decode unearth output: %w", decodeErr)
+	}
+	if waitErr != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail != "" {
+			return fmt.Errorf("unearth exited unsuccessfully: %w: %s", waitErr, detail)
+		}
+		return fmt.Errorf("unearth exited unsuccessfully: %w", waitErr)
+	}
+	return nil
+}
+
 func decodeUnearth(reader io.Reader) (*fsearchdb.Database, error) {
 	database := &fsearchdb.Database{Entries: make([]fsearchdb.Entry, 0)}
+	err := decodeUnearthEach(reader, func(entry fsearchdb.Entry) error {
+		database.Entries = append(database.Entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return database, nil
+}
+
+func decodeUnearthEach(reader io.Reader, emit func(fsearchdb.Entry) error) error {
 	var total uint64
+	var count int
 	for {
 		var sizeBytes [4]byte
 		_, err := io.ReadFull(reader, sizeBytes[:])
 		if errors.Is(err, io.EOF) {
-			return database, nil
+			return nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read record size: %w", err)
+			return fmt.Errorf("read record size: %w", err)
 		}
 		size := binary.LittleEndian.Uint32(sizeBytes[:])
 		if size == 0 {
-			return nil, errors.New("zero-length path record")
+			return errors.New("zero-length path record")
 		}
 		if size > unearthMaxRecordBytes {
-			return nil, fmt.Errorf("path record size %d exceeds %d-byte limit", size, unearthMaxRecordBytes)
+			return fmt.Errorf("path record size %d exceeds %d-byte limit", size, unearthMaxRecordBytes)
 		}
-		if len(database.Entries) >= unearthMaxEntries {
-			return nil, fmt.Errorf("path count exceeds %d-entry limit", unearthMaxEntries)
+		if count >= unearthMaxEntries {
+			return fmt.Errorf("path count exceeds %d-entry limit", unearthMaxEntries)
 		}
 		path := make([]byte, int(size))
 		if _, err := io.ReadFull(reader, path); err != nil {
-			return nil, fmt.Errorf("read path record: %w", err)
+			return fmt.Errorf("read path record: %w", err)
 		}
 		if path[0] != '/' || bytes.IndexByte(path, 0) >= 0 {
-			return nil, fmt.Errorf("invalid unearth path record")
+			return fmt.Errorf("invalid unearth path record")
 		}
 		total += uint64(len(path))
 		if total > uint64(sessionipc.MaxLoadResponseBytes) {
-			return nil, fmt.Errorf("unearth paths exceed %d-byte limit", sessionipc.MaxLoadResponseBytes)
+			return fmt.Errorf("unearth paths exceed %d-byte limit", sessionipc.MaxLoadResponseBytes)
 		}
 		isDir := path[len(path)-1] == '/'
 		if isDir && len(path) > 1 {
 			path = path[:len(path)-1]
 		}
-		database.Entries = append(database.Entries, fsearchdb.Entry{Path: path, IsDir: isDir})
+		if err := emit(fsearchdb.Entry{Path: path, IsDir: isDir}); err != nil {
+			return err
+		}
+		count++
 	}
 }
 

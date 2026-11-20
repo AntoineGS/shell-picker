@@ -70,6 +70,21 @@ func TestDecodeUnearthRejectsMalformedRecordsWithoutPublishing(t *testing.T) {
 	}
 }
 
+func TestDecodeUnearthEachEmitsValidatedRecordsBeforeEOFButReturnsMalformedTail(t *testing.T) {
+	stream := append(recordBytes([]byte("/fixture/early")), recordBytes([]byte("relative"))...)
+	var got []fsearchdb.Entry
+	err := decodeUnearthEach(bytes.NewReader(stream), func(entry fsearchdb.Entry) error {
+		got = append(got, entry)
+		return nil
+	})
+	if err == nil {
+		t.Fatal("decodeUnearthEach() accepted malformed tail")
+	}
+	if len(got) != 1 || !bytes.Equal(got[0].Path, []byte("/fixture/early")) {
+		t.Fatalf("streamed records = %#v; want only the validated prefix", got)
+	}
+}
+
 func TestLoadUnearthUsesChildEnvironmentAndRejectsFailedProcess(t *testing.T) {
 	bin := t.TempDir()
 	path := filepath.Join(bin, "unearth")
@@ -121,6 +136,79 @@ func TestLoadUnearthPassesStrictLiveQueryArguments(t *testing.T) {
 	}
 	if len(got.Entries) != 1 || !bytes.Equal(got.Entries[0].Path, []byte("/fixture/ok")) {
 		t.Fatalf("loaded entries = %#v", got.Entries)
+	}
+}
+
+func TestStreamUnearthEmitsPrefixBeforeChildSuccessAndReturnsExitFailure(t *testing.T) {
+	bin := t.TempDir()
+	ready := filepath.Join(bin, "ready")
+	release := filepath.Join(bin, "release")
+	script := "#!/bin/sh\n" +
+		"printf '\\016\\000\\000\\000/fixture/early'\n" +
+		"printf ready > \"$READY\"\n" +
+		"while [ ! -e \"$RELEASE\" ]; do /bin/sleep 0.01; done\n" +
+		"exit 7\n"
+	if err := os.WriteFile(filepath.Join(bin, "unearth"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		entries []fsearchdb.Entry
+		err     error
+	}
+	received := make(chan fsearchdb.Entry, 1)
+	done := make(chan result, 1)
+	go func() {
+		var entries []fsearchdb.Entry
+		err := streamUnearth(context.Background(), "/fixture", []string{
+			"PATH=" + bin, "READY=" + ready, "RELEASE=" + release,
+		}, func(entry fsearchdb.Entry) error {
+			entries = append(entries, entry)
+			received <- entry
+			return nil
+		})
+		done <- result{entries: entries, err: err}
+	}()
+
+	select {
+	case entry := <-received:
+		if !bytes.Equal(entry.Path, []byte("/fixture/early")) {
+			t.Fatalf("early entry = %#v", entry)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream did not emit its first record before child completion")
+	}
+	waitForFile(t, ready)
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case outcome := <-done:
+		if outcome.err == nil || !strings.Contains(outcome.err.Error(), "exited unsuccessfully") {
+			t.Fatalf("stream error = %v; want unsuccessful child exit", outcome.err)
+		}
+		if len(outcome.entries) != 1 {
+			t.Fatalf("streamed entries = %#v", outcome.entries)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("streamUnearth did not finish after releasing child")
+	}
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("wait for fixture file %s", path)
+		}
 	}
 }
 
