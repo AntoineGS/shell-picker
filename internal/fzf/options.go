@@ -113,6 +113,9 @@ func optionsForPlatform(config OptionsConfig, goos string) ([]string, error) {
 		loadingKeys := []string{"ctrl-f", "ctrl-alt-f", "ctrl-l", "tab", "right", "ctrl-h", "left", "/", "~",
 			"shift-scroll-up", "shift-scroll-down"}
 		start = []action{startUnbind(), keyAction("unbind", loadingKeys)}
+		if config.Completion {
+			loadingKeys = append(loadingKeys, "change")
+		}
 		options = append(options, binding("load", keyAction("unbind", []string{"load"}),
 			transformEvent(protocol.OpInputLoaded), keyAction("rebind", loadingKeys), changePreviewDefault()))
 	} else if !listenEnabled && goos != "windows" {

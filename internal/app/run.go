@@ -99,18 +99,8 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	actor := session.New(actorCtx, generate)
 	input := fzf.NewInputStream(nil)
 	var fzfInput io.ReadCloser = input
-	streamInitial := options.Picker == protocol.PickerSearch && supportsInitialIndexedStream() &&
-		dependencies.launchFZF == nil
-	var pipeReader *io.PipeReader
-	var pipeWriter *io.PipeWriter
-	var initialGate *initialStreamGate
-	var streamRun *initialStreamRun
-	var cancelFZF context.CancelCauseFunc
-	if streamInitial {
-		pipeReader, pipeWriter = io.Pipe()
-		fzfInput = pipeReader
-		initialGate = &initialStreamGate{}
-	}
+	stream := newInitialIndexInput(options.Picker, dependencies.launchFZF != nil, &fzfInput)
+	streamInitial := stream != nil
 	metrics := &pickerMetrics{traceID: traceID, policy: options.ZoxidePolicy,
 		sources: candidate.SourceMetrics{ZoxideOutcome: "not-run"}}
 	var coordinator *initialEnrichment
@@ -136,16 +126,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		} else if input != nil {
 			_ = input.Close()
 		}
-		if streamRun != nil {
-			streamRun.stop(stopCause)
-			_ = streamRun.wait()
-		}
-		if pipeReader != nil {
-			_ = pipeReader.Close()
-		}
-		if cancelFZF != nil {
-			cancelFZF(stopCause)
-		}
+		stream.close(stopCause)
 		if server != nil {
 			serverErr = server.Close(context.Background())
 		}
@@ -194,10 +175,6 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 			initialState.Indexed.Query = []byte(options.Query)
 		}
 	}
-	initialHeader := pathutil.PromptDisplayHome(initialLocation, initialState.Home)
-	if initialSource == protocol.SourceIndexed {
-		initialHeader = indexed.header(options.Picker, initialState.FilesSearch())
-	}
 	if options.Picker == protocol.PickerCD && (!options.Completion || string(initialLocation.Path) == string(options.CWD)) {
 		var source initialZoxideLoader = builder
 		if dependencies.loadInitialZoxide != nil {
@@ -223,9 +200,6 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 	if !streamInitial {
 		traceInitialTransition(trace, options.ZoxidePolicy, options.Picker, initial, initialState.Location.Path)
 		metrics.recordTransition(initial)
-	}
-	if initialSource == protocol.SourceIndexed {
-		initialHeader = indexed.header(options.Picker, initialState.FilesSearch())
 	}
 	if !streamInitial && dependencies.beforeInitialInputPublish != nil {
 		dependencies.beforeInitialInputPublish(input)
@@ -256,12 +230,12 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		return protocol.Outcome{}, err
 	}
 	commandHeader := commandLineHeader(options.CommandLine)
-	initialHeader = pickerHeader(commandHeader, initialState, indexed)
+	initialHeader := pickerHeader(commandHeader, initialState, indexed)
 	if streamInitial {
 		initialHeader = loadingIndexHeader(commandHeader, options.FilesOnly)
 	}
 	backend := &pickerBackend{actor: actor, metrics: metrics, trace: trace, enrichment: coordinator,
-		indexed: indexed, commandHeader: commandHeader, initialGate: initialGate}
+		indexed: indexed, commandHeader: commandHeader, initialGate: stream.gate()}
 	var listenedServer *sessionipc.Server
 	listenIPC := dependencies.listenIPC
 	if listenIPC == nil {
@@ -302,35 +276,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		return protocol.Outcome{}, fmt.Errorf("build fzf options: %w", err)
 	}
 	sidecar.start(ctx)
-	launchCtx := ctx
-	if streamInitial {
-		var streamCtx context.Context
-		streamCtx, cancelFZF = context.WithCancelCause(ctx)
-		launchCtx = streamCtx
-		streamRun = startInitialStream(ctx, pipeWriter, func(streamCtx context.Context, writer io.Writer) error {
-			trace.event(integrationpkg.TraceEvent{Name: "generation.start", Generation: initial.Snapshot.Generation() + 1, Outcome: "ok"})
-			database, records, streamErr := indexed.streamInitial(streamCtx, initialBuild, writer)
-			if streamErr != nil {
-				trace.event(integrationpkg.TraceEvent{Name: "generation.discard", Generation: initial.Snapshot.Generation() + 1, Outcome: traceDiscardOutcome(streamErr)})
-				// fzf owns the read side; its exit can close the pipe before
-				// Run returns its (possibly ordinary) abort result.
-				if !errors.Is(streamErr, io.ErrClosedPipe) {
-					cancelFZF(streamErr)
-				}
-				return streamErr
-			}
-			final, applyErr := actor.Enrich(streamCtx, initial.Snapshot.Generation(), records, candidate.SourceMetrics{})
-			if applyErr != nil {
-				cancelFZF(applyErr)
-				return fmt.Errorf("install initial indexed generation: %w", applyErr)
-			}
-			indexed.cache(database)
-			traceInitialTransition(trace, options.ZoxidePolicy, options.Picker, final, initialState.Location.Path)
-			metrics.recordTransition(final)
-			initialGate.markActorReady()
-			return nil
-		})
-	}
+	launchCtx := stream.start(ctx, backend, initial.Snapshot.Generation(), initialBuild)
 	result, launchErr := launch(launchCtx, fzf.Config{
 		Picker: options.Picker, FZFPath: options.FZFPath, ExecutablePath: options.ExecutablePath,
 		Environment: process.SanitizeEnv(dependencies.Environment, nil), TracePath: options.TracePath,
@@ -339,19 +285,7 @@ func RunPicker(ctx context.Context, options PickerOptions, dependencies Dependen
 		Input: fzfInput, Runner: fzfRunner,
 		ForegroundTTY: terminal, TTYOut: dependencies.TTYOut, TTYErr: dependencies.TTYErr,
 	})
-	if streamRun != nil {
-		if launchErr != nil || result.Aborted || !initialGate.ready() {
-			streamRun.stop(context.Canceled)
-		}
-		streamErr := streamRun.wait()
-		if streamErr != nil && !errors.Is(streamErr, context.Canceled) && context.Cause(ctx) == nil &&
-			!(result.Aborted && errors.Is(streamErr, io.ErrClosedPipe)) {
-			err = fmt.Errorf("load initial indexed candidates: %w", streamErr)
-		}
-		if err == nil && launchErr == nil && !result.Aborted && !initialGate.ready() && context.Cause(ctx) == nil {
-			err = errors.New("fzf exited before the initial index was ready")
-		}
-	}
+	err = stream.finish(ctx, result, launchErr)
 	fzfOutcome := "ok"
 	if launchErr != nil {
 		fzfOutcome = "error"

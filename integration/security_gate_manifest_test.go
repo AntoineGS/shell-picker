@@ -260,7 +260,7 @@ var task20GateManifest = []task20GatePackage{
 		"TestCreateDirectoryTreeRejectsSymlinkInBaseAncestry",
 		"TestCreateDirectoryTreeErrorsAndPreservesExistingParents",
 	}},
-	{path: "./integration", selectedUnix: 61, selectedWindows: 111, tests: []string{
+	{path: "./integration", selectedUnix: 68, selectedWindows: 118, tests: []string{
 		"TestRealFZFCtrlHReturnsToParent",
 		"TestRealFZFForcedFilesSearchFromCD",
 		"TestRealFZFSourceRoundTripRetainsZoxide",
